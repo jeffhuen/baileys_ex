@@ -723,6 +723,20 @@ their transport layer.
 | IMPORTANT | 13 | 13 | 0 | onWhatsApp, newsletter (19 funcs), community (23 funcs), business (11 funcs), group (22 funcs), retry manager, identity change, thumbnails, logout, pre-key mgmt, placeholder resend, PN-LID fallback, media retry |
 | MODERATE | 12 | 12 | 0 | Cert validation, event buffering, TC tokens, dirty bits, message ID format, participant hash, browser/platform, stub types, link preview, message normalization, conditional chat updates, media stream pipe |
 | LOW | 5 | 5 | 0 | ~~reporting tokens~~, ~~unified session~~, ~~init queries~~, ~~WAM analytics~~, ~~verified names~~ |
-| ADDITIONAL | 8 | 8 | 0 | Call links, bot list, star messages, member labels, bad ack handling, link preview privacy, media conn auth, WMex engine |
+| ADDITIONAL | 9 | 9 | 0 | Call links, bot list, star messages, member labels, bad ack handling, link preview privacy, media conn auth, WMex engine, AD_JID agent |
 
-**Total gaps: 48 — Resolved: 48, Remaining: 0**
+**Total gaps: 49 — Resolved: 48, Remaining: 1**
+
+---
+
+### GAP-49: JID `agent` Attribute Ignored in AD_JID Encoding/Decoding
+**Baileys:**
+- **Decoding:** In `readAdJid()`, if the domain type byte is not 1 (LID), 128 (HOSTED), or 129 (HOSTED_LID), it implicitly sets the JID's `domainType` to that value. `jidDecode()` maps `domainType` to the `agent` attribute if the server is `s.whatsapp.net`.
+- **Encoding:** In `writeJid()`, if `device` is present, it writes `TAG_AD_JID`, then `domainType || 0` (which holds the `agent` ID), then `device`.
+
+**Our plan / partial implementation:** `BaileysEx.Protocol.BinaryNode` explicitly ignores the `agent` attribute.
+- **Decoding:** `read_string(@ad_jid, data)` drops the parsed `domain_type` byte if it's not a known server domain, calling `JIDUtil.jid_encode(user, server, device)` without passing `agent`.
+- **Encoding:** `write_jid(..., %BaileysEx.JID{device: device} = jid)` always encodes the `domain_type` derived purely from `jid.server`, losing the `agent` attribute entirely.
+
+**Impact:** Multi-device messages involving agents (like Meta AI or advanced business accounts) will fail to encode/decode perfectly, dropping the `agent` routing information and potentially causing mac mismatch errors.
+**Fix:** Update `BaileysEx.Protocol.BinaryNode` and `BaileysEx.Protocol.JID` to correctly serialize and extract `agent` identifiers in `AD_JID` encoding cases.

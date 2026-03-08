@@ -108,27 +108,38 @@ Every task must pass these gates before committing.
 **Gate 3 — Tests:** `mix test`
 - All tests pass. Assertions must test actual values, not just shapes (`{:ok, _}` is not acceptable when the value is knowable).
 
-**Gate 4 — Full gate one-liner:**
-```bash
-mix format --check-formatted && mix compile --warnings-as-errors && mix test
-```
+**Gate 4 — Static analysis:** `mix credo --all`
 
-**Gate 5 — Documentation:** Follow [`documentation-system.md`](./documentation-system.md).
+**Gate 5 — Type checking:** `mix dialyzer`
+
+**Gate 6 — Docs build:** `mix docs`
+- Docs must build without warnings.
+
+**Gate 7 — Documentation quality:** Follow [`documentation-system.md`](./documentation-system.md).
 - No internal references (phase numbers, GAP IDs, task numbers) in `@moduledoc`/`@doc`
 - `@spec` on all public functions
 - Guides updated if a user-facing API changes (Phase 12+)
 
-**Gate 6 — Task completion housekeeping:**
+**Gate 8 — Reference and acceptance parity:**
+- Cross-check against `dev/reference/Baileys-master/` for the touched behavior.
+- Update the active phase file / PROGRESS tracker if the implemented scope or status changed.
+
+**Gate 9 — Task completion housekeeping:**
 1. Update the task checkbox `[x]` in PROGRESS.md.
 2. Update the corresponding acceptance criteria checkboxes.
 3. Update the file status table (⬜ → ✅).
 
-**Gate 7 — Commit** (only after Gates 1–6 pass).
+**Gate 10 — Full verification bundle:**
+```bash
+mix format --check-formatted && \
+mix compile --warnings-as-errors && \
+mix test && \
+mix credo --all && \
+mix dialyzer && \
+mix docs
+```
 
-**Optional gates (add when deps are configured):**
-- `mix credo --strict` — static analysis (after credo is added)
-- `mix dialyzer` — type checking (after dialyzer is added)
-- `mix docs` — documentation (after ex_doc is added)
+**Gate 11 — Commit** (only after Gates 1–10 pass).
 
 ---
 

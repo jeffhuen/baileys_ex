@@ -206,7 +206,8 @@ those files are canonical. This section adds behavioural expectations.
 
 ### Verification and Learning
 
-- **Prove it works before claiming done.** Run all delivery gates (see Gates 1-11 above).
+- **Prove it works before claiming done.** Run all 11 delivery gates from
+  `dev/implementation_plan/CLAUDE.md` § Delivery Gates. None are optional.
   Diff behaviour between main and your changes when relevant. Evidence before assertions.
 - **After any user correction:** update auto-memory (`.claude/projects/.../memory/`)
   with the pattern so the same mistake never repeats. Review memory at session start.

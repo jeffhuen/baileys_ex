@@ -7,11 +7,12 @@ defmodule BaileysEx.Native.XEdDSA do
   signed pre-keys and sender key messages.
   """
 
-  use Rustler, otp_app: :baileys_ex, crate: "baileys_nif"
+  alias BaileysEx.Native
 
-  @spec sign(binary(), binary()) :: {:ok, binary()} | {:error, term()}
-  def sign(_private_key, _message), do: :erlang.nif_error(:nif_not_loaded)
+  @spec sign(binary(), binary()) :: {:ok, binary()}
+  def sign(private_key, message), do: {:ok, Native.xeddsa_sign(private_key, message)}
 
   @spec verify(binary(), binary(), binary()) :: boolean()
-  def verify(_public_key, _message, _signature), do: :erlang.nif_error(:nif_not_loaded)
+  def verify(public_key, message, signature),
+    do: Native.xeddsa_verify(public_key, message, signature)
 end

@@ -150,8 +150,12 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   def noise_handshake(:internal, :start_handshake, data) do
-    noise_state = BaileysEx.Protocol.Noise.new_handshake()
-    {:continue, noise_state, message} = BaileysEx.Protocol.Noise.process_handshake(noise_state, :step1)
+    {:ok, noise_state} =
+      BaileysEx.Protocol.Noise.new(
+        routing_info: data.auth_state.creds.routing_info
+      )
+
+    {:ok, {noise_state, message}} = BaileysEx.Protocol.Noise.client_hello(noise_state)
     :ok = send_raw_frame(data, message)
     {:keep_state, %{data | noise_state: noise_state}}
   end
@@ -184,9 +188,9 @@ defmodule BaileysEx.Connection.Socket do
 
   def connected({:call, from}, {:send_node, node}, data) do
     binary = BinaryNode.encode(node)
-    {:ok, encrypted} = Protocol.Noise.encrypt_frame(data.transport, binary)
+    {:ok, {noise_state, encrypted}} = Protocol.Noise.encode_frame(data.noise_state, binary)
     :ok = send_frame(data, encrypted)
-    {:keep_state, data, [{:reply, from, :ok}]}
+    {:keep_state, %{data | noise_state: noise_state}, [{:reply, from, :ok}]}
   end
 
   # --- Automatic ACK (GAP-03) ---
@@ -333,9 +337,15 @@ defp process_frames(data, frames) do
     {:binary, raw_frame}, {data, nodes} ->
       case reassemble_frame(data.buffer, raw_frame) do
         {:complete, frame, rest} ->
-          {:ok, decrypted} = Protocol.Noise.decrypt_frame(data.transport, frame)
-          {:ok, node} = BinaryNode.decode(decrypted)
-          {%{data | buffer: rest}, [node | nodes]}
+          {:ok, {noise_state, decrypted_frames}} = Protocol.Noise.decode_frames(data.noise_state, frame)
+
+          new_nodes =
+            Enum.map(decrypted_frames, fn decrypted ->
+              {:ok, node} = BinaryNode.decode(decrypted)
+              node
+            end)
+
+          {%{data | noise_state: noise_state, buffer: rest}, Enum.reverse(new_nodes) ++ nodes}
         {:incomplete, buffer} ->
           {%{data | buffer: buffer}, nodes}
       end

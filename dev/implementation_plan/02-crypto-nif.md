@@ -1,10 +1,15 @@
 # Phase 2: Crypto (Pure Elixir / Erlang :crypto)
 
+> **Status note:** The current repo state satisfies this phase for its intended scope:
+> `lib/baileys_ex/crypto.ex`, known-vector coverage, and property tests are implemented
+> and passing. Later phases build on this module rather than revisiting the Phase 2
+> architecture.
+
 **Goal:** Implement all cryptographic primitives using Erlang's built-in `:crypto`
 module and pure Elixir. **No Rust NIF needed** — OTP 28's `:crypto` covers everything.
 
 **Depends on:** Phase 1 (Foundation)
-**Parallel with:** Phase 3 (Protocol Layer), Phase 4 (Noise NIF), Phase 5 (Signal NIF)
+**Parallel with:** Phase 3 (Protocol Layer), Phase 4 (Noise NIF), Phase 5 (Signal Protocol / libsignal NIF)
 **Blocks:** Phase 7 (Auth), Phase 9 (Media)
 
 ---
@@ -173,6 +178,10 @@ File: `test/baileys_ex/crypto_test.exs`
 - Ed25519: RFC 8032 test vectors
 - PBKDF2: RFC 6070 test vectors
 - Media crypto: test vectors derived from Baileys (encrypt with Baileys, decrypt with BaileysEx)
+
+Reference-specific notes:
+- Mirror Baileys `hkdfInfoKey()` behavior exactly, including the blank-suffix cases for `ppic` and `product-catalog-image` in `src/Defaults/index.ts`.
+- For Ed25519 vectors, verify against the key format that OTP `:crypto` actually accepts instead of assuming RFC fixture bytes map 1:1 onto `:crypto.verify/5` inputs.
 
 ### 2.3 Property-based tests
 

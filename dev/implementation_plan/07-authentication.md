@@ -3,7 +3,7 @@
 **Goal:** QR code pairing, phone number pairing, credential persistence, pre-key
 upload flow.
 
-**Depends on:** Phase 5 (Signal — Pure Elixir + XEdDSA NIF), Phase 6 (Connection)
+**Depends on:** Phase 5 (Signal / libsignal native layer), Phase 6 (Connection)
 **Blocks:** Phase 8 (Messaging)
 
 ---
@@ -15,8 +15,10 @@ Users should be able to store credentials however they want (files, database, et
 We provide a default file-based implementation and a behaviour for custom backends.
 
 **Auth state is an Elixir struct.**
-Auth credentials are simple key-value data. Keep them in Elixir structs, serialize
-to/from disk. Signal protocol is also pure Elixir — no Rust boundary for state.
+Auth credentials are simple key-value data. Keep them in Elixir structs and serialize
+them to/from disk. Even if Signal session/state operations are backed by a native
+library in Phase 5, the persisted auth envelope and connection-facing data model
+should stay ordinary Elixir data.
 
 ---
 

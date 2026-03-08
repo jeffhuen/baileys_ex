@@ -33,7 +33,7 @@ defmodule BaileysEx.BinaryNode do
   @type t :: %__MODULE__{
           tag: String.t(),
           attrs: %{String.t() => String.t()},
-          content: [t()] | binary() | nil
+          content: [t()] | {:binary, binary()} | binary() | nil
         }
 
   @enforce_keys [:tag]

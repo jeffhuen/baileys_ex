@@ -1,28 +1,29 @@
-# Phase 4: Noise Protocol NIF
+# Phase 4: Noise Protocol
 
-**Goal:** Wrap the `snow` Rust crate via NIF to implement WhatsApp's Noise protocol
-handshake and transport encryption.
+**Goal:** Implement the WhatsApp/Baileys Noise handler correctly.
 
-**Depends on:** Phase 2 (Crypto NIF)
-**Parallel with:** Phase 5 (Signal NIF)
+That means mirroring `dev/reference/Baileys-master/src/Utils/noise-handler.ts`:
+protobuf handshake messages, certificate validation, handshake hash/key mixing,
+and transport framing all belong to the high-level protocol layer. A raw `snow`
+NIF can still exist as a low-level helper, but it is not the WhatsApp handshake API.
+
+**Depends on:** Phase 1 (Foundation)
+**Parallel with:** Phase 5 (Signal Protocol / signature verification layer)
 **Blocks:** Phase 6 (Connection)
 
 ---
 
 ## Design Decisions
 
-**Use `snow` crate, not custom implementation.**
-`snow` is the mature Rust implementation of the Noise Protocol Framework. WhatsApp uses
-`Noise_XX_25519_AESGCM_SHA256` (XX handshake pattern with Curve25519, AES-GCM, SHA-256).
+**Mirror Baileys, not generic raw XX.**
+WhatsApp does use `Noise_XX_25519_AESGCM_SHA256`, but the wire flow is not "send raw XX
+messages over the socket." Baileys wraps the handshake in `HandshakeMessage` protobufs,
+validates `CertChain`, and manages transport counters itself. Follow that structure.
 
-**ResourceArc for handshake state.**
-The Noise handshake is a multi-step state machine. Rather than serializing/deserializing
-state across the NIF boundary on each call, hold the state in Rust via `ResourceArc`.
-Elixir holds an opaque reference.
-
-**Two phases: handshake → transport.**
-After handshake completes, the `HandshakeState` transitions to a `TransportState` with
-separate encrypt/decrypt ciphers. The NIF returns a new ResourceArc for the transport phase.
+**Keep the NIF boundary sharp.**
+The low-level `BaileysEx.Native.Noise` module may expose a raw `snow` session for
+experiments or focused tests, but the real `BaileysEx.Protocol.Noise` module owns the
+WhatsApp-specific state machine. Recoverable failures belong there as tagged tuples.
 
 ---
 
@@ -53,42 +54,42 @@ struct NoiseSession(Mutex<NoiseState>);
 // --- Handshake ---
 
 #[rustler::nif]
-fn noise_init(prologue: Binary) -> NifResult<ResourceArc<NoiseHandshake>> {
+fn noise_init(prologue: Binary) -> NifResult<ResourceArc<NoiseSession>> {
     // WhatsApp uses: Noise_XX_25519_AESGCM_SHA256
     let builder = Builder::new("Noise_XX_25519_AESGCM_SHA256".parse().unwrap())
         .prologue(prologue.as_slice())
         .build_initiator()?;
-    Ok(ResourceArc::new(NoiseHandshake(Mutex::new(builder))))
+    Ok(ResourceArc::new(NoiseSession(Mutex::new(builder))))
 }
 
 #[rustler::nif]
 fn noise_handshake_write(
-    state: ResourceArc<NoiseHandshake>,
+    state: ResourceArc<NoiseSession>,
     payload: Binary,
-) -> NifResult<(ResourceArc<NoiseHandshake>, Binary)> {
-    // Write handshake message, return updated state + output
+) -> NifResult<Binary> {
+    // Write handshake message. State advances in-place.
 }
 
 #[rustler::nif]
 fn noise_handshake_read(
-    state: ResourceArc<NoiseHandshake>,
+    state: ResourceArc<NoiseSession>,
     message: Binary,
-) -> NifResult<(ResourceArc<NoiseHandshake>, Binary)> {
-    // Read handshake message, return updated state + decrypted payload
+) -> NifResult<Binary> {
+    // Read handshake message. State advances in-place.
 }
 
 #[rustler::nif]
 fn noise_handshake_finish(
-    state: ResourceArc<NoiseHandshake>,
-) -> NifResult<ResourceArc<NoiseTransport>> {
-    // Transition to transport mode, return transport state
+    state: ResourceArc<NoiseSession>,
+) -> NifResult<Atom> {
+    // Transition to transport mode in-place
 }
 
 // --- Transport ---
 
 #[rustler::nif]
 fn noise_encrypt(
-    state: ResourceArc<NoiseTransport>,
+    state: ResourceArc<NoiseSession>,
     plaintext: Binary,
 ) -> NifResult<Binary> {
     // Encrypt a frame. Counter managed internally.
@@ -96,7 +97,7 @@ fn noise_encrypt(
 
 #[rustler::nif]
 fn noise_decrypt(
-    state: ResourceArc<NoiseTransport>,
+    state: ResourceArc<NoiseSession>,
     ciphertext: Binary,
 ) -> NifResult<Binary> {
     // Decrypt a frame. Counter managed internally.
@@ -104,7 +105,7 @@ fn noise_decrypt(
 
 #[rustler::nif]
 fn noise_get_remote_static(
-    state: ResourceArc<NoiseHandshake>,
+    state: ResourceArc<NoiseSession>,
 ) -> NifResult<Option<Binary>> {
     // Get remote's static public key after handshake step 2
 }
@@ -118,22 +119,27 @@ File: `lib/baileys_ex/native/noise.ex`
 defmodule BaileysEx.Native.Noise do
   use Rustler, otp_app: :baileys_ex, crate: "baileys_nif"
 
-  @spec init(binary()) :: {:ok, reference()} | {:error, term()}
+  @type session :: reference()
+
+  @spec init(binary()) :: session()
   def init(_prologue), do: :erlang.nif_error(:nif_not_loaded)
 
-  @spec handshake_write(reference(), binary()) :: {:ok, reference(), binary()} | {:error, term()}
+  @spec init_responder(binary()) :: session()
+  def init_responder(_prologue), do: :erlang.nif_error(:nif_not_loaded)
+
+  @spec handshake_write(session(), binary()) :: binary()
   def handshake_write(_state, _payload), do: :erlang.nif_error(:nif_not_loaded)
 
-  @spec handshake_read(reference(), binary()) :: {:ok, reference(), binary()} | {:error, term()}
+  @spec handshake_read(session(), binary()) :: binary()
   def handshake_read(_state, _message), do: :erlang.nif_error(:nif_not_loaded)
 
-  @spec finish(reference()) :: {:ok, reference()} | {:error, term()}
+  @spec finish(session()) :: :ok
   def finish(_state), do: :erlang.nif_error(:nif_not_loaded)
 
-  @spec encrypt(reference(), binary()) :: {:ok, binary()} | {:error, term()}
+  @spec encrypt(session(), binary()) :: binary()
   def encrypt(_state, _plaintext), do: :erlang.nif_error(:nif_not_loaded)
 
-  @spec decrypt(reference(), binary()) :: {:ok, binary()} | {:error, term()}
+  @spec decrypt(session(), binary()) :: binary()
   def decrypt(_state, _ciphertext), do: :erlang.nif_error(:nif_not_loaded)
 end
 ```
@@ -146,87 +152,129 @@ Orchestrates the WhatsApp-specific Noise handshake flow:
 
 ```elixir
 defmodule BaileysEx.Protocol.Noise do
-  @wa_header <<87, 65, 6, 2>>  # "WA" + version bytes
+  @spec new(keyword()) :: {:ok, t()} | {:error, term()}
+  def new(opts \\ [])
 
-  def new_handshake do
-    {:ok, state} = Native.Noise.init(@wa_header)
-    state
-  end
+  @spec client_hello(t()) :: {:ok, {t(), binary()}} | {:error, term()}
+  def client_hello(state)
 
-  def process_handshake(state, :step1) do
-    # Client → Server: ephemeral key
-    {:ok, state, message} = Native.Noise.handshake_write(state, <<>>)
-    {:continue, state, message}
-  end
+  @spec process_server_hello(t(), binary(), key_pair()) :: {:ok, t()} | {:error, term()}
+  def process_server_hello(state, server_hello, noise_key_pair)
 
-  def process_handshake(state, {:step2, server_hello}) do
-    # Server → Client: ephemeral + static + payload
-    {:ok, state, payload} = Native.Noise.handshake_read(state, server_hello)
-    # payload contains server's certificate chain
-    {:continue, state, payload}
-  end
+  @spec client_finish(t(), binary()) :: {:ok, {t(), binary()}} | {:error, term()}
+  def client_finish(state, client_payload)
 
-  def process_handshake(state, {:step3, client_payload}) do
-    # Client → Server: static + payload (registration/login)
-    {:ok, state, message} = Native.Noise.handshake_write(state, client_payload)
-    {:ok, transport} = Native.Noise.finish(state)
-    {:done, transport, message}
-  end
+  @spec encode_frame(t(), binary()) :: {:ok, {t(), binary()}} | {:error, term()}
+  def encode_frame(state, plaintext)
 
-  def encrypt_frame(transport, data) do
-    Native.Noise.encrypt(transport, data)
-  end
-
-  def decrypt_frame(transport, data) do
-    Native.Noise.decrypt(transport, data)
-  end
+  @spec decode_frames(t(), binary()) :: {:ok, {t(), [binary()]}} | {:error, term()}
+  def decode_frames(state, buffer_chunk)
 end
 ```
 
 ### 4.3a Certificate Validation (GAP-21)
 
-After the Noise XX handshake step 2, the server's response includes a certificate
-chain (NoiseCertificate protobuf). Validate before proceeding to step 3.
+After the server hello is decrypted, its payload contains an encrypted `CertChain`.
+Mirror Baileys `src/Utils/noise-handler.ts` exactly before proceeding to
+`client_finish/2`. This requires the same Signal-style signature verification
+primitive Baileys uses for `Curve.verify(...)`; do not substitute plain
+`:crypto.verify/5` unless it has been cross-validated against Baileys for these
+certificate signatures.
 
 ```elixir
-# In BaileysEx.Protocol.Noise, extend process_handshake step 2:
+defp validate_cert_chain(payload) do
+  {:ok, cert_chain} = Proto.CertChain.decode(payload)
+  %{intermediate: intermediate, leaf: leaf} = cert_chain
 
-def process_handshake(state, {:step2, server_hello}) do
-  {:ok, state, payload} = Native.Noise.handshake_read(state, server_hello)
-  # payload contains NoiseCertificate protobuf
-  {:ok, cert} = Proto.NoiseCertificate.decode(payload)
-  :ok = validate_certificate(cert)
-  {:continue, state, payload}
+  {:ok, details} = Proto.CertChain.NoiseCertificate.Details.decode(intermediate.details)
+
+  verify_leaf =
+    Signal.Curve.verify(details.key, leaf.details, leaf.signature)
+
+  verify_intermediate =
+    Signal.Curve.verify(
+      WA_CERT_DETAILS.PUBLIC_KEY,
+      intermediate.details,
+      intermediate.signature
+    )
+
+  issuer_matches =
+    details.issuer_serial == WA_CERT_DETAILS.SERIAL
+
+  if verify_leaf and verify_intermediate and issuer_matches do
+    :ok
+  else
+    {:error, :invalid_certificate}
+  end
 end
+```
 
-defp validate_certificate(cert) do
-  # 1. Decode cert.details (CertificateDetails protobuf)
-  # 2. Verify cert.signature over cert.details using known WA static key
-  # 3. Check cert.details.issuer_serial matches expected issuer
-  # 4. Check cert.details.not_before <= now <= cert.details.not_after
+Validation requirements from the reference:
+- Decrypt the server payload and decode `proto.CertChain`
+- Verify the leaf signature using the intermediate certificate's public key
+- Verify the intermediate signature using `WA_CERT_DETAILS.PUBLIC_KEY`
+- Check `issuer_serial == WA_CERT_DETAILS.SERIAL`
+- Abort the handshake on any validation failure
+
+Implementation note:
+- This step depends on Phase 3 proto support for `HandshakeMessage`/`CertChain`
+- It also depends on Phase 5 exposing a Baileys-compatible `Curve.verify` equivalent
+  from the Signal/native layer (preferred via `libsignal-protocol`, fallback via a
+  narrowly scoped helper NIF if required)
+
+```elixir
+# Returns :ok | {:error, :invalid_certificate}
+
+defp validate_cert_chain(_payload) do
   # Returns :ok | {:error, :invalid_certificate}
 end
 ```
 
 ### 4.4 Tests
 
-- Handshake with known test vectors (derive from Noise spec test vectors)
-- Full handshake simulation (initiator ↔ responder)
-- Transport encrypt/decrypt roundtrip
-- Frame counter advancement (decrypt after N encrypt calls)
-- Error cases: corrupted handshake data, wrong keys
-- Certificate validation: valid cert passes, expired/wrong-issuer rejected
+- `client_hello/1` encodes the ephemeral public key into `HandshakeMessage`
+- Full client-side handshake against a synthetic server that mirrors the Baileys algorithm
+- Transport encrypt/decrypt roundtrip after `client_finish/2`
+- Frame buffering and counter advancement in `decode_frames/2`
+- Certificate validation: valid cert passes, wrong issuer/signature rejects the handshake
+- Raw `ResourceArc` lifecycle smoke test: repeated create/use/drop without crashes
+
+### 4.5 Native Resource Hardening
+
+`ResourceArc` safety has two distinct concerns and they should not be conflated:
+
+1. **Functional lifecycle correctness**: resources can be created, used, transitioned,
+   and dropped repeatedly without crashes or cross-session corruption.
+2. **Native memory leak freedom**: long-running repeated resource churn does not retain
+   unreachable native allocations over time.
+
+The first point is covered by the current ExUnit smoke test and concurrent handshake
+coverage. The second is **not** covered by ExUnit alone and must be validated with
+dedicated native leak tooling outside the normal CI fast path.
+
+Planned verification work:
+- Run a long-lived repeated create/use/drop workload against the raw NIF boundary.
+- Measure process/native memory growth across iterations from the BEAM side.
+- Run platform-native leak tooling against the NIF (`leaks` / Instruments on macOS,
+  or ASan/LSan-enabled Rust builds on Linux/CI).
+- Only mark leak freedom complete if that tooling shows stable teardown behavior.
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] Noise XX handshake completes successfully in test
-- [ ] Transport encrypt/decrypt roundtrip works
-- [ ] ResourceArc lifecycle: no memory leaks (create, use, drop)
-- [ ] Concurrent handshakes work (multiple ResourceArcs simultaneously)
-- [ ] Error handling: bad data returns `{:error, reason}` not crash
-- [ ] Certificate chain validated after Noise handshake step 2 (GAP-21)
+- [x] Noise XX handshake completes successfully in test
+- [x] Transport encrypt/decrypt roundtrip works
+- [x] ResourceArc lifecycle is smoke-tested via repeated create/use/drop without crashes
+- [x] Concurrent handshakes work (multiple ResourceArcs simultaneously)
+- [x] High-level error handling: `BaileysEx.Protocol.Noise` returns `{:error, reason}` on bad data
+- [x] Certificate chain validated after server hello processing (GAP-21)
+- [ ] Native leak verification completed with dedicated tooling for `ResourceArc` teardown
+
+Implementation note:
+- A repeated create/use/drop smoke test now exercises raw `ResourceArc` lifecycle.
+- Leak freedom remains intentionally unchecked until verified with dedicated native tooling;
+  the smoke test is evidence of lifecycle correctness, not proof of no leaks.
 
 ## Files Created/Modified
 

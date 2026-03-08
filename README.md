@@ -1,15 +1,18 @@
 # BaileysEx
 
-Full-featured Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) — a WhatsApp Web API library.
+In-progress Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) — a WhatsApp Web API library.
 
-- **Signal protocol** implemented in pure Elixir (~1,500 lines across ~20 modules)
-- **Rust NIFs only** for Noise protocol (`snow`) and XEdDSA signing (`curve25519-dalek`)
-- **All crypto** via Erlang `:crypto` (OTP 28) — no crypto NIFs
+- **Foundation phase** is complete
+- **Crypto** is complete for the current Phase 2 scope
+- **Protocol layer and Noise transport foundations** are implemented in-tree for the current scope
+- **Signal, connection, auth, messaging, media, and feature layers** are still planned work
 - Targets Elixir 1.19+ / OTP 28
 
-> **Status:** Pre-implementation. Architecture and detailed implementation plan complete (12 phases, 97 tasks, 48 gap items resolved). See `dev/implementation_plan/PROGRESS.md`.
+> **Status:** Phases 1-3 are complete for their current scope, and Phase 4 now has a reference-aligned Noise implementation. Broad WAProto message/auth code generation is intentionally deferred to the later phases that consume it. See `dev/implementation_plan/PROGRESS.md`.
 
-## Architecture
+## Target Architecture
+
+> **Note:** The tree below describes the intended steady-state architecture, not the current module set in this branch.
 
 ```
 BaileysEx.Application (Supervisor)
@@ -29,9 +32,9 @@ BaileysEx.Application (Supervisor)
 |-------|----------|
 | Crypto primitives | Erlang `:crypto` (AES, HMAC, SHA, PBKDF2, Curve25519, Ed25519) |
 | HKDF | Pure Elixir using `:crypto.mac/4` |
-| Signal Protocol | Pure Elixir (X3DH, Double Ratchet, Sender Keys, sessions) |
-| Noise Protocol | Rust NIF (`snow` crate) — no Elixir equivalent exists |
-| XEdDSA signing | Rust NIF (`curve25519-dalek`) — Montgomery-Edwards conversion |
+| Signal Protocol | Rust NIF wrapping `libsignal-protocol` (planned) — sessions, sender keys, and identity verification |
+| Noise Protocol | Elixir protocol layer aligned with Baileys, using native crypto primitives and a narrow XEdDSA helper |
+| Signature helpers | Expose the Baileys/libsignal-compatible verification primitive from the Signal/native layer; keep a narrow helper NIF only if the Signal wrapper does not cover it |
 | Wire format | Pure Elixir (WABinary encode/decode) |
 | Protobuf | `protox` (pure Elixir codegen) |
 | WebSocket | `Mint.WebSocket` (process-less) |
@@ -46,7 +49,9 @@ def deps do
 end
 ```
 
-## Usage
+## Planned API
+
+> **Note:** The public API below is not yet implemented. It shows the intended interface for when the messaging and connection layers are complete (Phases 6--8+).
 
 ```elixir
 # Start a connection

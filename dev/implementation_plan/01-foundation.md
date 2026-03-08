@@ -108,8 +108,8 @@ snow = "0.9"
 curve25519-dalek = { version = "4", features = ["digest"] }
 sha2 = "0.10"       # Required by curve25519-dalek for nonce derivation
 getrandom = "0.2"   # Secure random for XEdDSA nonce
-# NOTE: No crypto crates here — Erlang :crypto handles AES, HMAC, HKDF, etc.
-# NOTE: No libsignal-protocol — Signal implemented in pure Elixir (~1,500 lines)
+# NOTE: No generic crypto crates here — Erlang :crypto handles AES, HMAC, HKDF, etc.
+# NOTE: `libsignal-protocol` is a later-phase dependency, not part of the initial scaffold
 ```
 
 Initial `lib.rs` (Rustler 0.37+ auto-discovers NIFs, no explicit list needed):
@@ -122,9 +122,9 @@ rustler::init!("Elixir.BaileysEx.Native");
 
 ### 1.5 Create NIF module stubs
 
-Only Noise and XEdDSA need NIFs. **No crypto NIF** — Erlang `:crypto` handles all
-cryptographic primitives natively. **No Signal NIF** — Signal protocol implemented
-in pure Elixir (~1,500 lines across ~20 modules).
+Phase 1 only needs the native scaffolding and the Noise/XEdDSA module stubs. Generic
+crypto stays in Erlang `:crypto`, while the final Shape of the Signal native layer is
+defined later once the Phase 5 `libsignal-protocol` wrapper is specified.
 
 File: `lib/baileys_ex/native/noise.ex`
 ```elixir

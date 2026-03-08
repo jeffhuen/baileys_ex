@@ -1,7 +1,15 @@
-# Phase 5: Signal Protocol (Pure Elixir + XEdDSA NIF)
+# Phase 5: Signal Protocol (redesign around libsignal-protocol NIF)
 
-**Goal:** Implement Signal Protocol in pure Elixir using Erlang `:crypto` for all
-primitives. Only NIF: XEdDSA sign/verify (~80 lines Rust, uses `curve25519-dalek`).
+> **Status note:** This phase document is not source-of-truth yet. The detailed task
+> breakdown below predates the repo's current "wrap, don't reimplement" direction and
+> should be treated as historical research, not an approved implementation recipe.
+> Before Phase 5 starts, rewrite this phase around a `libsignal-protocol` (or
+> equivalent) Rustler wrapper that matches Baileys' `src/Signal/libsignal.ts`
+> behavior and also exposes the verification primitive Phase 4 needs for Noise
+> certificate validation.
+
+**Goal:** Provide a Signal layer backed by a battle-tested native implementation,
+keeping persistence, orchestration, and BEAM concurrency in Elixir.
 
 **Depends on:** Phase 1 (Foundation), Phase 2 (Crypto)
 **Parallel with:** Phase 4 (Noise NIF)
@@ -9,28 +17,10 @@ primitives. Only NIF: XEdDSA sign/verify (~80 lines Rust, uses `curve25519-dalek
 
 ---
 
-## Architecture
+## Historical Draft Architecture
 
-```
-Signal Protocol implementation:
-├── ~1,500 lines pure Elixir
-│   ├── X3DH key agreement
-│   ├── Double Ratchet algorithm
-│   ├── Session management
-│   ├── Group messaging (Sender Keys — port from Baileys TS)
-│   ├── Signal protobuf definitions
-│   └── Store behaviour
-├── Erlang :crypto for ALL primitives
-│   ├── Curve25519 ECDH      → :crypto.compute_key(:ecdh, ...)
-│   ├── AES-256-CBC           → :crypto.crypto_one_time(:aes_256_cbc, ...)
-│   ├── HMAC-SHA256/512       → :crypto.mac(:hmac, ...)
-│   ├── SHA-256/512           → :crypto.hash(...)
-│   ├── HKDF                  → BaileysEx.Crypto.hkdf/4 (pure Elixir)
-│   └── Random bytes          → :crypto.strong_rand_bytes/1
-└── One tiny Rust NIF (~80 lines)
-    └── XEdDSA sign/verify (curve25519-dalek)
-        Required because :crypto cannot convert Montgomery↔Edwards keys
-```
+This section describes the older pure-Elixir draft. Keep it only as background
+research until the phase is rewritten around the libsignal-backed approach above.
 
 **No process needed.** Signal operations are stateless functions that take session
 state as structs and return updated structs. The connection Store (GenServer + ETS)

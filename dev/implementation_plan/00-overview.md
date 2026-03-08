@@ -2,16 +2,21 @@
 
 ## Vision
 
-Full-featured Elixir port of Baileys (WhatsApp Web API). Signal protocol implemented
-in pure Elixir (~1,500 lines). Rust NIFs only for Noise protocol (`snow` crate) and
-XEdDSA signing (`curve25519-dalek`). All connection management, state machines,
-concurrency, and business logic stays in Elixir where BEAM shines.
+Full-featured Elixir port of Baileys (WhatsApp Web API). The current architectural
+direction is to keep connection management, state machines, concurrency, and business
+logic in Elixir, while exposing battle-tested native crypto and Signal primitives where
+Baileys already relies on them. The WhatsApp-specific Noise handler should mirror the
+Baileys reference in Elixir rather than delegating the whole handshake to a generic raw
+XX engine.
 
 ## Core Principles
 
 1. **Native first, Rust NIF only when necessary** — Use Erlang `:crypto` (OTP 28) and
-   pure Elixir for everything that has native support. Rust NIFs only for `snow` (Noise
-   protocol) and `curve25519-dalek` (XEdDSA). Zero custom crypto.
+   pure Elixir for generic crypto, framing, and orchestration. Use Rust NIFs for
+   battle-tested protocol primitives that should not be reimplemented here:
+   `libsignal-protocol` for Signal and a tiny helper only if a required verification
+   primitive is missing from that wrapper. The higher-level Noise choreography stays
+   in Elixir so it can match `dev/reference/Baileys-master/src/Utils/noise-handler.ts`.
 2. **No process without a runtime reason** — Modules organize code; processes manage
    runtime state, concurrency, or fault isolation.
 3. **GenServer is a bottleneck by design** — Use ETS for concurrent reads, GenServer
@@ -84,21 +89,24 @@ lib/baileys_ex/crypto.ex    # Thin wrappers around :crypto
 ```
 lib/baileys_ex/native/
 ├── noise.ex      # Noise protocol — no Elixir/Erlang equivalent
-└── xeddsa.ex     # XEdDSA sign/verify — Montgomery↔Edwards key conversion
+├── signal.ex     # libsignal-protocol wrapper (planned)
+└── xeddsa.ex     # Optional narrow helper if the Signal wrapper lacks needed verification
 
 native/baileys_nif/
 ├── Cargo.toml
 └── src/
     ├── lib.rs       # Rustler setup
     ├── noise.rs     # snow crate wrapper
-    └── xeddsa.rs    # curve25519-dalek XEdDSA (~80 lines)
+    ├── signal.rs    # libsignal-protocol wrapper (planned)
+    └── xeddsa.rs    # optional curve helper, only if still needed
 ```
 
 **NIF state strategy:**
 - Noise: `NoiseSession` ResourceArc with enum (Handshake | Transport) behind Mutex.
-- XEdDSA: Stateless NIF functions (sign/verify), no ResourceArc needed.
-- **No crypto NIF** — all primitives handled by Erlang `:crypto`.
-- **No Signal NIF** — Signal protocol implemented in pure Elixir (~1,500 lines).
+- Signal: native session/key resources exposed through a narrow Elixir wrapper.
+- Optional signature helper: stateless functions only if the Signal wrapper does not
+  already expose the verification primitive Phase 4 needs.
+- **No generic crypto NIF** — AES/HMAC/HKDF/PBKDF2 stay in Erlang `:crypto` / Elixir.
 
 ### Layer 2: Wire Protocol (pure functions, no processes)
 
@@ -130,19 +138,13 @@ lib/baileys_ex/
 │   ├── qr.ex             # QR code pairing flow
 │   ├── phone.ex          # Phone number pairing flow
 │   └── persistence.ex    # Behaviour for credential storage backends
-├── signal/
-│   ├── crypto.ex          # Signal-specific KDF functions (KDF_CK, KDF_RK, etc.)
-│   ├── x3dh.ex            # X3DH key agreement (session establishment)
-│   ├── double_ratchet.ex  # Double Ratchet algorithm (encrypt/decrypt)
-│   ├── session.ex         # Session state struct and management
-│   ├── session_cipher.ex  # Orchestrator: encrypt/decrypt per-device
-│   ├── session_builder.ex # Build outgoing / process incoming PreKey sessions
-│   ├── group_cipher.ex    # Group encrypt/decrypt via Sender Keys
-│   ├── group_session.ex   # SenderKeyRecord, SenderKeyState management
-│   ├── sender_key_message.ex    # SenderKeyMessage / SenderKeyDistributionMessage
+├── signal/                # Provisional Phase 5 area — to be redesigned around libsignal
+│   ├── store.ex           # Store behaviour for signal state persistence
+│   ├── session_cipher.ex  # Elixir-side orchestration around native sessions
+│   ├── session_builder.ex # Outgoing/incoming session orchestration
+│   ├── group_cipher.ex    # Group send/receive orchestration
 │   ├── prekey.ex          # Pre-key generation, upload, rotation
 │   ├── key_helper.ex      # Convenience key generation utilities
-│   ├── store.ex           # Store behaviour for signal state persistence
 │   └── device.ex          # Multi-device discovery
 ├── message/
 │   ├── builder.ex        # Construct WAProto messages from ALL types
@@ -192,7 +194,8 @@ Phase 2: Crypto (pure Elixir/:crypto) ──────────────
   Depends on: Phase 1
 
 Phase 3: Protocol Layer ──────────────────────────────────────────
-  WABinary, JID, Protobuf codegen
+  WABinary, JID, USync, WMex, and the minimal protobuf boundary needed by
+  the transport/auth layers
   Depends on: Phase 1
   (parallel with Phase 2)
 
@@ -200,9 +203,9 @@ Phase 4: Noise NIF ────────────────────�
   Rust NIF wrapping snow crate (no Elixir equivalent exists)
   Depends on: Phase 1 (NIF scaffold)
 
-Phase 5: Signal Protocol (Pure Elixir + XEdDSA NIF) ─────────────
-  ~1,500 lines pure Elixir: X3DH, Double Ratchet, Sender Keys
-  XEdDSA NIF: ~80 lines Rust (curve25519-dalek) for Montgomery↔Edwards signing
+Phase 5: Signal Protocol (libsignal-backed redesign) ────────────
+  Rust NIF wrapping libsignal-protocol or equivalent
+  Elixir wrappers for session orchestration, persistence, and device discovery
   Depends on: Phase 1 (NIF scaffold), Phase 2 (Crypto)
   (parallel with Phase 4)
 
@@ -244,9 +247,9 @@ Phase 12: Polish ─────────────────────
   Phase 2      Phase 3      Phase 4
   (Crypto)   (Protocol)   (Noise NIF)
       |          |           |
-      +--- Phase 5 ----------+
-      |  (Signal: Pure Elixir |
-      |   + XEdDSA NIF)       |
+      +--- Phase 5 -------------------+
+      |  (Signal: libsignal-backed    |
+      |   redesign)                   |
       |          |             |
        \         |            /
         Phase 6 (Connection)

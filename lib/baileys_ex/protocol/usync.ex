@@ -1,0 +1,369 @@
+defmodule BaileysEx.Protocol.USync do
+  @moduledoc """
+  Baileys-aligned USync query builder and result parser.
+
+  Reference:
+  - `dev/reference/Baileys-master/src/WAUSync/USyncQuery.ts`
+  - `dev/reference/Baileys-master/src/WAUSync/USyncUser.ts`
+  - `dev/reference/Baileys-master/src/WAUSync/Protocols/*.ts`
+  """
+
+  alias BaileysEx.BinaryNode
+  alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  alias BaileysEx.Protocol.JID
+
+  @protocols [:devices, :contact, :status, :disappearing_mode, :lid]
+  @contexts [:interactive, :background, :message, :notification]
+  @modes [:query, :delta]
+
+  defmodule User do
+    @moduledoc """
+    User selector for a USync query.
+    """
+
+    @type t :: %__MODULE__{
+            id: String.t() | nil,
+            lid: String.t() | nil,
+            phone: String.t() | nil,
+            type: String.t() | nil,
+            persona_id: String.t() | nil
+          }
+
+    defstruct [:id, :lid, :phone, :type, :persona_id]
+  end
+
+  @type protocol :: :devices | :contact | :status | :disappearing_mode | :lid
+  @type context :: :interactive | :background | :message | :notification
+  @type mode :: :query | :delta
+  @type user_result :: %{required(:id) => String.t(), optional(atom()) => term()}
+  @type result :: %{list: [user_result()], side_list: [user_result()]}
+
+  @type t :: %__MODULE__{
+          protocols: [protocol()],
+          users: [User.t()],
+          context: context(),
+          mode: mode()
+        }
+
+  defstruct protocols: [], users: [], context: :interactive, mode: :query
+
+  @spec new(keyword()) :: t()
+  def new(opts \\ []) do
+    %__MODULE__{
+      protocols: Keyword.get(opts, :protocols, []),
+      users: Keyword.get(opts, :users, []),
+      context: normalize_context(Keyword.get(opts, :context, :interactive)),
+      mode: normalize_mode(Keyword.get(opts, :mode, :query))
+    }
+  end
+
+  @spec with_protocol(t(), protocol() | :device) :: t()
+  def with_protocol(%__MODULE__{} = query, protocol) do
+    %{query | protocols: query.protocols ++ [normalize_protocol(protocol)]}
+  end
+
+  @spec with_user(t(), User.t() | map()) :: t()
+  def with_user(%__MODULE__{} = query, %User{} = user) do
+    %{query | users: query.users ++ [user]}
+  end
+
+  def with_user(%__MODULE__{} = query, user) when is_map(user) do
+    with_user(query, struct(User, user))
+  end
+
+  @spec with_context(t(), context() | String.t()) :: t()
+  def with_context(%__MODULE__{} = query, context) do
+    %{query | context: normalize_context(context)}
+  end
+
+  @spec with_mode(t(), mode() | String.t()) :: t()
+  def with_mode(%__MODULE__{} = query, mode) do
+    %{query | mode: normalize_mode(mode)}
+  end
+
+  @spec build_query([protocol() | :device], [User.t() | map()], keyword()) ::
+          {:ok, BinaryNode.t()} | {:error, term()}
+  def build_query(protocols, users, opts \\ []) do
+    query =
+      Enum.reduce(protocols, new(opts), fn protocol, acc ->
+        with_protocol(acc, protocol)
+      end)
+
+    query =
+      Enum.reduce(users, query, fn user, acc ->
+        with_user(acc, user)
+      end)
+
+    sid = Keyword.get_lazy(opts, :sid, &default_sid/0)
+    to_node(query, sid)
+  end
+
+  @spec to_node(t(), String.t()) :: {:ok, BinaryNode.t()} | {:error, term()}
+  def to_node(%__MODULE__{protocols: []}, _sid), do: {:error, {:missing_protocols, []}}
+  def to_node(%__MODULE__{users: []}, _sid), do: {:error, {:missing_users, []}}
+
+  def to_node(%__MODULE__{} = query, sid) when is_binary(sid) do
+    {:ok,
+     %BinaryNode{
+       tag: "iq",
+       attrs: %{"to" => JID.s_whatsapp_net(), "type" => "get", "xmlns" => "usync"},
+       content: [
+         %BinaryNode{
+           tag: "usync",
+           attrs: %{
+             "context" => Atom.to_string(query.context),
+             "mode" => Atom.to_string(query.mode),
+             "sid" => sid,
+             "last" => "true",
+             "index" => "0"
+           },
+           content: [
+             %BinaryNode{
+               tag: "query",
+               attrs: %{},
+               content: Enum.map(query.protocols, &protocol_query_node/1)
+             },
+             %BinaryNode{
+               tag: "list",
+               attrs: %{},
+               content: Enum.map(query.users, &user_query_node(&1, query.protocols))
+             }
+           ]
+         }
+       ]
+     }}
+  end
+
+  def to_node(%__MODULE__{}, sid), do: {:error, {:invalid_sid, sid}}
+
+  @spec parse_result(t(), BinaryNode.t()) :: {:ok, result()} | {:error, term()}
+  def parse_result(%__MODULE__{} = query, %BinaryNode{attrs: %{"type" => "result"}} = response) do
+    with %BinaryNode{} = usync_node <- BinaryNodeUtil.child(response, "usync"),
+         {:ok, list} <- parse_user_list(BinaryNodeUtil.child(usync_node, "list"), query.protocols),
+         {:ok, side_list} <-
+           parse_user_list(BinaryNodeUtil.child(usync_node, "side_list"), query.protocols) do
+      {:ok, %{list: list, side_list: side_list}}
+    else
+      nil -> {:error, :missing_usync}
+      {:error, _} = error -> error
+    end
+  end
+
+  def parse_result(%__MODULE__{}, %BinaryNode{attrs: %{"type" => type}}),
+    do: {:error, {:unexpected_iq_type, type}}
+
+  def parse_result(%__MODULE__{}, %BinaryNode{}), do: {:error, {:unexpected_iq_type, nil}}
+
+  defp parse_user_list(nil, _protocols), do: {:ok, []}
+
+  defp parse_user_list(%BinaryNode{} = list_node, protocols) do
+    list_node
+    |> BinaryNodeUtil.children("user")
+    |> Enum.reduce_while({:ok, []}, fn user_node, {:ok, acc} ->
+      case parse_user_node(user_node, protocols) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, entry} -> {:cont, {:ok, [entry | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, entries} -> {:ok, Enum.reverse(entries)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp parse_user_node(%BinaryNode{attrs: attrs} = user_node, protocols) do
+    jid = attrs["jid"]
+
+    if is_nil(jid) do
+      {:ok, nil}
+    else
+      with :ok <- BinaryNodeUtil.assert_error_free(user_node),
+           {:ok, entry} <- parse_protocol_entries(user_node, protocols, %{id: jid}) do
+        {:ok, entry}
+      else
+        {:error, %{code: _, text: _, node: _} = error} ->
+          {:error, {:protocol_error, error, jid}}
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
+  defp parse_protocol_entries(%BinaryNode{} = user_node, protocols, entry) do
+    user_node
+    |> BinaryNodeUtil.children()
+    |> Enum.reduce_while({:ok, entry}, fn child, {:ok, acc} ->
+      case parse_protocol_node(child, protocols) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, {key, value}} -> {:cont, {:ok, Map.put(acc, key, value)}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp parse_protocol_node(%BinaryNode{tag: "error"}, _protocols), do: {:ok, nil}
+
+  defp parse_protocol_node(%BinaryNode{tag: tag} = node, protocols) do
+    protocol = protocol_for_tag(tag)
+
+    if is_nil(protocol) or protocol not in protocols do
+      {:ok, nil}
+    else
+      with :ok <- BinaryNodeUtil.assert_error_free(node) do
+        {:ok, {protocol, parse_protocol_value(protocol, node)}}
+      end
+    end
+  end
+
+  defp parse_protocol_value(:devices, %BinaryNode{} = node) do
+    device_list =
+      node
+      |> BinaryNodeUtil.child("device-list")
+      |> BinaryNodeUtil.children("device")
+      |> Enum.map(fn %BinaryNode{attrs: attrs} ->
+        %{
+          id: parse_required_int(attrs["id"]),
+          key_index: parse_int(attrs["key-index"]),
+          is_hosted: attrs["is_hosted"] == "true"
+        }
+      end)
+
+    key_index =
+      case BinaryNodeUtil.child(node, "key-index-list") do
+        nil ->
+          nil
+
+        %BinaryNode{attrs: attrs, content: content} ->
+          %{
+            timestamp: parse_required_int(attrs["ts"]),
+            signed_key_index: content_bytes(content),
+            expected_timestamp: parse_int(attrs["expected_ts"])
+          }
+      end
+
+    %{device_list: device_list, key_index: key_index}
+  end
+
+  defp parse_protocol_value(:contact, %BinaryNode{attrs: attrs}), do: attrs["type"] == "in"
+
+  defp parse_protocol_value(:status, %BinaryNode{attrs: attrs, content: content}) do
+    status =
+      case content_string(content) do
+        nil -> if(attrs["code"] == "401", do: "", else: nil)
+        "" -> if(attrs["code"] == "401", do: "", else: nil)
+        value -> value
+      end
+
+    %{status: status, set_at: unix_datetime(attrs["t"])}
+  end
+
+  defp parse_protocol_value(:disappearing_mode, %BinaryNode{attrs: attrs}) do
+    %{duration: parse_required_int(attrs["duration"]), set_at: unix_datetime(attrs["t"])}
+  end
+
+  defp parse_protocol_value(:lid, %BinaryNode{attrs: attrs}), do: attrs["val"]
+
+  defp protocol_query_node(:devices), do: %BinaryNode{tag: "devices", attrs: %{"version" => "2"}}
+  defp protocol_query_node(:contact), do: %BinaryNode{tag: "contact", attrs: %{}}
+  defp protocol_query_node(:status), do: %BinaryNode{tag: "status", attrs: %{}}
+
+  defp protocol_query_node(:disappearing_mode),
+    do: %BinaryNode{tag: "disappearing_mode", attrs: %{}}
+
+  defp protocol_query_node(:lid), do: %BinaryNode{tag: "lid", attrs: %{}}
+
+  defp user_query_node(%User{} = user, protocols) do
+    attrs =
+      case user.phone do
+        nil -> maybe_put(%{}, "jid", user.id)
+        _phone -> %{}
+      end
+
+    content =
+      protocols
+      |> Enum.map(&protocol_user_node(&1, user))
+      |> Enum.reject(&is_nil/1)
+
+    %BinaryNode{tag: "user", attrs: attrs, content: content}
+  end
+
+  defp protocol_user_node(:contact, %User{phone: phone}) when is_binary(phone) do
+    %BinaryNode{tag: "contact", attrs: %{}, content: phone}
+  end
+
+  defp protocol_user_node(:lid, %User{lid: lid}) when is_binary(lid) do
+    %BinaryNode{tag: "lid", attrs: %{"jid" => lid}}
+  end
+
+  defp protocol_user_node(_protocol, _user), do: nil
+
+  defp default_sid do
+    System.unique_integer([:positive])
+    |> Integer.to_string()
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp normalize_protocol(:device), do: :devices
+  defp normalize_protocol(protocol) when protocol in @protocols, do: protocol
+
+  defp normalize_protocol(protocol),
+    do: raise(ArgumentError, "unsupported USync protocol: #{inspect(protocol)}")
+
+  defp normalize_context("interactive"), do: :interactive
+  defp normalize_context("background"), do: :background
+  defp normalize_context("message"), do: :message
+  defp normalize_context("notification"), do: :notification
+  defp normalize_context(context) when context in @contexts, do: context
+
+  defp normalize_context(context),
+    do: raise(ArgumentError, "unsupported USync context: #{inspect(context)}")
+
+  defp normalize_mode("query"), do: :query
+  defp normalize_mode("delta"), do: :delta
+  defp normalize_mode(mode) when mode in @modes, do: mode
+  defp normalize_mode(mode), do: raise(ArgumentError, "unsupported USync mode: #{inspect(mode)}")
+
+  defp protocol_for_tag("devices"), do: :devices
+  defp protocol_for_tag("contact"), do: :contact
+  defp protocol_for_tag("status"), do: :status
+  defp protocol_for_tag("disappearing_mode"), do: :disappearing_mode
+  defp protocol_for_tag("lid"), do: :lid
+  defp protocol_for_tag(_tag), do: nil
+
+  defp content_bytes({:binary, bytes}) when is_binary(bytes), do: bytes
+  defp content_bytes(bytes) when is_binary(bytes), do: bytes
+  defp content_bytes(_content), do: nil
+
+  defp content_string({:binary, bytes}) when is_binary(bytes), do: bytes
+  defp content_string(bytes) when is_binary(bytes), do: bytes
+  defp content_string(_content), do: nil
+
+  defp parse_required_int(value) do
+    case parse_int(value) do
+      nil -> raise ArgumentError, "expected integer string, got: #{inspect(value)}"
+      int -> int
+    end
+  end
+
+  defp parse_int(nil), do: nil
+
+  defp parse_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} -> int
+      _ -> nil
+    end
+  end
+
+  defp unix_datetime(nil), do: nil
+
+  defp unix_datetime(value) when is_binary(value) do
+    case parse_int(value) do
+      nil -> nil
+      seconds -> DateTime.from_unix!(seconds)
+    end
+  end
+end

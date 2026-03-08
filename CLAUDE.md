@@ -228,8 +228,9 @@ This section adds behavioural expectations.
 
 ### Verification and Learning
 
-- **Prove it works before claiming done.** Run `mix compile --warnings-as-errors`,
-  `mix test`, `mix credo`, `mix dialyzer`. Evidence before assertions.
+- **Prove it works before claiming done.** Run all 11 delivery gates from
+  `dev/implementation_plan/CLAUDE.md` § Delivery Gates. None are optional.
+  Evidence before assertions.
 - **After any user correction:** update auto-memory (`.claude/projects/.../memory/`)
   with the pattern so the same mistake never repeats. Review memory at session start.
 - **Challenge your own work.** Before presenting: "Would this survive code review by

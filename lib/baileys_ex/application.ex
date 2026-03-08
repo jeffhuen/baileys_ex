@@ -1,4 +1,8 @@
 defmodule BaileysEx.Application do
+  @moduledoc """
+  Application supervisor for BaileysEx runtime services.
+  """
+
   use Application
 
   @impl true

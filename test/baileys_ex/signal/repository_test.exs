@@ -76,6 +76,38 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
       {:ok, new_state}
     end
+
+    @impl true
+    def get_device_list(state, user) do
+      {:ok, state, get_in(state, [:device_lists, user])}
+    end
+
+    @impl true
+    def migrate_sessions(state, operations) do
+      {new_state, migrated, total} =
+        Enum.reduce(operations, {state, 0, 0}, fn operation, {acc, migrated, total} ->
+          from_key = Repository.Adapter.session_key(operation.from)
+          to_key = Repository.Adapter.session_key(operation.to)
+
+          case Map.get(acc, from_key) do
+            nil ->
+              {acc, migrated, total}
+
+            %{open?: true} = session ->
+              updated_state =
+                acc
+                |> Map.put(to_key, session)
+                |> Map.delete(from_key)
+
+              {updated_state, migrated + 1, total + 1}
+
+            _closed_session ->
+              {acc, migrated, total + 1}
+          end
+        end)
+
+      {:ok, new_state, %{migrated: migrated, skipped: total - migrated, total: total}}
+    end
   end
 
   describe "jid_to_signal_protocol_address/1" do
@@ -171,6 +203,91 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
       assert {:ok, %{exists: false, reason: :no_session}} =
                Repository.validate_session(repo, "5511999887766@s.whatsapp.net")
+    end
+
+    test "stores LID mappings and resolves device-specific LIDs through the repository" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:ok, repo} =
+               Repository.store_lid_pn_mappings(repo, [
+                 %{lid: "12345@lid", pn: "5511999887766@s.whatsapp.net"}
+               ])
+
+      assert {:ok, repo, "12345:2@lid"} =
+               Repository.get_lid_for_pn(repo, "5511999887766:2@s.whatsapp.net")
+
+      assert {:ok, _repo, "5511999887766:99@s.whatsapp.net"} =
+               Repository.get_pn_for_lid(repo, "12345:99@lid")
+    end
+
+    test "migrates all open device sessions from PN to LID addresses" do
+      repo =
+        Repository.new(
+          adapter: FakeAdapter,
+          adapter_state: %{
+            "5511999887766.0" => %{open?: true, session: %{id: 0}, history: []},
+            "5511999887766.2" => %{open?: true, session: %{id: 2}, history: []},
+            "5511999887766.3" => %{open?: false, session: %{id: 3}, history: []},
+            device_lists: %{"5511999887766" => ["0", "2", "3"]}
+          }
+        )
+
+      assert {:ok, repo, %{migrated: 2, skipped: 1, total: 3}} =
+               Repository.migrate_session(
+                 repo,
+                 "5511999887766@s.whatsapp.net",
+                 "12345@lid"
+               )
+
+      assert Map.has_key?(repo.adapter_state, "12345_1.0")
+      assert Map.has_key?(repo.adapter_state, "12345_1.2")
+      refute Map.has_key?(repo.adapter_state, "5511999887766.0")
+      refute Map.has_key?(repo.adapter_state, "5511999887766.2")
+
+      assert %{open?: false} = repo.adapter_state["5511999887766.3"]
+      refute Map.has_key?(repo.adapter_state, "12345_1.3")
+    end
+
+    test "includes the source device even when it is missing from the stored device list" do
+      repo =
+        Repository.new(
+          adapter: FakeAdapter,
+          adapter_state: %{
+            "5511999887766.4" => %{open?: true, session: %{id: 4}, history: []},
+            device_lists: %{"5511999887766" => ["0", "2"]}
+          }
+        )
+
+      assert {:ok, repo, %{migrated: 1, skipped: 0, total: 1}} =
+               Repository.migrate_session(
+                 repo,
+                 "5511999887766:4@s.whatsapp.net",
+                 "12345@lid"
+               )
+
+      assert Map.has_key?(repo.adapter_state, "12345_1.4")
+      refute Map.has_key?(repo.adapter_state, "5511999887766.4")
+    end
+
+    test "preserves hosted LID targets for hosted companion sessions" do
+      repo =
+        Repository.new(
+          adapter: FakeAdapter,
+          adapter_state: %{
+            "5511999887766_128.99" => %{open?: true, session: %{id: 99}, history: []},
+            device_lists: %{"5511999887766" => ["99"]}
+          }
+        )
+
+      assert {:ok, repo, %{migrated: 1, skipped: 0, total: 1}} =
+               Repository.migrate_session(
+                 repo,
+                 "5511999887766:99@hosted",
+                 "12345@hosted.lid"
+               )
+
+      assert Map.has_key?(repo.adapter_state, "12345_129.99")
+      refute Map.has_key?(repo.adapter_state, "5511999887766_128.99")
     end
   end
 
@@ -304,6 +421,26 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
       assert {:error, :invalid_signal_address} =
                Repository.jid_to_signal_protocol_address("user@g.us")
+    end
+
+    test "migrate_session returns zero work for unsupported direction changes" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:ok, ^repo, %{migrated: 0, skipped: 0, total: 0}} =
+               Repository.migrate_session(repo, "12345@lid", "5511999887766@s.whatsapp.net")
+    end
+
+    test "migrate_session returns zero work when the device list is unavailable" do
+      repo =
+        Repository.new(
+          adapter: FakeAdapter,
+          adapter_state: %{
+            "5511999887766.0" => %{open?: true, session: %{id: 0}, history: []}
+          }
+        )
+
+      assert {:ok, ^repo, %{migrated: 0, skipped: 0, total: 0}} =
+               Repository.migrate_session(repo, "5511999887766@s.whatsapp.net", "12345@lid")
     end
   end
 end

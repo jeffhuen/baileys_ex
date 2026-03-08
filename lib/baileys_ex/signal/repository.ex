@@ -9,6 +9,7 @@ defmodule BaileysEx.Signal.Repository do
 
   alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Curve
+  alias BaileysEx.Signal.LIDMappingStore
 
   @typedoc "Injected peer session bundle used to bootstrap an outgoing session."
   @type e2e_session :: %{
@@ -37,10 +38,24 @@ defmodule BaileysEx.Signal.Repository do
           | :no_session
           | term()
 
+  @type migration_operation :: %{
+          from: Address.t(),
+          to: Address.t(),
+          pn_user: String.t(),
+          lid_user: String.t(),
+          device_id: non_neg_integer()
+        }
+
+  @type migration_result :: %{
+          migrated: non_neg_integer(),
+          skipped: non_neg_integer(),
+          total: non_neg_integer()
+        }
+
   @type t :: %__MODULE__{
           adapter: module(),
           adapter_state: term(),
-          lid_mapping: term()
+          lid_mapping: LIDMappingStore.t()
         }
 
   defmodule Adapter do
@@ -66,19 +81,25 @@ defmodule BaileysEx.Signal.Repository do
     @callback delete_sessions(term(), [Address.t()]) ::
                 {:ok, term()} | {:error, term()}
 
+    @callback get_device_list(term(), String.t()) ::
+                {:ok, term(), [String.t()] | nil} | {:error, term()}
+
+    @callback migrate_sessions(term(), [Repository.migration_operation()]) ::
+                {:ok, term(), Repository.migration_result()} | {:error, term()}
+
     @spec session_key(Address.t()) :: String.t()
     def session_key(%Address{} = address), do: Address.to_string(address)
   end
 
   @enforce_keys [:adapter]
-  defstruct [:adapter, adapter_state: %{}, lid_mapping: nil]
+  defstruct [:adapter, adapter_state: %{}, lid_mapping: LIDMappingStore.new()]
 
   @spec new(keyword()) :: t()
   def new(opts) do
     %__MODULE__{
       adapter: Keyword.fetch!(opts, :adapter),
       adapter_state: Keyword.get(opts, :adapter_state, %{}),
-      lid_mapping: Keyword.get(opts, :lid_mapping)
+      lid_mapping: Keyword.get(opts, :lid_mapping, LIDMappingStore.new())
     }
   end
 
@@ -148,6 +169,57 @@ defmodule BaileysEx.Signal.Repository do
 
   def delete_session(%__MODULE__{}, _jids), do: {:error, :invalid_signal_address}
 
+  @spec store_lid_pn_mappings(t(), [LIDMappingStore.mapping()]) ::
+          {:ok, t()} | {:error, LIDMappingStore.error()}
+  def store_lid_pn_mappings(%__MODULE__{} = repository, mappings) do
+    with {:ok, lid_mapping} <-
+           LIDMappingStore.store_lid_pn_mappings(repository.lid_mapping, mappings) do
+      {:ok, %{repository | lid_mapping: lid_mapping}}
+    end
+  end
+
+  @spec get_lid_for_pn(t(), String.t()) :: {:ok, t(), String.t() | nil}
+  def get_lid_for_pn(%__MODULE__{} = repository, pn) do
+    with {:ok, lid_mapping, lid} <- LIDMappingStore.get_lid_for_pn(repository.lid_mapping, pn) do
+      {:ok, %{repository | lid_mapping: lid_mapping}, lid}
+    end
+  end
+
+  @spec get_pn_for_lid(t(), String.t()) :: {:ok, t(), String.t() | nil}
+  def get_pn_for_lid(%__MODULE__{} = repository, lid) do
+    with {:ok, lid_mapping, pn} <- LIDMappingStore.get_pn_for_lid(repository.lid_mapping, lid) do
+      {:ok, %{repository | lid_mapping: lid_mapping}, pn}
+    end
+  end
+
+  @spec migrate_session(t(), String.t(), String.t()) ::
+          {:ok, t(), migration_result()} | {:error, adapter_error()}
+  def migrate_session(%__MODULE__{} = repository, from_jid, to_jid)
+      when is_binary(from_jid) and is_binary(to_jid) do
+    with {:ok, user, lid_user, lid_server, source_device} <- normalize_migration(from_jid, to_jid),
+         {:ok, adapter_state, device_list} <-
+           repository.adapter.get_device_list(repository.adapter_state, user),
+         {:ok, operations} <-
+           build_migration_operations(user, lid_user, lid_server, device_list, source_device),
+         {:ok, adapter_state, result} <-
+           repository.adapter.migrate_sessions(adapter_state, operations) do
+      {:ok, %{repository | adapter_state: adapter_state}, result}
+    else
+      :unsupported_direction ->
+        {:ok, repository, %{migrated: 0, skipped: 0, total: 0}}
+
+      {:error, :invalid_signal_address} = error ->
+        error
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  def migrate_session(%__MODULE__{} = repository, _from_jid, _to_jid) do
+    {:ok, repository, %{migrated: 0, skipped: 0, total: 0}}
+  end
+
   @spec normalize_addresses([String.t()]) ::
           {:ok, [Address.t()]} | {:error, :invalid_signal_address}
   defp normalize_addresses(jids) do
@@ -197,4 +269,105 @@ defmodule BaileysEx.Signal.Repository do
   end
 
   defp normalize_session(_session), do: {:error, :invalid_session}
+
+  defp normalize_migration(from_jid, to_jid) do
+    case {parse_pn_source(from_jid), parse_lid_target(to_jid)} do
+      {{:ok, from}, {:ok, to}} ->
+        {:ok, from.user, to.user, to.server, from.device}
+
+      _ ->
+        :unsupported_direction
+    end
+  end
+
+  defp parse_pn_source(jid) do
+    case BaileysEx.Protocol.JID.parse(jid) do
+      %BaileysEx.JID{user: user, server: server, device: device}
+      when is_binary(user) and server in ["s.whatsapp.net", "hosted"] ->
+        {:ok, %{original: jid, user: user, device: device || 0}}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp parse_lid_target(jid) do
+    case BaileysEx.Protocol.JID.parse(jid) do
+      %BaileysEx.JID{user: user, server: server}
+      when is_binary(user) and server in ["lid", "hosted.lid"] ->
+        {:ok, %{original: jid, user: user, server: server}}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp build_migration_operations(_user, _lid_user, _lid_server, nil, _source_device) do
+    {:ok, []}
+  end
+
+  defp build_migration_operations(user, lid_user, lid_server, device_list, source_device) do
+    devices =
+      device_list
+      |> List.wrap()
+      |> append_source_device(source_device)
+      |> Enum.uniq()
+
+    operations =
+      Enum.reduce(devices, [], fn device, acc ->
+        case build_migration_operation(user, lid_user, lid_server, device) do
+          {:ok, operation} -> [operation | acc]
+          :skip -> acc
+        end
+      end)
+      |> Enum.reverse()
+
+    {:ok, operations}
+  end
+
+  defp append_source_device(devices, source_device) do
+    source_device = Integer.to_string(source_device)
+
+    if source_device in devices do
+      devices
+    else
+      devices ++ [source_device]
+    end
+  end
+
+  defp build_migration_operation(user, lid_user, lid_server, device) when is_binary(device) do
+    with {:ok, device_id} <- parse_device_id(device),
+         from_jid <- build_pn_device_jid(user, device_id),
+         to_jid <- build_lid_device_jid(lid_user, lid_server, device_id),
+         {:ok, from_address} <- Address.from_jid(from_jid),
+         {:ok, to_address} <- Address.from_jid(to_jid) do
+      {:ok,
+       %{
+         from: from_address,
+         to: to_address,
+         pn_user: user,
+         lid_user: lid_user,
+         device_id: device_id
+       }}
+    else
+      :error -> :skip
+      {:error, :invalid_signal_address} -> :skip
+    end
+  end
+
+  defp parse_device_id(device) do
+    case Integer.parse(device) do
+      {device_id, ""} when device_id >= 0 -> {:ok, device_id}
+      _ -> :error
+    end
+  end
+
+  defp build_pn_device_jid(user, 0), do: "#{user}@s.whatsapp.net"
+  defp build_pn_device_jid(user, 99), do: "#{user}:99@hosted"
+  defp build_pn_device_jid(user, device_id), do: "#{user}:#{device_id}@s.whatsapp.net"
+
+  defp build_lid_device_jid(lid_user, lid_server, 0), do: "#{lid_user}@#{lid_server}"
+
+  defp build_lid_device_jid(lid_user, lid_server, device_id),
+    do: "#{lid_user}:#{device_id}@#{lid_server}"
 end

@@ -91,6 +91,7 @@ defmodule BaileysEx.Feature.PhoneValidation do
     {:ok, response} = Connection.Socket.send_node_and_wait(conn, query)
     USync.parse_response(response, :contact)
     # Returns [%{exists: true, jid: "1234@s.whatsapp.net"}, ...]
+    # v7 note: this is PN/contact discovery, not a source of truth for LIDs
   end
 end
 ```

@@ -18,8 +18,9 @@ addressing, mapping, and persistence-friendly state transitions in Elixir.
 The approved split is:
 
 - Native helpers only where key-format compatibility or CPU cost justifies them.
-- Elixir for repository orchestration, JID/address translation, PN<->LID mapping,
-  session migration rules, and future store integration.
+- Elixir for repository orchestration, JID/address translation, PN<->LID
+  (Local Identifier) mapping, session migration rules, and future store
+  integration.
 - No broad native Signal surface until interoperability tests prove it is needed.
 
 Current implemented surface:
@@ -76,6 +77,8 @@ Scope:
 - implement Baileys-style PN<->LID mapping behavior
 - support reverse lookup and optional backfill hook
 - support PN->LID session migration without losing per-device separation
+- treat LID-first sessions as canonical; PN sessions are the migration path, not
+  the target model
 
 Completed:
 - `BaileysEx.Signal.LIDMappingStore`
@@ -89,6 +92,8 @@ Completed:
   - device list is required before bulk migration
   - the source device is included if the stored device list is stale
   - hosted companion sessions preserve `@hosted.lid`
+  - reverse PN lookup stays local-store-driven; it is not treated as a server
+    discovery API
 
 Explicit non-goal for 5.3:
 - cross-call inflight lookup coalescing is not being faked inside the immutable

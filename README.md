@@ -5,11 +5,11 @@ In-progress Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) 
 - **Foundation phase** is complete
 - **Crypto** is complete for the current Phase 2 scope
 - **Protocol layer and Noise transport foundations** are implemented in-tree for the current scope
-- **Signal Phase 5 is in progress** for the repository/address boundary and narrow verification helpers
+- **Signal Phase 5 is in progress** for the repository/address boundary, Local Identifier (LID) mapping, session migration, and narrow verification helpers
 - **Connection, auth, messaging, media, and feature layers** are still planned work
 - Targets Elixir 1.19+ / OTP 28
 
-> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, and Phase 5 has started with the Signal curve/repository boundary. Broad WAProto message/auth code generation is intentionally deferred to the later phases that consume it. See `dev/implementation_plan/PROGRESS.md`.
+> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, and Phase 5 now includes the Signal curve/repository boundary plus LID mapping and PN->LID session migration. Broad WAProto message/auth code generation is intentionally deferred to the later phases that consume it. See `dev/implementation_plan/PROGRESS.md`.
 
 ## Target Architecture
 
@@ -80,6 +80,12 @@ mix test
 ```
 
 Reference source in `dev/reference/Baileys-master/` (not tracked in git).
+
+When the docs and reference tree disagree, prefer current Baileys v7 semantics:
+- LID means `Local Identifier`
+- new Signal/session flows are LID-first
+- `on_whatsapp` is not the source of truth for LIDs
+- successful delivery ACK parity must match Baileys/WhatsApp Web exactly
 
 ## License
 

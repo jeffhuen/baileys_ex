@@ -206,7 +206,7 @@ remains an open hardening task until verified with dedicated native tooling.
 ### Acceptance Criteria
 
 - [ ] Repository behavior matches Baileys `src/Signal/libsignal.ts` for 1:1 flows
-- [ ] PN sessions migrate to LID sessions without losing device separation
+- [x] PN sessions migrate to LID sessions without losing device separation
 - [ ] TOFU identity storage detects key changes and invalidates stale sessions
 - [ ] Sender-key encrypt/decrypt and distribution interoperate with Baileys
 - [ ] Signal store contract covers sessions, pre-keys, sender-key-memory, LID mappings, device lists, tc tokens, and identity keys

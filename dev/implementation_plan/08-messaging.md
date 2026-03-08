@@ -690,9 +690,14 @@ and `Utils/process-message.ts`:
 - Decode envelope addressing context: `addressing_mode`, `participant_lid`,
   `participant_pn`, recipient alternates, newsletter `server_id`, and
   `remote_jid_alt` / `participant_alt` fields on the produced message key.
+- If `addressing_mode` is absent, fall back the same way Baileys v7 does by
+  inferring from the sender/server shape instead of discarding the alternate
+  addressing information.
 - Resolve the actual decryption JID through the LID mapping store before session
   decryption. When the envelope reveals a new PN<->LID pair, persist it and
   opportunistically migrate sessions.
+- Treat the LID side as canonical when both PN and LID are available; PN is the
+  compatibility/migration path.
 - Keep WhatsApp NACK reason codes near the decode/decrypt path so parse and
   decryption failures map to the correct ack error.
 - Handle `ProtocolMessage` side effects in the core receiver path:
@@ -740,6 +745,10 @@ defmodule BaileysEx.Message.Retry do
   @recent_message_cache_ttl_ms 300_000     # 5 minutes
   @recent_message_cache_size 512
   @mac_error_codes [4, 7]
+
+  # v7 tightened retry/session recreation loops to recover missing sessions,
+  # pre-key failures, and history gaps without spinning forever. Mirror the
+  # manager semantics, not older ad-hoc retry snippets.
 
   # Gate recent-message replay behind Connection.Config.enable_recent_message_cache
   # to mirror Baileys' enableRecentMessageCache behavior.

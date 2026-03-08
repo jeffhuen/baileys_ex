@@ -8,7 +8,10 @@ Every fresh agent entering this project **must** orient in this order before tou
 2. **`dev/implementation_plan/CLAUDE.md`** (this file) — workflow rules, delivery gates, dispatch modes.
 3. **`dev/implementation_plan/PROGRESS.md`** — canonical task-level tracker. Find the first unchecked task. That is your starting point.
 4. **The active phase file** — e.g., `01-foundation.md`. Read the full phase file, then focus on the active task spec.
-5. **Invoke the relevant thinking skill(s)** before writing any `.ex`/`.exs` file:
+5. **Read the Antipatterns docs** to avoid repeating historical mistakes:
+   - `dev/implementation_plan/ANTIPATTERNS.md` — architectural and procedural failure modes to avoid.
+   - `dev/implementation_plan/elixir-antipatterns.md` — Elixir-specific code, design, and OTP failure modes.
+6. **Invoke the relevant thinking skill(s)** before writing any `.ex`/`.exs` file:
    - `/elixir-thinking` — always, for any Elixir code
    - `/otp-thinking` — for GenServer, Supervisor, Task, ETS, `:gen_statem`
    - `/rust-best-practices` — for Rust NIF code
@@ -109,6 +112,7 @@ Every task must pass these gates before committing.
 - All tests pass. Assertions must test actual values, not just shapes (`{:ok, _}` is not acceptable when the value is knowable).
 
 **Gate 4 — Static analysis:** `mix credo --all`
+- Code and architecture must not violate the rules documented in `ANTIPATTERNS.md` and `elixir-antipatterns.md`.
 
 **Gate 5 — Type checking:** `mix dialyzer`
 

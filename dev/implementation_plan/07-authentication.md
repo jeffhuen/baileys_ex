@@ -39,13 +39,20 @@ defmodule BaileysEx.Auth.State do
     adv_secret_key: binary(),
     next_pre_key_id: non_neg_integer(),
     first_unuploaded_pre_key_id: non_neg_integer(),
-    server_has_pre_keys: boolean(),
     account: map() | nil,
     me: JID.t() | nil,
     signal_identities: [map()],
     platform: String.t() | nil,
     last_account_sync_timestamp: integer() | nil,
-    my_app_state_key_id: String.t() | nil
+    processed_history_messages: [map()],
+    account_sync_counter: non_neg_integer(),
+    account_settings: %{unarchive_chats: boolean(), default_disappearing_mode: map() | nil},
+    registered: boolean(),
+    pairing_code: String.t() | nil,
+    last_prop_hash: String.t() | nil,
+    routing_info: binary() | nil,
+    my_app_state_key_id: String.t() | nil,
+    additional_data: term() | nil
   }
 
   defstruct [...]
@@ -58,13 +65,20 @@ defmodule BaileysEx.Auth.State do
 
     %__MODULE__{
       noise_key: noise_key,
+      pairing_ephemeral_key: BaileysEx.Crypto.generate_key_pair(),
       signed_identity_key: identity_key,
       signed_pre_key: %{key_pair: signed_pre_key, key_id: 1, signature: signed_pre_key.signature},
       registration_id: registration_id,
       adv_secret_key: BaileysEx.Crypto.random_bytes(32),
+      processed_history_messages: [],
       next_pre_key_id: 1,
       first_unuploaded_pre_key_id: 1,
-      server_has_pre_keys: false
+      account_sync_counter: 0,
+      account_settings: %{unarchive_chats: false, default_disappearing_mode: nil},
+      registered: false,
+      pairing_code: nil,
+      last_prop_hash: nil,
+      routing_info: nil
     }
   end
 end
@@ -93,8 +107,10 @@ defmodule BaileysEx.Auth.FilePersistence do
   @behaviour BaileysEx.Auth.Persistence
 
   # Stores each key type in a separate file within a directory
-  # Uses :erlang.term_to_binary / :erlang.binary_to_term for serialization
-  # Atomic writes via write-to-temp-then-rename pattern
+  # Uses JSON with explicit binary encoding/decoding (Baileys BufferJSON-style)
+  # so credentials remain inspectable on disk.
+  # File access is guarded by a per-path mutex because async reads/writes can race.
+  # Atomic writes still use write-to-temp-then-rename once data is encoded.
 end
 ```
 
@@ -178,8 +194,19 @@ defmodule BaileysEx.Auth.KeyStore do
 
   use GenServer
 
-  @key_types [:session, :pre_key, :signed_pre_key, :sender_key, :sender_key_memory,
-              :app_state_sync_key, :app_state_sync_version, :tctoken]
+  @key_types [
+    :session,
+    :pre_key,
+    :signed_pre_key,
+    :sender_key,
+    :sender_key_memory,
+    :app_state_sync_key,
+    :app_state_sync_version,
+    :lid_mapping,
+    :device_list,
+    :identity_key,
+    :tctoken
+  ]
 
   defstruct [
     :persistence_module,  # User's Auth.Persistence implementation
@@ -215,6 +242,9 @@ defmodule BaileysEx.Auth.KeyStore do
   #
   # Retry logic: on "database is locked" errors, retry with exponential
   # backoff (matching Baileys' commitWithRetry behavior).
+  #
+  # Pre-key deletions get specialized validation so we do not enqueue deletes
+  # for keys that never existed, matching Baileys' PreKeyManager safeguards.
 end
 ```
 
@@ -254,9 +284,14 @@ defmodule BaileysEx.Auth.ConnectionValidator do
   @doc "Process pair-success response: verify HMAC + ADV signatures, create reply"
   def configure_successful_pairing(stanza, creds) do
     # Parse pair-success binary node
+    # Validate HMAC using adv_secret_key
     # Verify account signature (ADV)
     # Verify device signature
+    # Append new signal identity (identifier + account signature key)
+    # Preserve returned platform and LID/JID identity data
     # Construct reply node
+    # encode_signed_device_identity/2 omits the account signature key unless
+    # the reply specifically needs it
     # Return updated credentials
   end
 end
@@ -306,6 +341,7 @@ end
 
 - [ ] New auth state generates valid crypto keys
 - [ ] File persistence saves and loads credentials correctly
+- [ ] File persistence serializes binaries safely and guards per-file writes with a mutex
 - [ ] QR code data format matches WhatsApp expectations
 - [ ] Phone pairing key derivation matches Baileys output
 - [ ] Pre-key upload constructs correct binary nodes
@@ -318,6 +354,7 @@ end
 - [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
 - [ ] Transaction commits are atomic (Ecto.Multi for DB, sequential for files)
 - [ ] Read-through cache prevents redundant persistence lookups during sync
+- [ ] Key store supports lid-mapping, device-list, identity-key, sender-key-memory, and tctoken datasets
 
 ## Files Created/Modified
 

@@ -239,24 +239,53 @@ defmodule BaileysEx.Connection.Socket do
 
   # --- Dirty Bit Handling (GAP-24) ---
   # Server sends CB:ib,,dirty notifications to trigger state refresh.
-  # Types: "groups", "account_sync"
+  # Types: "account_sync", "groups", "communities"
 
   defp handle_dirty_notification(%BinaryNode{} = node, conn) do
-    dirty_type = get_child_attr(node, "dirty", "type")
+    dirty = BinaryNode.child(node, "dirty")
+    dirty_type = dirty.attrs["type"]
+    timestamp = dirty.attrs["timestamp"]
+
     case dirty_type do
-      "groups" -> Feature.Group.fetch_all_participating(conn)
-      "account_sync" -> clean_dirty_bits(conn, "account_sync")
+      "account_sync" ->
+        if last_sync = Store.get_cred(conn, :last_account_sync_timestamp) do
+          clean_dirty_bits(conn, "account_sync", last_sync)
+        end
+
+        if timestamp do
+          Store.update_creds(conn, %{last_account_sync_timestamp: String.to_integer(timestamp)})
+        end
+
+      "groups" ->
+        dispatch_dirty_refresh(conn, :groups)
+        clean_dirty_bits(conn, "groups")
+
+      "communities" ->
+        dispatch_dirty_refresh(conn, :communities)
+        # WhatsApp reuses the "groups" dirty bucket when acknowledging community refresh.
+        clean_dirty_bits(conn, "groups")
+
       _ -> :ok
     end
   end
 
-  defp clean_dirty_bits(conn, type) do
+  defp clean_dirty_bits(conn, type, from_timestamp \\ nil) do
+    clean_attrs =
+      %{"type" => type}
+      |> maybe_put("timestamp", from_timestamp && to_string(from_timestamp))
+
     node = %BinaryNode{
       tag: "iq",
       attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "urn:xmpp:whatsapp:dirty"},
-      content: [%BinaryNode{tag: "clean", attrs: %{"type" => type}}]
+      content: [%BinaryNode{tag: "clean", attrs: clean_attrs}]
     }
     send_node_internal(conn, node)
+  end
+
+  defp dispatch_dirty_refresh(conn, type) do
+    # Hand off to the higher-level feature layer that owns the relevant refetch:
+    # :groups -> Phase 10 group metadata refresh
+    # :communities -> Phase 11 community participating refresh
   end
 
   # --- Unified Session (GAP-33) ---
@@ -297,9 +326,9 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp fetch_server_props(conn) do
-    # IQ: xmlns='w', type='get', content: <props protocol='2'/>
-    # Response contains server feature flags
-    # Cache lastPropHash on creds for delta updates
+    # IQ: xmlns='w', type='get', content: <props protocol='2' hash='lastPropHash'/>
+    # Response contains server feature flags under <prop/> children.
+    # When the server returns a new hash, persist it to creds and emit :creds_update.
   end
 
   # --- WAM Analytics (GAP-31) ---
@@ -326,6 +355,26 @@ defmodule BaileysEx.Connection.Socket do
   end
 end
 ```
+
+### 6.2a Initial sync choreography (GAP-05, GAP-34, GAP-48)
+
+Connection-open behavior must follow the Baileys `chats.ts` sync choreography,
+not just "connect then flush events":
+
+- On `connection.update(received_pending_notifications: true)`, transition
+  `:connecting -> :awaiting_initial_sync` and enable event buffering.
+- If history sync is disabled by config, transition directly to `:online` and
+  flush on the next turn of the mailbox.
+- If history sync is enabled, start a 20-second timeout. The first processable
+  history-sync message transitions the connection to `:syncing`.
+- While `:syncing`, run app-state resync before flushing buffered events. If an
+  `app_state_sync_key_share` arrives during this phase, resume the pending app
+  state sync immediately.
+- When app-state sync completes, transition to `:online`, flush buffered events,
+  and increment `account_sync_counter` in stored creds.
+
+On the BEAM, keep this as part of the socket state machine plus the event buffer;
+do not spawn detached ad-hoc tasks for the transition logic itself.
 
 ### 6.3 Frame handling
 
@@ -402,30 +451,38 @@ defmodule BaileysEx.Connection.EventEmitter do
     :creds_update,               # Auth credential changes (MUST persist immediately)
 
     # Messages
+    :messaging_history_set,      # %{chats, contacts, messages, sync_type, progress, is_latest, peer_data_request_session_id}
     :messages_upsert,            # %{messages: [msg], type: :notify | :append}
     :messages_update,            # [%{key: key, update: changes}]
     :messages_delete,            # %{keys: [key]} or %{jid: jid, all: true}
+    :messages_reaction,          # [%{key: target_key, reaction: reaction_msg}]
     :messages_media_update,      # [%{key: key, media: media_data}]
     :message_receipt_update,     # [%{key: key, receipt: %{user_jid: jid, read_timestamp: ts}}]
 
     # Contacts
     :contacts_upsert,            # [%{id: jid, ...}]
     :contacts_update,            # [%{id: jid, img_url: :changed | :removed, ...}]
+    :lid_mapping_update,         # %{lid: jid, pn: jid}
 
     # Chats
     :chats_upsert,               # [%{id: jid, ...}]
     :chats_update,               # [%{id: jid, ...changes}]
     :chats_delete,               # [jid]
+    :chats_lock,                 # %{id: jid, locked: boolean}
 
     # Groups
     :groups_upsert,              # [GroupMetadata]
     :groups_update,              # [%{id: jid, ...changes}]
+    :group_participants_update,  # %{id: jid, author: jid, participants: [...], action: atom}
+    :group_join_request,         # %{id: jid, author: jid, participant: jid, participant_pn: jid, action: atom, method: atom}
+    :group_member_tag_update,    # %{group_id: jid, participant: jid, label: binary, message_timestamp: integer}
 
     # Presence
     :presence_update,            # %{id: jid, presences: %{participant_jid => presence_data}}
 
     # Privacy
     :blocklist_update,           # %{blocklist: [jid], type: :add | :remove}
+    :settings_update,            # %{setting: atom, value: term}
 
     # Labels
     :labels_edit,                # label changes
@@ -442,12 +499,14 @@ defmodule BaileysEx.Connection.EventEmitter do
   ]
 
   # --- Buffering ---
-  # 12 bufferable event types (same as Baileys BUFFERABLE_EVENT)
+  # 12 bufferable event types (same intent as Baileys BUFFERABLE_EVENT)
   @bufferable_events [
-    :messages_upsert, :messages_update, :messages_delete, :messages_media_update,
-    :message_receipt_update, :contacts_upsert, :contacts_update,
+    :messaging_history_set,
     :chats_upsert, :chats_update, :chats_delete,
-    :groups_upsert, :groups_update
+    :contacts_upsert, :contacts_update,
+    :messages_upsert, :messages_update, :messages_delete, :messages_reaction,
+    :message_receipt_update,
+    :groups_update
   ]
 
   @buffer_timeout_ms 30_000  # Auto-flush after 30 seconds

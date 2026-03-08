@@ -1,21 +1,110 @@
-# Phase 5: Signal Protocol (redesign around libsignal-protocol NIF)
+# Phase 5: Signal Protocol (redesign around a libsignal-compatible boundary)
 
 > **Status note:** This phase document is not source-of-truth yet. The detailed task
-> breakdown below predates the repo's current "wrap, don't reimplement" direction and
-> should be treated as historical research, not an approved implementation recipe.
-> Before Phase 5 starts, rewrite this phase around a `libsignal-protocol` (or
-> equivalent) Rustler wrapper that matches Baileys' `src/Signal/libsignal.ts`
-> behavior and also exposes the verification primitive Phase 4 needs for Noise
-> certificate validation.
+> breakdown below predates the repo's current direction and should be treated as
+> historical research, not an approved implementation recipe. Before Phase 5
+> starts, finalize it around a libsignal-compatible behavior surface that matches
+> Baileys' `src/Signal/libsignal.ts`, `src/Signal/lid-mapping.ts`, and
+> `src/Utils/signal.ts`. Do not assume a broad `libsignal-protocol` NIF up front;
+> prefer the smallest native boundary that is actually required for correctness,
+> interoperability, and performance.
 
-**Goal:** Provide a Signal layer backed by a battle-tested native implementation,
-keeping persistence, orchestration, and BEAM concurrency in Elixir.
+**Goal:** Provide a Signal layer that matches Baileys' behavior while keeping
+persistence, orchestration, and BEAM concurrency in Elixir and avoiding an
+oversized native boundary.
 
 **Depends on:** Phase 1 (Foundation), Phase 2 (Crypto)
 **Parallel with:** Phase 4 (Noise NIF)
 **Blocks:** Phase 7 (Auth), Phase 8 (Messaging)
 
 ---
+
+## Approved Scope (authoritative)
+
+This phase should be implemented around the Baileys reference files:
+
+- `dev/reference/Baileys-master/src/Signal/libsignal.ts`
+- `dev/reference/Baileys-master/src/Signal/lid-mapping.ts`
+- `dev/reference/Baileys-master/src/Utils/signal.ts`
+
+The approved architecture is:
+
+- Behavioral contract:
+  - match the repository capabilities Baileys actually consumes from its
+    `libsignal` package and surrounding TypeScript wrapper
+  - verify interoperability against Baileys-compatible ciphertext/session data,
+    not just self-generated roundtrips
+- Native layer:
+  - keep the boundary as small as possible
+  - use native code only where OTP `:crypto` and carefully-written Elixir are
+    insufficient or would create unnecessary copying / CPU cost
+  - expose WhatsApp-specific verification helpers only when Phase 4 and pairing
+    flows actually need them
+- Elixir layer:
+  - define the repository/store boundary and orchestration logic
+  - own PN<->LID mapping, session migration, cache policy, sender-key/session
+    coordination, and BEAM concurrency
+  - do not hand-roll cryptographic primitives casually; if any protocol logic is
+    implemented in Elixir, justify it against the Baileys reference and validate
+    it with cross-implementation tests
+
+### Required public surface for this phase
+
+The Elixir-facing Signal repository should mirror the capabilities Baileys
+actually consumes:
+
+- `decrypt_message/1`
+- `encrypt_message/1`
+- `encrypt_group_message/1`
+- `process_sender_key_distribution_message/1`
+- `inject_e2e_session/1`
+- `validate_session/1`
+- `delete_session/1`
+- `migrate_session/2`
+- `jid_to_signal_protocol_address/1`
+- `lid_mapping` helper access
+
+### Required supporting components
+
+- `BaileysEx.Signal.Repository`
+  - Elixir-facing repository that provides the Baileys-compatible behavior
+    surface, regardless of how much of the inner crypto stays native
+- `BaileysEx.Signal.LIDMappingStore`
+  - PN<->LID storage, reverse lookup, coalesced inflight lookups, optional USync
+    backfill, and session-migration trigger points
+- `BaileysEx.Signal.Address`
+  - JID -> Signal protocol address translation, including hosted and device-99
+    rules from the reference implementation
+- `BaileysEx.Signal.Identity`
+  - TOFU identity storage and identity-change detection semantics
+
+### Storage contract required by Phases 7 and 8
+
+The native/repository layer must operate on these logical key families:
+
+- `session`
+- `pre-key`
+- `sender-key`
+- `sender-key-memory`
+- `app-state-sync-key`
+- `app-state-sync-version`
+- `lid-mapping`
+- `device-list`
+- `tctoken`
+- `identity-key`
+
+### Acceptance requirements for the rewritten phase
+
+- Repository behavior matches Baileys `libsignal.ts` for 1:1 and group flows
+- PN-addressed sessions can migrate to LID-addressed sessions without losing
+  per-device separation
+- TOFU identity storage detects identity-key changes and invalidates sessions
+- Group sender-key encrypt/decrypt and distribution interoperate with Baileys
+- Cross-validation is done against Baileys-compatible ciphertext/session data,
+  not just self-generated roundtrips
+- Phase 4 and Phase 7 consumers can call the exposed verification helpers
+  without duplicating Signal key-format logic
+- The chosen native boundary is justified and no broader than necessary
 
 ## Historical Draft Architecture
 

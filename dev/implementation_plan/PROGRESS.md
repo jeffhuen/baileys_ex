@@ -189,47 +189,43 @@ remains an open hardening task until verified with dedicated native tooling.
 
 ---
 
-## Phase 5: Signal Protocol (libsignal NIF redesign)
+## Phase 5: Signal Protocol (libsignal-compatible boundary)
 
 **Status:** NOT STARTED · **Depends on:** Phases 1, 2 · **Blocks:** 7, 8
 
 ### Tasks
 
-- [ ] 5.1 XEdDSA NIF (~80 lines Rust, `curve25519-dalek`)
-- [ ] 5.2 Signal crypto utilities (KDF_CK, KDF_RK, etc.)
-- [ ] 5.3 X3DH key agreement
-- [ ] 5.4 Double Ratchet algorithm
-- [ ] 5.5 Session management
-- [ ] 5.6 Sender Keys (Group messaging)
-- [ ] 5.7 Signal Store behaviour
-- [ ] 5.8 Tests
+- [ ] 5.1 Minimal native Signal boundary + verification helper boundary
+- [ ] 5.2 Signal repository API (encrypt/decrypt/session operations)
+- [ ] 5.3 LID mapping store + session migration
+- [ ] 5.4 Sender-key group crypto + distribution processing
+- [ ] 5.5 Signal address / identity handling (TOFU + invalidation)
+- [ ] 5.6 Store contract for sessions, pre-keys, sender-keys, mappings, identities
+- [ ] 5.7 Cross-validation tests against Baileys-compatible data
 
 ### Acceptance Criteria
 
-- [ ] X3DH key agreement matches Signal spec test vectors
-- [ ] Double Ratchet encrypt/decrypt roundtrip
-- [ ] Session creation and deletion works
-- [ ] Sender Keys for group messages
-- [ ] Session state persisted correctly
-- [ ] Cross-validation with Baileys encrypted messages
+- [ ] Repository behavior matches Baileys `src/Signal/libsignal.ts` for 1:1 flows
+- [ ] PN sessions migrate to LID sessions without losing device separation
+- [ ] TOFU identity storage detects key changes and invalidates stale sessions
+- [ ] Sender-key encrypt/decrypt and distribution interoperate with Baileys
+- [ ] Signal store contract covers sessions, pre-keys, sender-key-memory, LID mappings, device lists, tc tokens, and identity keys
+- [ ] Cross-validation uses Baileys-compatible ciphertext/session data
+- [ ] Native boundary is no broader than necessary for correctness, interop, and performance
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `native/baileys_nif/src/xeddsa.rs` | ⬜ |
-| `lib/baileys_ex/signal/crypto.ex` | ⬜ |
-| `lib/baileys_ex/signal/x3dh.ex` | ⬜ |
-| `lib/baileys_ex/signal/double_ratchet.ex` | ⬜ |
-| `lib/baileys_ex/signal/session.ex` | ⬜ |
-| `lib/baileys_ex/signal/session_cipher.ex` | ⬜ |
-| `lib/baileys_ex/signal/session_builder.ex` | ⬜ |
+| `native/baileys_nif/src/signal.rs` | ⬜ |
+| `lib/baileys_ex/signal/repository.ex` | ⬜ |
+| `lib/baileys_ex/signal/lid_mapping_store.ex` | ⬜ |
+| `lib/baileys_ex/signal/address.ex` | ⬜ |
+| `lib/baileys_ex/signal/identity.ex` | ⬜ |
+| `lib/baileys_ex/signal/store.ex` | ⬜ |
+| `lib/baileys_ex/signal/prekey.ex` | ⬜ |
 | `lib/baileys_ex/signal/group_cipher.ex` | ⬜ |
 | `lib/baileys_ex/signal/group_session.ex` | ⬜ |
-| `lib/baileys_ex/signal/sender_key_message.ex` | ⬜ |
-| `lib/baileys_ex/signal/prekey.ex` | ⬜ |
-| `lib/baileys_ex/signal/key_helper.ex` | ⬜ |
-| `lib/baileys_ex/signal/store.ex` | ⬜ |
 | `lib/baileys_ex/signal/device.ex` | ⬜ |
 | `test/baileys_ex/signal/*_test.exs` | ⬜ |
 
@@ -262,12 +258,14 @@ remains an open hardening task until verified with dedicated native tooling.
 - [ ] Every received node with "id" attr gets automatic ACK (GAP-03)
 - [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
 - [ ] EventEmitter supports all 25+ event types (GAP-07)
+- [ ] EventEmitter covers Utils-driven events: messaging_history_set, messages_reaction, group_participants_update, group_join_request, group_member_tag_update, lid_mapping_update, settings_update, chats_lock
 - [ ] Event buffering accumulates events, flushes on demand (GAP-22)
 - [ ] Buffer auto-flushes after 30 seconds (GAP-22)
 - [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
+- [ ] `account_sync` dirty handling persists `lastAccountSyncTimestamp`; group/community dirty refresh reuses correct clean bucket (GAP-24)
 - [ ] Platform type correctly mapped for device registration (GAP-27)
 - [ ] Unified session sent on connection open (GAP-33)
-- [ ] Init queries (props, blocklist, privacy) fetched in parallel (GAP-34)
+- [ ] Init queries (props, blocklist, privacy) fetched in parallel and cache `lastPropHash` deltas (GAP-34)
 - [ ] Conditional chat updates held during sync (GAP-48)
 - [ ] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
 
@@ -307,6 +305,7 @@ remains an open hardening task until verified with dedicated native tooling.
 
 - [ ] New auth state generates valid crypto keys
 - [ ] File persistence saves and loads credentials correctly
+- [ ] File persistence serializes binaries safely and guards per-file writes with a mutex
 - [ ] QR code data format matches WhatsApp expectations
 - [ ] Phone pairing key derivation matches Baileys output
 - [ ] Pre-key upload constructs correct binary nodes
@@ -319,6 +318,7 @@ remains an open hardening task until verified with dedicated native tooling.
 - [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
 - [ ] Transaction commits are atomic (GAP-44)
 - [ ] Read-through cache prevents redundant persistence lookups during sync
+- [ ] Key store supports lid-mapping, device-list, identity-key, sender-key-memory, and tctoken datasets
 
 ### Files
 
@@ -347,8 +347,10 @@ remains an open hardening task until verified with dedicated native tooling.
 - [ ] 8.1 Message builder (ALL message types)
 - [ ] 8.2 Message sender (build → encrypt → encode → send)
 - [ ] 8.3 Message receiver (decode → decrypt → parse → emit)
+- [ ] 8.3a Offline node processor (FIFO batching of offline nodes)
 - [ ] 8.4 Receipt handling (delivered, read, played)
 - [ ] 8.5 Retry logic (14 reason codes, MAC error cooldown)
+- [ ] 8.5a Peer Data Operations (history sync on-demand, placeholder resend transport)
 - [ ] 8.6 Device discovery (multi-device)
 - [ ] 8.7 Bad ACK handling (GAP-40)
 - [ ] 8.7a Verified Name Certificates (GAP-35)
@@ -391,12 +393,18 @@ remains an open hardening task until verified with dedicated native tooling.
 - [ ] Participant hash V2 computed and sent as phash attribute
 - [ ] Retry manager handles 14 reason codes
 - [ ] MAC errors trigger immediate session recreation (1-hour cooldown)
+- [ ] Recent-message cache and scheduled phone requests match MessageRetryManager semantics when enabled
 - [ ] Identity change notifications trigger session refresh
 - [ ] Placeholder resend requests via PDO with dedup
+- [ ] Peer Data Operation requests sent to self with peer message attributes
+- [ ] ProtocolMessage side effects cover history sync, app-state key share, PDO responses, label-change, edit/revoke, and LID migration mapping sync
+- [ ] Decode path preserves alt addressing fields and uses LID mapping for decryption routing
 - [ ] Received messages normalized
+- [ ] Received event responses decrypt and update the source event message when the message secret is available
 - [ ] Reporting tokens attached to applicable types (GAP-32)
 - [ ] Bad ACK errors emit messages.update with ERROR status (GAP-40)
 - [ ] History sync extracts PN-LID mappings with fallback (GAP-45)
+- [ ] Offline node processor drains FIFO batches of 10 without long scheduler monopolization
 
 ### Files
 
@@ -406,8 +414,10 @@ remains an open hardening task until verified with dedicated native tooling.
 | `lib/baileys_ex/message/parser.ex` | ⬜ |
 | `lib/baileys_ex/message/sender.ex` | ⬜ |
 | `lib/baileys_ex/message/receiver.ex` | ⬜ |
+| `lib/baileys_ex/message/decode.ex` | ⬜ |
 | `lib/baileys_ex/message/receipt.ex` | ⬜ |
 | `lib/baileys_ex/message/retry.ex` | ⬜ |
+| `lib/baileys_ex/message/peer_data.ex` | ⬜ |
 | `lib/baileys_ex/message/notification_handler.ex` | ⬜ |
 | `lib/baileys_ex/message/history_sync.ex` | ⬜ |
 | `lib/baileys_ex/message/identity_change_handler.ex` | ⬜ |
@@ -417,7 +427,9 @@ remains an open hardening task until verified with dedicated native tooling.
 | `test/baileys_ex/message/parser_test.exs` | ⬜ |
 | `test/baileys_ex/message/sender_test.exs` | ⬜ |
 | `test/baileys_ex/message/receiver_test.exs` | ⬜ |
+| `test/baileys_ex/message/decode_test.exs` | ⬜ |
 | `test/baileys_ex/message/receipt_test.exs` | ⬜ |
+| `test/baileys_ex/message/peer_data_test.exs` | ⬜ |
 | `test/baileys_ex/message/notification_handler_test.exs` | ⬜ |
 | `test/baileys_ex/message/history_sync_test.exs` | ⬜ |
 
@@ -503,6 +515,7 @@ remains an open hardening task until verified with dedicated native tooling.
 - [ ] Privacy: block list fetch/block/unblock
 - [ ] App state sync initial fetch works
 - [ ] LTHash verification matches Baileys
+- [ ] Sync actions emit contacts, LID mappings, labels, settings, and chat-lock updates correctly
 - [ ] Profile: update/remove picture constructs correct IQ
 - [ ] Profile: picture URL query and response parsing
 - [ ] Profile: update name via app state sync
@@ -522,6 +535,7 @@ remains an open hardening task until verified with dedicated native tooling.
 - [ ] Privacy token notifications stored correctly (GAP-23)
 - [ ] Bot directory fetched via IQ query (GAP-37)
 - [ ] Group member label update constructs correct protocol message (GAP-39)
+- [ ] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`
 
 ### Files
 
@@ -554,25 +568,26 @@ remains an open hardening task until verified with dedicated native tooling.
 
 ### Tasks
 
-- [ ] 11.1 Business profiles (profile, cover, catalog, products, orders)
-- [ ] 11.2 Newsletters (19 functions, WMex transport)
+- [ ] 11.1 Business operations (profile update, cover, catalog, products, orders)
+- [ ] 11.2 Newsletters (19 functions, mixed WMex/IQ/message transport)
 - [ ] 11.3 Communities (23 functions, subgroup linking)
 - [ ] 11.4 Call handling (offer/reject, call links — GAP-36)
 - [ ] 11.5 Tests
 
 ### Acceptance Criteria
 
-- [ ] Newsletter: all 19 functions construct correct WMex/IQ nodes
+- [ ] Newsletter: all 19 functions construct correct WMex/IQ/message nodes
 - [ ] Community: all 23 functions construct correct IQ nodes
 - [ ] Community: subgroup linking/unlinking works
 - [ ] Community: fetch_linked_groups returns correct structure
 - [ ] Business: profile update with hours/website arrays
 - [ ] Business: cover photo upload via media upload pipeline
 - [ ] Business: product CRUD operations
+- [ ] Business: order-details query uses the `fb:thrift_iq` namespace from Baileys
 - [ ] Call: reject constructs correct call node
 - [ ] Call events emitted correctly
 - [ ] All node formats match Baileys reference
-- [ ] Call link creation returns token for audio/video (GAP-36)
+- [ ] Call link creation uses `call/link_create` and returns token for audio/video (GAP-36)
 
 ### Files
 

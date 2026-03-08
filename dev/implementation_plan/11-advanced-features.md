@@ -1,6 +1,6 @@
 # Phase 11: Advanced Features
 
-**Goal:** Business profiles, newsletters, communities, call handling.
+**Goal:** Business operations, newsletters, communities, call handling.
 
 **Depends on:** Phase 10 (Features)
 **Blocks:** Phase 12 (Polish)
@@ -9,15 +9,17 @@
 
 ## Tasks
 
-### 11.1 Business profiles
+### 11.1 Business operations
 
 File: `lib/baileys_ex/feature/business.ex`
 
 ```elixir
 defmodule BaileysEx.Feature.Business do
-  # --- Profile ---
-  def get_profile(conn, jid), do: ...
-  def update_profile(conn, profile_data), do: ...
+  # `get_business_profile/2` lives in Phase 10 because Baileys exposes it from
+  # chats.ts, not business.ts.
+
+  # --- Profile update ---
+  def update_business_profile(conn, profile_data), do: ...
   # profile_data: %{address, email, description, websites: [], hours: %{timezone, days: [%{day, mode, open_time, close_time}]}}
 
   # --- Cover Photo ---
@@ -44,9 +46,14 @@ Reference: `dev/reference/Baileys-master/src/Socket/business.ts`
 
 File: `lib/baileys_ex/feature/newsletter.ex`
 
-Newsletter operations use a "WMex" (WhatsApp MEX) query format that is different
-from standard IQ queries. WMex queries are JSON-based and sent via a specific
-binary node structure rather than the typical XML-like IQ format.
+Newsletter operations use mixed transports in the Baileys reference:
+
+- Most metadata/update/admin calls use WMex (`src/Socket/mex.ts`)
+- `fetch_messages/4` and `subscribe_updates/2` use `xmlns: "newsletter"` IQ queries
+- `react_message/4` uses a direct `message` stanza with `type="reaction"`
+
+The Elixir plan should keep one public feature module, but the wire format must
+match the correct transport for each operation.
 
 ```elixir
 defmodule BaileysEx.Feature.Newsletter do
@@ -105,11 +112,15 @@ defmodule BaileysEx.Feature.Community do
   def link_group(conn, group_jid, parent_community_jid), do: ...
   def unlink_group(conn, group_jid, parent_community_jid), do: ...
   def fetch_linked_groups(conn, community_jid), do: ...
+  # Must handle both a community JID and a subgroup JID, matching Baileys' auto-detection
 
   # --- Participants ---
   def participants_update(conn, community_jid, jids, action), do: ...
+  # action: :add | :remove | :promote | :demote
+  # remove must include the linked_groups cascade flag like Baileys communities.ts
   def request_participants_list(conn, community_jid), do: ...
   def request_participants_update(conn, community_jid, jids, action), do: ...
+  # action: :approve | :reject
 
   # --- Invites ---
   def invite_code(conn, community_jid), do: ...
@@ -124,6 +135,7 @@ defmodule BaileysEx.Feature.Community do
   def setting_update(conn, community_jid, setting), do: ...
   def member_add_mode(conn, community_jid, mode), do: ...
   def join_approval_mode(conn, community_jid, mode), do: ...
+  # join approval uses a `membership_approval_mode` node with `community_join`
 
   # --- Metadata ---
   def metadata(conn, community_jid), do: ...
@@ -131,7 +143,7 @@ defmodule BaileysEx.Feature.Community do
 end
 ```
 
-Reference: `dev/reference/Baileys-master/src/Socket/community.ts`
+Reference: `dev/reference/Baileys-master/src/Socket/communities.ts`
 
 ### 11.4 Call handling
 
@@ -149,26 +161,31 @@ defmodule BaileysEx.Feature.Call do
     Connection.Socket.send_node(conn, node)
   end
 
-  @doc "Create a persistent call link (GAP-36)"
-  def create_call_link(conn, type, event \\ nil) when type in [:audio, :video] do
-    # IQ: xmlns='call', to='@call', type='set'
-    # Content: <call> with type and optional scheduled event
-    # Returns {:ok, token_string}
-    attrs = %{"type" => to_string(type)}
-    content = if event do
-      [%BinaryNode{tag: "event", attrs: %{"start_time" => to_string(event.start_time)}}]
-    else
-      nil
-    end
+  @doc "Create a persistent call link (Baileys createCallLink/3)"
+  def create_call_link(conn, type, opts \\ []) when type in [:audio, :video] do
+    event = Keyword.get(opts, :event)
+    timeout_ms = Keyword.get(opts, :timeout_ms)
 
     node = %BinaryNode{
-      tag: "iq",
-      attrs: %{"to" => "@call", "type" => "set", "xmlns" => "call"},
-      content: [%BinaryNode{tag: "call", attrs: attrs, content: content}]
+      tag: "call",
+      attrs: %{
+        "id" => Connection.Socket.generate_message_tag(conn),
+        "to" => "@call"
+      },
+      content: [
+        %BinaryNode{
+          tag: "link_create",
+          attrs: %{"media" => to_string(type)},
+          content:
+            if event do
+              [%BinaryNode{tag: "event", attrs: %{"start_time" => to_string(event.start_time)}}]
+            end
+        }
+      ]
     }
 
-    with {:ok, response} <- Connection.Socket.send_node_and_wait(conn, node) do
-      {:ok, extract_call_link_token(response)}
+    with {:ok, response} <- Connection.Socket.send_node_and_wait(conn, node, timeout_ms) do
+      {:ok, extract_link_create_token(response)}
     end
   end
 end
@@ -176,7 +193,7 @@ end
 
 ### 11.5 Tests
 
-- Business profile query/response parsing
+- Business update/catalog/order node construction and response parsing
 - Newsletter CRUD node construction
 - Community operations
 - Call offer/reject node handling
@@ -185,17 +202,18 @@ end
 
 ## Acceptance Criteria
 
-- [ ] Newsletter: all 19 functions construct correct WMex/IQ nodes
+- [ ] Newsletter: all 19 functions construct correct WMex/IQ/message nodes
 - [ ] Community: all 23 functions construct correct IQ nodes
 - [ ] Community: subgroup linking/unlinking works
 - [ ] Community: fetch_linked_groups returns correct structure
 - [ ] Business: profile update with hours/website arrays
 - [ ] Business: cover photo upload via media upload pipeline
 - [ ] Business: product CRUD operations
+- [ ] Business: order-details query uses the `fb:thrift_iq` namespace from Baileys
 - [ ] Call: reject constructs correct call node
 - [ ] Call events emitted correctly
 - [ ] All node formats match Baileys reference
-- [ ] Call link creation returns token for audio/video with optional event (GAP-36)
+- [ ] Call link creation uses `call/link_create` and returns token for audio/video with optional event (GAP-36)
 
 ## Files Created/Modified
 

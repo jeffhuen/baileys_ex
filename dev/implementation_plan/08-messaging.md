@@ -661,6 +661,48 @@ defmodule BaileysEx.Message.Receiver do
 end
 ```
 
+### 8.3a Offline node processor (GAP-05)
+
+Baileys uses `makeOfflineNodeProcessor()` to queue offline messages, calls,
+receipts, and notifications. The Elixir port should preserve the behavior but
+use a BEAM-friendly implementation:
+
+- Maintain a FIFO queue of `{:message | :call | :receipt | :notification, node}`.
+- Drain at most 10 nodes per pass, then yield by rescheduling the next drain
+  with `Process.send_after(self(), :drain_offline_queue, 0)` or `handle_continue/2`.
+- Keep the queue inside the receiver/socket owner process so ordering is stable
+  and backpressure is explicit.
+- Wrap offline drain windows with event buffering; flush only when the queue and
+  sync-state conditions allow it.
+
+This is the BEAM equivalent of Baileys' `setImmediate()` batching and avoids
+long scheduler monopolization during large history sync bursts.
+
+### 8.3b Envelope decode and protocol-message side effects
+
+Files:
+- `lib/baileys_ex/message/decode.ex`
+- `lib/baileys_ex/message/receiver.ex`
+
+Mirror the responsibilities split across Baileys `Utils/decode-wa-message.ts`
+and `Utils/process-message.ts`:
+
+- Decode envelope addressing context: `addressing_mode`, `participant_lid`,
+  `participant_pn`, recipient alternates, newsletter `server_id`, and
+  `remote_jid_alt` / `participant_alt` fields on the produced message key.
+- Resolve the actual decryption JID through the LID mapping store before session
+  decryption. When the envelope reveals a new PN<->LID pair, persist it and
+  opportunistically migrate sessions.
+- Keep WhatsApp NACK reason codes near the decode/decrypt path so parse and
+  decryption failures map to the correct ack error.
+- Handle `ProtocolMessage` side effects in the core receiver path:
+  - history sync notifications
+  - app-state sync key share injection
+  - peer-data operation request responses
+  - revoke / ephemeral setting / message edit
+  - group member label change
+  - LID migration mapping sync
+
 ### 8.4 Receipt handling
 
 File: `lib/baileys_ex/message/receipt.ex`
@@ -688,13 +730,19 @@ File: `lib/baileys_ex/message/retry.ex`
 defmodule BaileysEx.Message.Retry do
   @moduledoc """
   Sophisticated message retry management. Handles retry reason codes,
-  MAC error detection, session recreation, and phone request scheduling.
+  MAC error detection, session recreation, recent-message replay, and
+  scheduled phone requests. Mirrors Baileys' MessageRetryManager behavior.
   """
 
   @max_retries 5
   @session_recreate_cooldown_ms 3_600_000  # 1 hour
   @phone_request_delay_ms 3_000
+  @recent_message_cache_ttl_ms 300_000     # 5 minutes
+  @recent_message_cache_size 512
   @mac_error_codes [4, 7]
+
+  # Gate recent-message replay behind Connection.Config.enable_recent_message_cache
+  # to mirror Baileys' enableRecentMessageCache behavior.
 
   # Retry reason codes (matching Baileys RetryReason enum)
   @retry_reasons [
@@ -730,16 +778,29 @@ defmodule BaileysEx.Message.Retry do
     retry_count = get_retry_count(original_node.attrs["id"])
     force_keys = opts[:force_include_keys] || retry_count > 1
 
+    # If recent-message caching is enabled, schedule a delayed phone request for
+    # retry_count <= 2. The manager keeps the callback debounced per message ID.
     node = build_retry_receipt(original_node, retry_count, force_keys)
     Connection.Socket.send_node(conn, node)
     increment_retry_count(original_node.attrs["id"])
   end
 
   @doc "Request placeholder resend for unavailable messages via PDO"
-  def request_placeholder_resend(conn, message_key) do
+  def request_placeholder_resend(conn, message_key, msg_data \\ nil) do
     # Cache-checked (1 hour TTL to prevent duplicates)
     # 2-second delay before request
     # 8-second timeout for phone offline detection
+    # Uses BaileysEx.Message.PeerData.send_request/3 under the hood
+  end
+
+  @doc "Store a recently sent plaintext/ciphertext envelope for resend"
+  def add_recent_message(conn, message_id, message) do
+    # Bounded cache: 512 entries, 5 minute TTL, disabled unless config opts in
+  end
+
+  @doc "Look up a cached recent message before falling back to persistence"
+  def get_recent_message(conn, message_id) do
+    # Returns nil when recent-message cache is disabled or entry expired
   end
 
   defp mac_error?(code) when code in @mac_error_codes, do: true
@@ -774,6 +835,39 @@ defmodule BaileysEx.Message.Retry do
   end
 end
 ```
+
+### 8.5a Peer Data Operations (PDO)
+
+File: `lib/baileys_ex/message/peer_data.ex`
+
+Baileys uses `sendPeerDataOperationMessage()` to send protocol messages to the
+primary device. This is shared infrastructure for on-demand history sync,
+placeholder resend, and future phone-only flows.
+
+```elixir
+defmodule BaileysEx.Message.PeerData do
+  @moduledoc """
+  Shared transport for peer data operation requests. Sends a protocol message to
+  the authenticated primary JID with `category=peer`, `push_priority=high_force`,
+  and a `meta appdata=default` child node.
+  """
+
+  def send_request(conn, pdo_message, opts \\ []) do
+    # Wrap pdo_message in ProtocolMessage.PEER_DATA_OPERATION_REQUEST_MESSAGE
+    # Relay to normalized self JID
+    # Return generated message/request ID
+  end
+
+  @doc "User-facing on-demand history fetch (Baileys fetchMessageHistory/4)"
+  def fetch_message_history(conn, count, oldest_msg_key, oldest_msg_timestamp) do
+    # Build HISTORY_SYNC_ON_DEMAND request and send via send_request/3
+  end
+end
+```
+
+Keep PDO as its own small module rather than hiding it inside sender/receiver code.
+That keeps `request_placeholder_resend/3`, history sync, and future peer-only
+operations on a single transport path.
 
 ### 8.6 Device discovery
 
@@ -988,9 +1082,9 @@ defmodule BaileysEx.Message.HistorySync do
   end
 
   @doc "Fetch message history on demand via Peer Data Operation"
-  def fetch_on_demand(conn, count, oldest_msg_key, oldest_msg_timestamp) do
-    # Build PDO request for history fetch
-    # Send via sendPeerDataOperationMessage
+  def fetch_message_history(conn, count, oldest_msg_key, oldest_msg_timestamp) do
+    # Build HISTORY_SYNC_ON_DEMAND request
+    # Send via BaileysEx.Message.PeerData.send_request/3
   end
 
   # --- PN-LID Fallback Recovery (GAP-45) ---
@@ -1054,6 +1148,19 @@ defmodule BaileysEx.Message.IdentityChangeHandler do
 end
 ```
 
+### 8.10a Addressing and decryption helpers
+
+File: `lib/baileys_ex/message/decode.ex`
+
+This module owns the wire-facing helper logic from Baileys
+`Utils/decode-wa-message.ts`:
+
+- extract envelope addressing context and preserve alt-address fields
+- choose the correct decryption JID for PN/LID conversations
+- expose retry/NACK reason constants for parse/decrypt failures
+- store envelope-derived PN<->LID mappings and trigger session migration when
+  new mappings are learned from message stanzas
+
 ### 8.11 Message normalization
 
 File: `lib/baileys_ex/message/normalizer.ex`
@@ -1073,6 +1180,7 @@ defmodule BaileysEx.Message.Normalizer do
     |> normalize_jids(me_jid, me_lid)
     |> process_reaction_if_present()
     |> process_poll_if_present()
+    |> process_event_response_if_present()
   end
 
   defp normalize_jids(message, me_jid, me_lid) do
@@ -1086,6 +1194,11 @@ defmodule BaileysEx.Message.Normalizer do
 
   defp process_poll_if_present(message) do
     # Decrypt poll vote if present, aggregate results
+  end
+
+  defp process_event_response_if_present(message) do
+    # Decrypt event response payloads when the referenced event message secret
+    # is available, then update the source event's response list.
   end
 end
 ```
@@ -1166,12 +1279,18 @@ end
 - [ ] Participant hash V2 computed and sent as phash attribute
 - [ ] Retry manager handles 14 reason codes with proper session recreation
 - [ ] MAC errors trigger immediate session recreation (with 1-hour cooldown)
+- [ ] Recent-message cache and scheduled phone requests match MessageRetryManager semantics when enabled
 - [ ] Identity change notifications trigger session refresh
 - [ ] Placeholder resend requests sent via PDO with deduplication
+- [ ] Peer Data Operation requests are sent to self with `category=peer` and `meta appdata=default`
+- [ ] ProtocolMessage side effects cover history sync, app-state key share, PDO responses, label-change, edit/revoke, and LID migration mapping sync
+- [ ] Decode path preserves alt addressing fields and uses LID mapping for decryption routing
 - [ ] Received messages normalized (JIDs, reactions, polls, LID/PN)
+- [ ] Received event responses decrypt and update the source event message when the message secret is available
 - [ ] Reporting tokens attached to applicable message types (GAP-32)
 - [ ] Bad ACK errors emit messages.update with ERROR status (GAP-40)
 - [ ] History sync extracts PN-LID mappings with fallback recovery (GAP-45)
+- [ ] Offline node processor drains FIFO batches of 10 without long scheduler monopolization
 
 ## Files Created/Modified
 
@@ -1179,14 +1298,18 @@ end
 - `lib/baileys_ex/message/parser.ex`
 - `lib/baileys_ex/message/sender.ex`
 - `lib/baileys_ex/message/receiver.ex`
+- `lib/baileys_ex/message/decode.ex`
 - `lib/baileys_ex/message/receipt.ex`
 - `lib/baileys_ex/message/retry.ex`
+- `lib/baileys_ex/message/peer_data.ex`
 - `lib/baileys_ex/signal/device.ex`
 - `test/baileys_ex/message/builder_test.exs`
 - `test/baileys_ex/message/parser_test.exs`
 - `test/baileys_ex/message/sender_test.exs`
 - `test/baileys_ex/message/receiver_test.exs`
+- `test/baileys_ex/message/decode_test.exs`
 - `test/baileys_ex/message/receipt_test.exs`
+- `test/baileys_ex/message/peer_data_test.exs`
 - `lib/baileys_ex/message/notification_handler.ex`
 - `lib/baileys_ex/message/history_sync.ex`
 - `lib/baileys_ex/message/identity_change_handler.ex`

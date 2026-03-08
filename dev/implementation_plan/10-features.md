@@ -309,8 +309,11 @@ defmodule BaileysEx.Feature.Privacy do
   @doc "Who can add you to groups. Values: :all | :contacts | :contact_blacklist"
   def update_group_add(conn, value), do: privacy_query(conn, "groupadd", value)
 
-  @doc "Disable link previews (app state sync patch)"
-  def update_link_previews(conn, disabled?), do: ...
+  @doc "Disable server-side link preview generation (Baileys updateDisableLinkPreviewsPrivacy/1)"
+  def update_disable_link_previews_privacy(conn, disabled?), do: ...
+
+  @doc "Elixir-friendly alias for update_disable_link_previews_privacy/2"
+  def update_link_previews(conn, disabled?), do: update_disable_link_previews_privacy(conn, disabled?)
 
   # --- Default disappearing mode ---
 
@@ -366,6 +369,12 @@ defmodule BaileysEx.Feature.AppState do
     # Fetch snapshots for all collections
     # Apply patches to local state
     # Verify with LTHash
+    # Emit consolidated sync-action results such as:
+    #   :contacts_upsert
+    #   :lid_mapping_update
+    #   :labels_edit / :labels_association
+    #   :settings_update
+    #   :chats_lock
   end
 
   def push_patch(conn, action, jid, value) do
@@ -377,6 +386,7 @@ defmodule BaileysEx.Feature.AppState do
   def process_sync_notification(conn, node) do
     # Incoming sync patches from other devices
     # Decrypt, apply, verify LTHash, emit events
+    # Uses a pure sync-action mapper similar to Baileys sync-action-utils.ts
   end
 end
 ```
@@ -588,6 +598,7 @@ end
 - [ ] **Privacy: block list** fetch/block/unblock
 - [ ] App state sync initial fetch works
 - [ ] LTHash verification matches Baileys
+- [ ] Sync actions emit contacts, LID mappings, labels, settings, and chat-lock updates correctly
 - [ ] **Profile: update/remove picture** constructs correct IQ
 - [ ] **Profile: picture URL** query and response parsing
 - [ ] **Profile: update name** via app state sync
@@ -606,6 +617,7 @@ end
 - [ ] TC tokens built and attached to presence/profile queries (GAP-23)
 - [ ] Privacy token notifications stored correctly (GAP-23)
 - [ ] Bot directory fetched via IQ query (GAP-37)
+- [ ] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`
 - [ ] Group member label update constructs correct protocol message (GAP-39)
 
 ## Files Created/Modified

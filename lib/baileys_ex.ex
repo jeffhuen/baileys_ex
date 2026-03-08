@@ -1,18 +1,8 @@
 defmodule BaileysEx do
   @moduledoc """
-  Documentation for `BaileysEx`.
+  Elixir client for the WhatsApp Web API.
+
+  Provides connection management, end-to-end encrypted messaging,
+  media handling, and group/presence/privacy features.
   """
-
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> BaileysEx.hello()
-      :world
-
-  """
-  def hello do
-    :world
-  end
 end

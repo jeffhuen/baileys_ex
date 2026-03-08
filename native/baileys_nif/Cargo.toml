@@ -1,0 +1,20 @@
+[package]
+name = "baileys_nif"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "baileys_nif"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37"
+# Noise protocol (no Elixir/Erlang equivalent)
+snow = "0.9"
+# XEdDSA: Montgomery↔Edwards key conversion for Signal signing
+# curve25519-dalek: 35M+ downloads, used by Tor/Zcash — battle-tested
+curve25519-dalek = { version = "4", features = ["digest"] }
+sha2 = "0.10"       # Required by curve25519-dalek for nonce derivation
+getrandom = "0.2"   # Secure random for XEdDSA nonce
+# NOTE: No crypto crates here — Erlang :crypto handles AES, HMAC, HKDF, etc.
+# NOTE: No libsignal-protocol — Signal implemented in pure Elixir (~1,500 lines)

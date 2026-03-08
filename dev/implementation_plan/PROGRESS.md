@@ -9,7 +9,7 @@
 
 | # | Phase | Tasks | Status | Depends On | Blocks |
 |---|-------|-------|--------|------------|--------|
-| 1 | Foundation | 7 | NOT STARTED | — | All |
+| 1 | Foundation | 7 | COMPLETE | — | All |
 | 2 | Crypto | 3 | NOT STARTED | 1 | 7, 9 |
 | 3 | Protocol Layer | 10 | NOT STARTED | 1 | 6 |
 | 4 | Noise NIF | 5 | NOT STARTED | 1 | 6 |
@@ -28,37 +28,37 @@
 
 ## Phase 1: Foundation
 
-**Status:** NOT STARTED · **Depends on:** — · **Blocks:** All
+**Status:** COMPLETE · **Depends on:** — · **Blocks:** All
 
 ### Tasks
 
-- [ ] 1.1 Update mix.exs with dependencies
-- [ ] 1.2 Update application.ex
-- [ ] 1.3 Create Application supervisor
-- [ ] 1.4 Scaffold Rust NIF crate
-- [ ] 1.5 Create NIF module stubs
-- [ ] 1.6 Core type definitions
-- [ ] 1.7 Directory structure
+- [x] 1.1 Update mix.exs with dependencies
+- [x] 1.2 Update application.ex
+- [x] 1.3 Create Application supervisor
+- [x] 1.4 Scaffold Rust NIF crate
+- [x] 1.5 Create NIF module stubs
+- [x] 1.6 Core type definitions
+- [x] 1.7 Directory structure
 
 ### Acceptance Criteria
 
-- [ ] `mix deps.get` succeeds
-- [ ] `mix compile` succeeds (NIF stubs load with nif_error)
-- [ ] `mix test` passes (basic smoke test)
-- [ ] Rust crate compiles: `cd native/baileys_nif && cargo check`
-- [ ] Application starts: `iex -S mix` launches supervision tree
-- [ ] Registry, DynamicSupervisor, TaskSupervisor visible in observer
+- [x] `mix deps.get` succeeds
+- [x] `mix compile` succeeds (NIF stubs load with nif_error)
+- [x] `mix test` passes (basic smoke test)
+- [x] Rust crate compiles: `cd native/baileys_nif && cargo check`
+- [x] Application starts: `iex -S mix` launches supervision tree
+- [x] Registry, DynamicSupervisor, TaskSupervisor visible in observer
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `mix.exs` | ⬜ |
-| `lib/baileys_ex/application.ex` | ⬜ |
-| `lib/baileys_ex/types.ex` | ⬜ |
-| `lib/baileys_ex/native/noise.ex` | ⬜ |
-| `lib/baileys_ex/native/xeddsa.ex` | ⬜ |
-| `native/baileys_nif/` (Rust crate scaffold) | ⬜ |
+| `mix.exs` | ✅ |
+| `lib/baileys_ex/application.ex` | ✅ |
+| `lib/baileys_ex/types.ex` | ✅ |
+| `lib/baileys_ex/native/noise.ex` | ✅ |
+| `lib/baileys_ex/native/xeddsa.ex` | ✅ |
+| `native/baileys_nif/` (Rust crate scaffold) | ✅ |
 
 ---
 

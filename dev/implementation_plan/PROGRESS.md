@@ -1,0 +1,620 @@
+# BaileysEx Implementation Progress
+
+> Auto-tracked. Update checkboxes as tasks complete.
+> Last updated: 2026-03-08
+
+---
+
+## Phase Summary
+
+| # | Phase | Tasks | Status | Depends On | Blocks |
+|---|-------|-------|--------|------------|--------|
+| 1 | Foundation | 7 | NOT STARTED | — | All |
+| 2 | Crypto | 3 | NOT STARTED | 1 | 7, 9 |
+| 3 | Protocol Layer | 10 | NOT STARTED | 1 | 6 |
+| 4 | Noise NIF | 5 | NOT STARTED | 1 | 6 |
+| 5 | Signal Protocol | 8 | NOT STARTED | 1, 2 | 7, 8 |
+| 6 | Connection | 7 | NOT STARTED | 3, 4 | 7, 8 |
+| 7 | Authentication | 10 | NOT STARTED | 5, 6 | 8 |
+| 8 | Messaging Core | 13 | NOT STARTED | 5, 6, 7 | 9, 10 |
+| 9 | Media | 9 | NOT STARTED | 2, 8 | 12 |
+| 10 | Features | 14 | NOT STARTED | 8 | 11 |
+| 11 | Advanced Features | 5 | NOT STARTED | 10 | 12 |
+| 12 | Polish | 6 | NOT STARTED | All | — |
+
+**Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
+
+---
+
+## Phase 1: Foundation
+
+**Status:** NOT STARTED · **Depends on:** — · **Blocks:** All
+
+### Tasks
+
+- [ ] 1.1 Update mix.exs with dependencies
+- [ ] 1.2 Update application.ex
+- [ ] 1.3 Create Application supervisor
+- [ ] 1.4 Scaffold Rust NIF crate
+- [ ] 1.5 Create NIF module stubs
+- [ ] 1.6 Core type definitions
+- [ ] 1.7 Directory structure
+
+### Acceptance Criteria
+
+- [ ] `mix deps.get` succeeds
+- [ ] `mix compile` succeeds (NIF stubs load with nif_error)
+- [ ] `mix test` passes (basic smoke test)
+- [ ] Rust crate compiles: `cd native/baileys_nif && cargo check`
+- [ ] Application starts: `iex -S mix` launches supervision tree
+- [ ] Registry, DynamicSupervisor, TaskSupervisor visible in observer
+
+### Files
+
+| File | Status |
+|------|--------|
+| `mix.exs` | ⬜ |
+| `lib/baileys_ex/application.ex` | ⬜ |
+| `lib/baileys_ex/types.ex` | ⬜ |
+| `lib/baileys_ex/native/noise.ex` | ⬜ |
+| `lib/baileys_ex/native/xeddsa.ex` | ⬜ |
+| `native/baileys_nif/` (Rust crate scaffold) | ⬜ |
+
+---
+
+## Phase 2: Crypto (Pure Elixir / Erlang :crypto)
+
+**Status:** NOT STARTED · **Depends on:** Phase 1 · **Blocks:** 7, 9
+
+### Tasks
+
+- [ ] 2.1 Core crypto module (wrappers around `:crypto`)
+- [ ] 2.2 Test with known test vectors (NIST/RFC)
+- [ ] 2.3 Property-based tests (StreamData)
+
+### Acceptance Criteria
+
+- [ ] All crypto functions work with Erlang `:crypto` (no NIF dependency)
+- [ ] NIST/RFC test vectors pass for every algorithm
+- [ ] HKDF implementation matches RFC 5869 test vectors
+- [ ] Property-based roundtrip tests pass
+- [ ] Typespecs on all public functions
+- [ ] `mix test test/baileys_ex/crypto_test.exs` passes
+- [ ] Media key expansion matches Baileys output for same input
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex/crypto.ex` | ⬜ |
+| `test/baileys_ex/crypto_test.exs` | ⬜ |
+| `test/baileys_ex/crypto_property_test.exs` | ⬜ |
+
+---
+
+## Phase 3: Protocol Layer
+
+**Status:** NOT STARTED · **Depends on:** Phase 1 · **Blocks:** 6
+
+### Tasks
+
+- [ ] 3.1 WABinary Node Types
+- [ ] 3.2 WABinary Constants / Dictionaries
+- [ ] 3.3 WABinary Encoder
+- [ ] 3.4 WABinary Decoder
+- [ ] 3.5 JID Module
+- [ ] 3.6 USync Query Infrastructure
+- [ ] 3.6a Message Stub Type Constants (GAP-28)
+- [ ] 3.6b WMex Query Engine (GAP-43)
+- [ ] 3.7 Protobuf Code Generation
+- [ ] 3.8 Tests
+
+### Acceptance Criteria
+
+- [ ] BinaryNode encode/decode roundtrip works for all node types
+- [ ] JID parse/to_string covers all WhatsApp JID formats
+- [ ] JID handles LID (`@lid`) and PN (`@s.whatsapp.net`) addressing
+- [ ] USync query builder constructs correct nodes for all 5 protocol types
+- [ ] USync response parser extracts user results correctly
+- [ ] Protobuf modules generated and compile
+- [ ] Dictionary constants match Baileys reference exactly
+- [ ] Cross-validation tests pass with captured Baileys data
+- [ ] Message stub types defined for all 20+ group notification types
+- [ ] WMex query engine constructs correct IQ nodes with JSON variables
+- [ ] WMex response parser extracts data by XWA path
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex/protocol/binary_node.ex` | ⬜ |
+| `lib/baileys_ex/protocol/constants.ex` | ⬜ |
+| `lib/baileys_ex/protocol/jid.ex` | ⬜ |
+| `lib/baileys_ex/protocol/usync.ex` | ⬜ |
+| `lib/baileys_ex/protocol/wmex.ex` | ⬜ |
+| `lib/baileys_ex/protocol/message_stub_type.ex` | ⬜ |
+| `lib/baileys_ex/protocol/proto/*.ex` (generated) | ⬜ |
+| `priv/proto/*.proto` | ⬜ |
+| `test/baileys_ex/protocol/binary_node_test.exs` | ⬜ |
+| `test/baileys_ex/protocol/jid_test.exs` | ⬜ |
+| `test/baileys_ex/protocol/usync_test.exs` | ⬜ |
+| `test/baileys_ex/protocol/proto_test.exs` | ⬜ |
+
+---
+
+## Phase 4: Noise Protocol NIF
+
+**Status:** NOT STARTED · **Depends on:** Phase 1 · **Blocks:** 6
+
+### Tasks
+
+- [ ] 4.1 Implement noise.rs (Rust — `snow` crate)
+- [ ] 4.2 Elixir Noise wrapper (NIF bindings)
+- [ ] 4.3 Higher-level Noise protocol module
+- [ ] 4.3a Certificate Validation (GAP-21)
+- [ ] 4.4 Tests
+
+### Acceptance Criteria
+
+- [ ] Noise XX handshake completes successfully in test
+- [ ] Transport encrypt/decrypt roundtrip works
+- [ ] ResourceArc lifecycle: no memory leaks
+- [ ] Concurrent handshakes work (multiple ResourceArcs)
+- [ ] Error handling: bad data returns `{:error, reason}` not crash
+- [ ] Certificate chain validated after Noise handshake step 2 (GAP-21)
+
+### Files
+
+| File | Status |
+|------|--------|
+| `native/baileys_nif/src/noise.rs` | ⬜ |
+| `lib/baileys_ex/native/noise.ex` | ⬜ |
+| `lib/baileys_ex/protocol/noise.ex` | ⬜ |
+| `test/baileys_ex/protocol/noise_test.exs` | ⬜ |
+
+---
+
+## Phase 5: Signal Protocol (Pure Elixir + XEdDSA NIF)
+
+**Status:** NOT STARTED · **Depends on:** Phases 1, 2 · **Blocks:** 7, 8
+
+### Tasks
+
+- [ ] 5.1 XEdDSA NIF (~80 lines Rust, `curve25519-dalek`)
+- [ ] 5.2 Signal crypto utilities (KDF_CK, KDF_RK, etc.)
+- [ ] 5.3 X3DH key agreement
+- [ ] 5.4 Double Ratchet algorithm
+- [ ] 5.5 Session management
+- [ ] 5.6 Sender Keys (Group messaging)
+- [ ] 5.7 Signal Store behaviour
+- [ ] 5.8 Tests
+
+### Acceptance Criteria
+
+- [ ] X3DH key agreement matches Signal spec test vectors
+- [ ] Double Ratchet encrypt/decrypt roundtrip
+- [ ] Session creation and deletion works
+- [ ] Sender Keys for group messages
+- [ ] Session state persisted correctly
+- [ ] Cross-validation with Baileys encrypted messages
+
+### Files
+
+| File | Status |
+|------|--------|
+| `native/baileys_nif/src/xeddsa.rs` | ⬜ |
+| `lib/baileys_ex/signal/crypto.ex` | ⬜ |
+| `lib/baileys_ex/signal/x3dh.ex` | ⬜ |
+| `lib/baileys_ex/signal/double_ratchet.ex` | ⬜ |
+| `lib/baileys_ex/signal/session.ex` | ⬜ |
+| `lib/baileys_ex/signal/session_cipher.ex` | ⬜ |
+| `lib/baileys_ex/signal/session_builder.ex` | ⬜ |
+| `lib/baileys_ex/signal/group_cipher.ex` | ⬜ |
+| `lib/baileys_ex/signal/group_session.ex` | ⬜ |
+| `lib/baileys_ex/signal/sender_key_message.ex` | ⬜ |
+| `lib/baileys_ex/signal/prekey.ex` | ⬜ |
+| `lib/baileys_ex/signal/key_helper.ex` | ⬜ |
+| `lib/baileys_ex/signal/store.ex` | ⬜ |
+| `lib/baileys_ex/signal/device.ex` | ⬜ |
+| `test/baileys_ex/signal/*_test.exs` | ⬜ |
+
+---
+
+## Phase 6: Connection
+
+**Status:** NOT STARTED · **Depends on:** Phases 3, 4 · **Blocks:** 7, 8
+
+### Tasks
+
+- [ ] 6.1 Connection config (browser/platform — GAP-27)
+- [ ] 6.2 Connection socket (`:gen_statem`)
+- [ ] 6.3 Frame handling (3-byte length prefix)
+- [ ] 6.4 Per-connection supervisor (`:rest_for_one`)
+- [ ] 6.5 Event emitter (25+ types — GAP-07, buffering — GAP-22)
+- [ ] 6.6 Store (GenServer + ETS)
+- [ ] 6.7 Tests
+
+### Acceptance Criteria
+
+- [ ] State machine transitions through all states correctly
+- [ ] Noise handshake integrates with WebSocket transport
+- [ ] Frame encoding/decoding with length prefix works
+- [ ] Keep-alive prevents timeout disconnection
+- [ ] Reconnection works after unexpected disconnect
+- [ ] Supervisor `:rest_for_one` restarts children correctly
+- [ ] Event emitter dispatches to subscribers
+- [ ] Store reads are concurrent via ETS
+- [ ] Every received node with "id" attr gets automatic ACK (GAP-03)
+- [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
+- [ ] EventEmitter supports all 25+ event types (GAP-07)
+- [ ] Event buffering accumulates events, flushes on demand (GAP-22)
+- [ ] Buffer auto-flushes after 30 seconds (GAP-22)
+- [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
+- [ ] Platform type correctly mapped for device registration (GAP-27)
+- [ ] Unified session sent on connection open (GAP-33)
+- [ ] Init queries (props, blocklist, privacy) fetched in parallel (GAP-34)
+- [ ] Conditional chat updates held during sync (GAP-48)
+- [ ] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex/connection/config.ex` | ⬜ |
+| `lib/baileys_ex/connection/socket.ex` | ⬜ |
+| `lib/baileys_ex/connection/supervisor.ex` | ⬜ |
+| `lib/baileys_ex/connection/event_emitter.ex` | ⬜ |
+| `lib/baileys_ex/connection/store.ex` | ⬜ |
+| `test/baileys_ex/connection/socket_test.exs` | ⬜ |
+| `test/baileys_ex/connection/event_emitter_test.exs` | ⬜ |
+| `test/baileys_ex/connection/store_test.exs` | ⬜ |
+
+---
+
+## Phase 7: Authentication
+
+**Status:** NOT STARTED · **Depends on:** Phases 5, 6 · **Blocks:** 8
+
+### Tasks
+
+- [ ] 7.1 Auth state struct
+- [ ] 7.2 Persistence behaviour
+- [ ] 7.3 File-based persistence (default)
+- [ ] 7.4 QR code pairing
+- [ ] 7.5 Phone number pairing
+- [ ] 7.6 Pre-key upload
+- [ ] 7.7 Transactional Signal Key Storage (GAP-44)
+- [ ] 7.8 Connection validation (login/registration nodes)
+- [ ] 7.9 Pre-key management (advanced — rotation, min count)
+- [ ] 7.10 Tests
+
+### Acceptance Criteria
+
+- [ ] New auth state generates valid crypto keys
+- [ ] File persistence saves and loads credentials correctly
+- [ ] QR code data format matches WhatsApp expectations
+- [ ] Phone pairing key derivation matches Baileys output
+- [ ] Pre-key upload constructs correct binary nodes
+- [ ] Custom persistence backend can be swapped via behaviour
+- [ ] Login node constructed correctly for returning users
+- [ ] Registration node includes device props, history sync config, platform type
+- [ ] Pair-success HMAC and ADV signature verification passes
+- [ ] Pre-key upload triggered automatically when server count is low
+- [ ] Signed pre-key rotation works correctly
+- [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
+- [ ] Transaction commits are atomic (GAP-44)
+- [ ] Read-through cache prevents redundant persistence lookups during sync
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex/auth/state.ex` | ⬜ |
+| `lib/baileys_ex/auth/persistence.ex` | ⬜ |
+| `lib/baileys_ex/auth/file_persistence.ex` | ⬜ |
+| `lib/baileys_ex/auth/qr.ex` | ⬜ |
+| `lib/baileys_ex/auth/phone.ex` | ⬜ |
+| `lib/baileys_ex/auth/key_store.ex` | ⬜ |
+| `lib/baileys_ex/auth/connection_validator.ex` | ⬜ |
+| `lib/baileys_ex/signal/prekey.ex` (extend) | ⬜ |
+| `test/baileys_ex/auth/state_test.exs` | ⬜ |
+| `test/baileys_ex/auth/file_persistence_test.exs` | ⬜ |
+| `test/baileys_ex/auth/qr_test.exs` | ⬜ |
+
+---
+
+## Phase 8: Messaging Core
+
+**Status:** NOT STARTED · **Depends on:** Phases 5, 6, 7 · **Blocks:** 9, 10
+
+### Tasks
+
+- [ ] 8.1 Message builder (ALL message types)
+- [ ] 8.2 Message sender (build → encrypt → encode → send)
+- [ ] 8.3 Message receiver (decode → decrypt → parse → emit)
+- [ ] 8.4 Receipt handling (delivered, read, played)
+- [ ] 8.5 Retry logic (14 reason codes, MAC error cooldown)
+- [ ] 8.6 Device discovery (multi-device)
+- [ ] 8.7 Bad ACK handling (GAP-40)
+- [ ] 8.7a Verified Name Certificates (GAP-35)
+- [ ] 8.8 Notification handler (11 notification types)
+- [ ] 8.9 History sync (download, decompress, PN-LID fallback — GAP-45)
+- [ ] 8.10 Identity change handler
+- [ ] 8.11 Message normalization (JIDs, reactions, polls, LID/PN)
+- [ ] 8.12 Tests
+
+### Acceptance Criteria
+
+- [ ] Text message send/receive pipeline works end-to-end
+- [ ] Signal encryption/decryption integrated into pipeline
+- [ ] Device discovery queries and caches device lists
+- [ ] Receipts sent correctly
+- [ ] Retry logic handles failed decryption
+- [ ] Builder covers ALL message types explicitly (no catch-all)
+- [ ] Events emitted for received messages
+- [ ] Reactions send/receive correctly
+- [ ] Polls create with message secret, correct version (V1/V2/V3)
+- [ ] Contacts: single → contactMessage, multiple → contactsArrayMessage
+- [ ] Location and live location produce correct proto
+- [ ] Message delete (revoke) constructs correct protocolMessage
+- [ ] Message edit constructs correct protocolMessage with :MESSAGE_EDIT
+- [ ] Disappearing messages toggle via protocolMessage
+- [ ] Pin/unpin in chat with duration
+- [ ] Forward increments forwarding_score, sets is_forwarded
+- [ ] Status/stories send to `status@broadcast` with viewer list
+- [ ] Parser unwraps ephemeral/viewOnce/template wrappers
+- [ ] Parser detects content type for all known message types
+- [ ] Inbound interactive messages parsed without crash
+- [ ] Notification handler processes all 11 notification types
+- [ ] Group notifications produce correct stub types (20+ types)
+- [ ] History sync downloads, decompresses, processes correctly
+- [ ] History sync emits correct events by sync type
+- [ ] DSM wrapper sent to own devices for 1:1 messages
+- [ ] Group messages distribute SKD to new devices
+- [ ] Sender key memory tracked per group
+- [ ] Message ID format matches Baileys (3EB0 + timestamp + random)
+- [ ] Participant hash V2 computed and sent as phash attribute
+- [ ] Retry manager handles 14 reason codes
+- [ ] MAC errors trigger immediate session recreation (1-hour cooldown)
+- [ ] Identity change notifications trigger session refresh
+- [ ] Placeholder resend requests via PDO with dedup
+- [ ] Received messages normalized
+- [ ] Reporting tokens attached to applicable types (GAP-32)
+- [ ] Bad ACK errors emit messages.update with ERROR status (GAP-40)
+- [ ] History sync extracts PN-LID mappings with fallback (GAP-45)
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex/message/builder.ex` | ⬜ |
+| `lib/baileys_ex/message/parser.ex` | ⬜ |
+| `lib/baileys_ex/message/sender.ex` | ⬜ |
+| `lib/baileys_ex/message/receiver.ex` | ⬜ |
+| `lib/baileys_ex/message/receipt.ex` | ⬜ |
+| `lib/baileys_ex/message/retry.ex` | ⬜ |
+| `lib/baileys_ex/message/notification_handler.ex` | ⬜ |
+| `lib/baileys_ex/message/history_sync.ex` | ⬜ |
+| `lib/baileys_ex/message/identity_change_handler.ex` | ⬜ |
+| `lib/baileys_ex/message/normalizer.ex` | ⬜ |
+| `lib/baileys_ex/signal/device.ex` | ⬜ |
+| `test/baileys_ex/message/builder_test.exs` | ⬜ |
+| `test/baileys_ex/message/parser_test.exs` | ⬜ |
+| `test/baileys_ex/message/sender_test.exs` | ⬜ |
+| `test/baileys_ex/message/receiver_test.exs` | ⬜ |
+| `test/baileys_ex/message/receipt_test.exs` | ⬜ |
+| `test/baileys_ex/message/notification_handler_test.exs` | ⬜ |
+| `test/baileys_ex/message/history_sync_test.exs` | ⬜ |
+
+---
+
+## Phase 9: Media
+
+**Status:** NOT STARTED · **Depends on:** Phases 2, 8 · **Parallel with:** Phase 10
+
+### Tasks
+
+- [ ] 9.1 Media crypto (single-pass streaming — GAP-46)
+- [ ] 9.2 Media upload (HTTP to WhatsApp CDN)
+- [ ] 9.3 Media download (streaming + decryption)
+- [ ] 9.4 Media types (image, video, audio, doc, sticker)
+- [ ] 9.5 Thumbnail and waveform generation
+- [ ] 9.5a Media Re-upload Flow (GAP-47)
+- [ ] 9.6 Media connection and retry
+- [ ] 9.7 Integrate with message builder
+- [ ] 9.8 Tests
+
+### Acceptance Criteria
+
+- [ ] Media encrypt/decrypt roundtrip for all types
+- [ ] MAC verification works (pass and fail cases)
+- [ ] Upload constructs correct HTTP request
+- [ ] Download handles streaming
+- [ ] Message builder integrates media handling
+- [ ] Cross-validation with Baileys-encrypted media
+- [ ] Image thumbnails generated when `image` package available
+- [ ] Video thumbnails via ffmpeg when available
+- [ ] Audio waveform computed (64 samples)
+- [ ] Media connection refreshed and cached
+- [ ] Media upload retry works for failed messages
+- [ ] Media encryption uses single-pass streaming (GAP-46)
+- [ ] Media re-upload request sent for expired media (GAP-47)
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex/media/crypto.ex` | ⬜ |
+| `lib/baileys_ex/media/upload.ex` | ⬜ |
+| `lib/baileys_ex/media/download.ex` | ⬜ |
+| `lib/baileys_ex/media/types.ex` | ⬜ |
+| `lib/baileys_ex/media/thumbnail.ex` | ⬜ |
+| `lib/baileys_ex/media/retry.ex` | ⬜ |
+| `lib/baileys_ex/message/builder.ex` (extend) | ⬜ |
+| `test/baileys_ex/media/crypto_test.exs` | ⬜ |
+| `test/baileys_ex/media/upload_test.exs` | ⬜ |
+| `test/baileys_ex/media/download_test.exs` | ⬜ |
+
+---
+
+## Phase 10: Features
+
+**Status:** NOT STARTED · **Depends on:** Phase 8 · **Parallel with:** Phase 9 · **Blocks:** 11
+
+### Tasks
+
+- [ ] 10.1 Group management (CRUD, participants, invites v3/v4)
+- [ ] 10.1a Phone number validation (`on_whatsapp` via USync)
+- [ ] 10.2 Chat operations (archive, mute, pin, star, clear, delete)
+- [ ] 10.3 Presence (online/offline/composing/recording)
+- [ ] 10.3a Trusted Contact Tokens (GAP-23)
+- [ ] 10.3b Bot Directory (GAP-37)
+- [ ] 10.4 Privacy settings (8 categories + block list + disappearing)
+- [ ] 10.5 App state sync (Syncd protocol, patches)
+- [ ] 10.6 LTHash utility
+- [ ] 10.7 Profile management (picture, name, status, business)
+- [ ] 10.8 Label management (CRUD, associations)
+- [ ] 10.9 Contact management (add/edit/remove via app state)
+- [ ] 10.10 Quick replies
+- [ ] 10.11 Tests
+
+### Acceptance Criteria
+
+- [ ] Group operations construct correct binary nodes
+- [ ] Presence updates send and receive correctly
+- [ ] Chat operations integrate with app state sync
+- [ ] Privacy: all 8 categories query and update via IQ nodes
+- [ ] Privacy: default disappearing mode set/fetch
+- [ ] Privacy: block list fetch/block/unblock
+- [ ] App state sync initial fetch works
+- [ ] LTHash verification matches Baileys
+- [ ] Profile: update/remove picture constructs correct IQ
+- [ ] Profile: picture URL query and response parsing
+- [ ] Profile: update name via app state sync
+- [ ] Profile: update status text via IQ
+- [ ] Profile: fetch status via USync query
+- [ ] Profile: business profile query and response parsing
+- [ ] Labels: CRUD via app state patches
+- [ ] Labels: chat/message association via app state patches
+- [ ] Contacts: add/edit/remove via app state patches
+- [ ] Quick replies: add/edit/remove via app state patches
+- [ ] `on_whatsapp` validates phone numbers via USync
+- [ ] Group setting update (announcement/locked toggles)
+- [ ] Group member add mode and join approval mode
+- [ ] Pending join request list and approve/reject
+- [ ] V4 invite accept and revoke operations
+- [ ] TC tokens built and attached to presence/profile queries (GAP-23)
+- [ ] Privacy token notifications stored correctly (GAP-23)
+- [ ] Bot directory fetched via IQ query (GAP-37)
+- [ ] Group member label update constructs correct protocol message (GAP-39)
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex/feature/group.ex` | ⬜ |
+| `lib/baileys_ex/feature/chat.ex` | ⬜ |
+| `lib/baileys_ex/feature/presence.ex` | ⬜ |
+| `lib/baileys_ex/feature/privacy.ex` | ⬜ |
+| `lib/baileys_ex/feature/profile.ex` | ⬜ |
+| `lib/baileys_ex/feature/label.ex` | ⬜ |
+| `lib/baileys_ex/feature/contact.ex` | ⬜ |
+| `lib/baileys_ex/feature/quick_reply.ex` | ⬜ |
+| `lib/baileys_ex/feature/app_state.ex` | ⬜ |
+| `lib/baileys_ex/feature/phone_validation.ex` | ⬜ |
+| `lib/baileys_ex/feature/tc_token.ex` | ⬜ |
+| `lib/baileys_ex/util/lt_hash.ex` | ⬜ |
+| `test/baileys_ex/feature/group_test.exs` | ⬜ |
+| `test/baileys_ex/feature/presence_test.exs` | ⬜ |
+| `test/baileys_ex/feature/privacy_test.exs` | ⬜ |
+| `test/baileys_ex/feature/profile_test.exs` | ⬜ |
+| `test/baileys_ex/feature/app_state_test.exs` | ⬜ |
+| `test/baileys_ex/util/lt_hash_test.exs` | ⬜ |
+
+---
+
+## Phase 11: Advanced Features
+
+**Status:** NOT STARTED · **Depends on:** Phase 10 · **Blocks:** 12
+
+### Tasks
+
+- [ ] 11.1 Business profiles (profile, cover, catalog, products, orders)
+- [ ] 11.2 Newsletters (19 functions, WMex transport)
+- [ ] 11.3 Communities (23 functions, subgroup linking)
+- [ ] 11.4 Call handling (offer/reject, call links — GAP-36)
+- [ ] 11.5 Tests
+
+### Acceptance Criteria
+
+- [ ] Newsletter: all 19 functions construct correct WMex/IQ nodes
+- [ ] Community: all 23 functions construct correct IQ nodes
+- [ ] Community: subgroup linking/unlinking works
+- [ ] Community: fetch_linked_groups returns correct structure
+- [ ] Business: profile update with hours/website arrays
+- [ ] Business: cover photo upload via media upload pipeline
+- [ ] Business: product CRUD operations
+- [ ] Call: reject constructs correct call node
+- [ ] Call events emitted correctly
+- [ ] All node formats match Baileys reference
+- [ ] Call link creation returns token for audio/video (GAP-36)
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex/feature/business.ex` | ⬜ |
+| `lib/baileys_ex/feature/newsletter.ex` | ⬜ |
+| `lib/baileys_ex/feature/community.ex` | ⬜ |
+| `lib/baileys_ex/feature/call.ex` | ⬜ |
+| `test/baileys_ex/feature/business_test.exs` | ⬜ |
+| `test/baileys_ex/feature/newsletter_test.exs` | ⬜ |
+| `test/baileys_ex/feature/community_test.exs` | ⬜ |
+| `test/baileys_ex/feature/call_test.exs` | ⬜ |
+
+---
+
+## Phase 12: Polish
+
+**Status:** NOT STARTED · **Depends on:** All previous phases
+
+### Tasks
+
+- [ ] 12.1 Telemetry events for all key operations
+- [ ] 12.2 Public API facade (`lib/baileys_ex.ex` rewrite)
+- [ ] 12.3 Documentation (ex_doc, guides)
+- [ ] 12.4 Example application (echo bot)
+- [ ] 12.5 Hex.pm preparation (`mix hex.build`)
+- [ ] 12.6 CI setup (GitHub Actions)
+
+### Acceptance Criteria
+
+- [ ] Telemetry events fire for all key operations
+- [ ] Public API covers all major features
+- [ ] Documentation generates without warnings
+- [ ] Example bot runs successfully
+- [ ] `mix hex.build` succeeds
+- [ ] CI passes all checks
+
+### Files
+
+| File | Status |
+|------|--------|
+| `lib/baileys_ex.ex` (rewrite) | ⬜ |
+| `lib/baileys_ex/telemetry.ex` | ⬜ |
+| `guides/*.md` | ⬜ |
+| `examples/echo_bot.exs` | ⬜ |
+| `.github/workflows/ci.yml` | ⬜ |
+
+---
+
+## Totals
+
+| Metric | Count |
+|--------|-------|
+| Phases | 12 |
+| Tasks | 97 |
+| Acceptance Criteria | 146 |
+| Source Files | ~80 |
+| Test Files | ~30 |
+| GAP items resolved | 48/48 |

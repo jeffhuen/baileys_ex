@@ -1,0 +1,214 @@
+# BaileysEx
+
+Full-featured Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) —
+a WhatsApp Web API library. Uses Rust NIFs for Signal protocol cryptography and
+performance-critical operations. Targets SOTA Elixir patterns (Elixir 1.18+/OTP 27+).
+
+Reference source: `dev/reference/Baileys-master/`
+
+---
+
+## Baileys Architecture Reference
+
+### Source Structure (TypeScript original)
+
+| Directory | Purpose |
+|-----------|---------|
+| `src/Socket/` | Layered socket composition — connection lifecycle, message send/recv, groups, chats, business, newsletters, communities |
+| `src/Signal/` | Signal Protocol wrapper (`libsignal.ts`), LID-to-phone mapping, group sender keys |
+| `src/Utils/` | 27 utility files — crypto, noise handler, media processing, auth, event buffering, mutexes, retry, LTHash, pre-key mgmt |
+| `src/WABinary/` | Binary XMPP-style node encoding/decoding, JID utilities, protocol constants |
+| `src/WAProto/` | Protocol Buffer definitions for all WhatsApp message types |
+| `src/Types/` | TypeScript type definitions (auth, messages, events, groups) |
+| `src/WAM/` | WhatsApp Analytics/Metrics |
+| `src/WAUSync/` | User sync protocol |
+| `src/Defaults/` | Default configuration values |
+
+### Socket Composition Chain
+
+Each layer wraps the previous and extends it:
+
+1. `makeSocket` — base WebSocket lifecycle, Noise handshake, query/sendNode primitives
+2. `makeNewsletterSocket` — newsletter subscriptions
+3. `makeChatsSocket` — privacy settings, presence, app state sync
+4. `makeMessagesSocket` — message relay, Signal encryption, device discovery
+5. `makeMessagesRecvSocket` — message decryption, retry logic, receipt handling
+6. `makeGroupsSocket` — group CRUD, participant management
+7. `makeBusinessSocket` — business profiles, catalogs
+8. `makeCommunitySocket` — community creation/linking
+
+Final export `makeWASocket` returns the fully composed socket object.
+
+### Protocols
+
+**Noise Protocol (Transport Security)**
+- Establishes encrypted transport over WebSocket before any application-level communication
+- Curve25519 ECDH key exchange, AES-256-GCM frame encryption, HKDF key derivation, SHA-256 hashing
+- Handshake: client ephemeral key → server ephemeral + encrypted static + encrypted cert → derive transport keys
+- Post-handshake: separate read/write counters for IV generation; all frames Noise-encrypted
+- Implementation: `src/Utils/noise-handler.ts`
+
+**Signal Protocol (E2E Encryption)**
+- Per-device message encryption (each recipient device gets separately encrypted copy)
+- Two message types: pre-key whisper (session establishment) and standard whisper
+- Group messaging via Sender Keys (one encryption op, distribution messages enable decryption)
+- Session management: create/validate/store/delete sessions, detect identity key changes
+- LID mapping: translates phone numbers ↔ logical device IDs for multi-device protocol
+- Implementation: `src/Signal/libsignal.ts`, `src/Signal/lid-mapping.ts`
+
+**Binary XMPP (Wire Format)**
+- WhatsApp's proprietary compact binary encoding of XMPP-style nodes (tag, attributes, children/content)
+- `encodeBinaryNode()` / `decodeBinaryNode()` for serialization
+- JID utilities for Jabber ID format (user@server, device IDs, LID/PN variants)
+- Implementation: `src/WABinary/`
+
+**Protocol Buffers (Message Serialization)**
+- `protobufjs` for all message content (text, media refs, reactions, polls, etc.)
+- Structures content before Signal encryption
+- Implementation: `src/WAProto/`
+
+**App State Sync ("Syncd")**
+- Versioned state snapshots with CRC verification and LTHash
+- Syncs mute/pin/star/archive across devices via patches
+- Implementation: `src/Utils/lt-hash.ts`, chats socket layer
+
+### Key Features to Port
+
+**Message Types:** text, images, video/GIF, audio/voice notes, documents, stickers,
+contacts/vCards, location, live location, reactions, polls, events, lists, buttons,
+orders, products, native flows, group invites, URL previews
+
+**Message Pipeline:** `generateWAMessage()` → `prepareWAMessageMedia()` (media) →
+`relayMessage()` → device discovery → per-device Signal encryption → binary encoding →
+Noise-encrypted WebSocket write
+
+**Message Receiving:** queue-based pipeline (online/offline paths), decryption within
+mutex, auto-retry on pre-key errors, receipt handling (delivery ACKs, read receipts)
+
+**Media Handling:**
+- Streaming architecture (never loads entire buffer into memory)
+- AES-256-CBC with random 32-byte media key, HKDF-expanded to 112 bytes (IV + cipher key + MAC key + ref key)
+- Type-specific HKDF info strings (`"WhatsApp Image Keys"`, `"WhatsApp Audio Keys"`, etc.)
+- Upload to WhatsApp CDN via authenticated HTTP; download with encrypted blob decryption
+- HMAC-SHA256 authentication (10-byte truncated digest)
+
+**Group Management:** create, update subject/description, leave, add/remove/promote/demote
+participants, invite codes (v3/v4), join approval, ephemeral messages, announcement mode
+
+**Other:** newsletter subscriptions, business profiles/catalogs, community management,
+presence updates, privacy settings, call events, link previews
+
+### Authentication & Pairing
+
+**Auth State (`AuthenticationCreds`):** noise key pair, pairing ephemeral key pair, ADV
+secret key, identity keys, signed pre-key, account/device identity, signal identities,
+pre-key tracking, sync timestamps, platform info, pairing code, routing info
+
+**Signal Key Store:** pre-keys, sessions, sender-keys, sender-key memory,
+app-state-sync-keys/versions, LID mappings, device lists, identity keys, tokens
+
+**QR Code Pairing:** server sends QR challenge → client renders → user scans with
+WhatsApp mobile → multi-device identity established
+
+**Phone Number Pairing:** `requestPairingCode(phoneNumber)` → returns numeric code →
+user enters in WhatsApp mobile → PBKDF2 (131,072 iterations, SHA-256)
+
+**Credential Persistence:** each credential type in separate files, signal sessions
+update on every message (must persist immediately), in-memory caching layer,
+atomic multi-key read/write with retry
+
+### WebSocket / Connection Management
+
+- Connects to `wss://web.whatsapp.com` with routing info as base64 query param
+- Noise handshake on connect → derive encryption keys → send registration/login node
+- Request/response: auto-generated message tags, timeout-based response matching
+- Keep-alive: configurable ping interval, disconnect if elapsed > interval + 5s
+- Connection states: `connecting` → `open` → `close` (auto-reconnect unless logged out)
+- Event buffering: defers non-critical notifications until offline processing completes
+- Pre-key upload: minimum interval, concurrent prevention, exponential backoff (3 retries)
+- Concurrency: separate mutexes for messages, app state patches, receipts, notifications
+
+### Rust NIF Strategy
+
+**Philosophy: wrap, don't reimplement.** Use Rustler to bring in existing, battle-tested
+Rust crates via NIFs. We do not maintain our own crypto or protocol implementations.
+
+| Rust Crate | Wraps | Used For |
+|------------|-------|----------|
+| `libsignal-protocol` | Signal Protocol (Double Ratchet, X3DH, Sender Keys, pre-keys, sessions) | All E2E encryption |
+| `snow` (or `noise-protocol`) | Noise Protocol Framework | Transport-layer encryption over WebSocket |
+| `curve25519-dalek` / `x25519-dalek` | Curve25519 ECDH, Ed25519 signing | Key generation, exchange, signatures (may be covered by libsignal) |
+| `ring` or `rustcrypto` crates | AES-GCM/CBC/CTR, HMAC, SHA-256, HKDF, PBKDF2 | Media encryption, key derivation, hashing |
+| `prost` | Protocol Buffers | Message serialization (alternative: use Elixir-side `protox`/`protobuf`) |
+
+**What stays in Elixir:** connection management, event handling, state machines,
+supervision trees, caching, business logic, message routing — everything that benefits
+from BEAM concurrency and fault tolerance.
+
+**What goes to Rust NIFs:** cryptographic operations, protocol state machines that are
+already implemented in Rust crates, any CPU-intensive binary encoding/decoding.
+
+### Key Dependencies (Baileys → Elixir/Rust mapping)
+
+| Baileys Dep | Role | BaileysEx Approach |
+|-------------|------|-------------------|
+| `ws` | WebSocket transport | `Mint.WebSocket` / `Fresh` (low-level, fits Noise integration) |
+| `libsignal` | Signal Protocol | Rustler NIF wrapping `libsignal-protocol` crate |
+| `whatsapp-rust-bridge` | Crypto (HKDF, MD5) | Rustler NIF wrapping `ring`/`rustcrypto` crates + Erlang `:crypto` |
+| Noise handshake (custom) | Transport encryption | Rustler NIF wrapping `snow` crate |
+| `protobufjs` | Protobuf serialization | `protox` (pure Elixir, good codegen) or Rust-side `prost` via NIF |
+| `pino` | Structured logging | `Logger` (stdlib) |
+| `async-mutex` | Concurrency | Process-based (BEAM handles this natively — GenServer, Task) |
+| `@hapi/boom` | Error objects | Tagged tuples / custom exception structs |
+| `lru-cache` / `node-cache` | Caching | ETS tables (built-in, concurrent, fast) |
+
+---
+
+## Agent Workflow — How to Work on This Project
+
+These rules apply to all agents (main session, teammates, subagents). They reinforce
+the detailed protocols in `dev/CLAUDE.md` and `dev/implementation_plans/CLAUDE.md` —
+those files are canonical. This section adds behavioural expectations.
+
+### Planning and Execution
+
+- **Plan before building.** Enter plan mode for any non-trivial task (3+ steps or
+  architectural decisions). If execution diverges from the plan, stop and re-plan —
+  don't push through a broken approach.
+- **SOTA-first.** For every non-trivial decision, evaluate the best path available
+  today — Elixir 1.18+/OTP 27+ primitives, Ash ecosystem, emerging libraries — not
+  last year's patterns. Prefer solutions that will age well over ones that are merely
+  familiar. See `dev/CLAUDE.md` § SOTA-first decision policy.
+- **Elegance within scope.** For the requested change, find the cleanest implementation.
+  "Knowing everything I know now, is there a more elegant way?" But do not expand scope —
+  elegance means less code, not more features.
+
+### Subagent and Teammate Strategy
+
+- **Protect the main context window.** Offload research, exploration, code review, and
+  parallel analysis to subagents (`Explore`, `Agent`, teammates). One focused task per
+  subagent.
+- **Use worktree isolation for parallel work.** When tasks have non-overlapping file
+  scope and no decision coupling, dispatch `batch-worker` teammates in isolated
+  worktrees. See `dev/implementation_plans/CLAUDE.md` § Task Dispatch Modes.
+- **Throw compute at hard problems.** For complex debugging, multi-perspective review,
+  or design exploration — use multiple subagents with competing hypotheses rather than
+  serial iteration in a single context.
+
+### Autonomous Execution
+
+- **Bug reports: just fix them.** Diagnose from logs, errors, and failing tests. Resolve
+  without asking for hand-holding. Zero context switching required from the user.
+- **Failing CI: go fix it.** Don't wait to be told how. Read the failure, trace the root
+  cause, implement the fix, verify it passes.
+- **Root causes only.** No temporary fixes, no workarounds, no suppressing symptoms.
+  Senior developer standards — find and fix the actual problem.
+
+### Verification and Learning
+
+- **Prove it works before claiming done.** Run all delivery gates (see Gates 1-11 above).
+  Diff behaviour between main and your changes when relevant. Evidence before assertions.
+- **After any user correction:** update auto-memory (`.claude/projects/.../memory/`)
+  with the pattern so the same mistake never repeats. Review memory at session start.
+- **Challenge your own work.** Before presenting: "Would this survive code review by
+  someone who understands BEAM semantics?" If not, fix it first.

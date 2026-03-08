@@ -1,0 +1,536 @@
+# Phase 6: Connection
+
+**Goal:** WebSocket transport with Noise encryption, `:gen_statem` connection state
+machine, keep-alive, reconnection, per-connection supervision tree.
+
+**Depends on:** Phase 3 (Protocol Layer), Phase 4 (Noise NIF)
+**Blocks:** Phase 7 (Auth), Phase 8 (Messaging)
+
+---
+
+## Design Decisions
+
+**`:gen_statem` directly, not GenServer.**
+Connection has explicit states with different valid operations per state. `:gen_statem`
+expresses this naturally. Using it directly (not `gen_state_machine` hex) avoids a
+dependency and is well-supported in OTP 27+.
+
+**Mint.WebSocket for transport.**
+Low-level, process-less HTTP/WebSocket client. Fits perfectly: we need raw frame
+access to layer Noise encryption on top. Mint returns data to the owning process
+via `Mint.WebSocket.stream/2`.
+
+**WebSocket frames are Noise-encrypted after handshake.**
+Pre-handshake: raw binary WebSocket frames carry Noise handshake messages.
+Post-handshake: every frame is Noise-encrypted before sending, Noise-decrypted
+after receiving, then decoded as WABinary nodes.
+
+**Frame format:**
+WhatsApp frames have a 3-byte length prefix (big-endian) followed by the payload.
+Pre-noise: payload is raw. Post-noise: payload is Noise-encrypted.
+
+---
+
+## Tasks
+
+### 6.1 Connection config
+
+File: `lib/baileys_ex/connection/config.ex`
+
+```elixir
+defmodule BaileysEx.Connection.Config do
+  @type t :: %__MODULE__{
+    ws_url: String.t(),
+    keep_alive_interval: pos_integer(),
+    retry_delay: pos_integer(),
+    max_retries: non_neg_integer(),
+    connect_timeout: pos_integer(),
+    browser: {String.t(), String.t(), String.t()},
+    print_qr_in_terminal: boolean()
+  }
+
+  defstruct [
+    ws_url: "wss://web.whatsapp.com/ws/chat",
+    keep_alive_interval: 25_000,
+    retry_delay: 2_000,
+    max_retries: 5,
+    connect_timeout: 20_000,
+    browser: {"BaileysEx", "Chrome", "1.0"},
+    print_qr_in_terminal: false
+  ]
+
+  # --- Browser/Platform Identification (GAP-27) ---
+
+  @doc "Platform type mapping for device registration"
+  @platforms %{
+    "Chrome" => :CHROME,
+    "Firefox" => :FIREFOX,
+    "Safari" => :SAFARI,
+    "Edge" => :EDGE,
+    "Opera" => :OPERA,
+    "Desktop" => :DESKTOP,
+    "Mac OS" => :DARWIN,
+    "Windows" => :WIN32,
+    "Linux" => :LINUX
+  }
+
+  def platform_type(browser_name) do
+    Map.get(@platforms, browser_name, :UNKNOWN)
+  end
+end
+```
+
+### 6.2 Connection socket (:gen_statem)
+
+File: `lib/baileys_ex/connection/socket.ex`
+
+States:
+```
+:disconnected → :connecting → :noise_handshake → :authenticating → :connected
+                                                                      ↓
+                                                               :reconnecting
+                                                                      ↓
+                                                               :connecting (loop)
+```
+
+```elixir
+defmodule BaileysEx.Connection.Socket do
+  @behaviour :gen_statem
+
+  defstruct [
+    :config,
+    :conn,           # Mint.HTTP connection
+    :websocket,      # Mint.WebSocket
+    :noise_state,    # ResourceArc from Noise NIF
+    :transport,      # ResourceArc for Noise transport (post-handshake)
+    :auth_state,     # Auth credentials
+    :ref,            # Mint request ref
+    :buffer,         # Incomplete frame buffer
+    retry_count: 0,
+    epoch: 0         # Message tag counter
+  ]
+
+  # --- Lifecycle ---
+
+  def start_link(opts) do
+    :gen_statem.start_link(__MODULE__, opts, [])
+  end
+
+  @impl true
+  def init(opts) do
+    data = %__MODULE__{config: opts.config, auth_state: opts.auth_state}
+    actions = [{:next_event, :internal, :connect}]
+    {:ok, :disconnected, data, actions}
+  end
+
+  def callback_mode, do: [:state_functions, :state_enter]
+
+  # --- State: disconnected ---
+
+  def disconnected(:enter, _old_state, data) do
+    # Notify event emitter
+    {:keep_state, data}
+  end
+
+  def disconnected(:internal, :connect, data) do
+    case establish_websocket(data.config) do
+      {:ok, conn, websocket, ref} ->
+        data = %{data | conn: conn, websocket: websocket, ref: ref}
+        {:next_state, :noise_handshake, data,
+         [{:next_event, :internal, :start_handshake}]}
+      {:error, reason} ->
+        {:keep_state, data, [{:state_timeout, data.config.retry_delay, :retry}]}
+    end
+  end
+
+  # --- State: noise_handshake ---
+
+  def noise_handshake(:enter, _, data) do
+    {:keep_state, data}
+  end
+
+  def noise_handshake(:internal, :start_handshake, data) do
+    noise_state = BaileysEx.Protocol.Noise.new_handshake()
+    {:continue, noise_state, message} = BaileysEx.Protocol.Noise.process_handshake(noise_state, :step1)
+    :ok = send_raw_frame(data, message)
+    {:keep_state, %{data | noise_state: noise_state}}
+  end
+
+  def noise_handshake(:info, {tag, _ref, responses}, data) when tag in [:tcp, :ssl] do
+    # Process Mint responses, extract WebSocket frames
+    # Feed to Noise handshake steps
+    # On completion: transition to :authenticating
+  end
+
+  # --- State: connected ---
+
+  def connected(:enter, _, data) do
+    # Start keep-alive timer
+    actions = [{{:timeout, :keep_alive}, data.config.keep_alive_interval, :ping}]
+    {:keep_state, data, actions}
+  end
+
+  def connected({:timeout, :keep_alive}, :ping, data) do
+    send_keep_alive(data)
+    actions = [{{:timeout, :keep_alive}, data.config.keep_alive_interval, :ping}]
+    {:keep_state, data, actions}
+  end
+
+  # --- Sending ---
+
+  def send_node(pid, %BinaryNode{} = node) do
+    :gen_statem.call(pid, {:send_node, node})
+  end
+
+  def connected({:call, from}, {:send_node, node}, data) do
+    binary = BinaryNode.encode(node)
+    {:ok, encrypted} = Protocol.Noise.encrypt_frame(data.transport, binary)
+    :ok = send_frame(data, encrypted)
+    {:keep_state, data, [{:reply, from, :ok}]}
+  end
+
+  # --- Automatic ACK (GAP-03) ---
+  # Every received message, receipt, and notification with an "id" attribute
+  # MUST be acknowledged with an ack stanza. Without this, the server re-sends
+  # and eventually disconnects.
+
+  defp send_ack(data, %BinaryNode{tag: tag, attrs: attrs} = node) do
+    ack_attrs = %{
+      "id" => attrs["id"],
+      "to" => attrs["from"],
+      "class" => tag
+    }
+    |> maybe_put("participant", attrs["participant"])
+    |> maybe_put("recipient", attrs["recipient"])
+
+    ack_node = %BinaryNode{tag: "ack", attrs: ack_attrs}
+    send_node_internal(data, ack_node)
+  end
+
+  # --- Logout (GAP-18) ---
+
+  @doc "Logout: removes device registration from server, then disconnects"
+  def logout(pid) do
+    :gen_statem.call(pid, :logout)
+  end
+
+  def connected({:call, from}, :logout, data) do
+    node = %BinaryNode{
+      tag: "iq",
+      attrs: %{
+        "to" => "s.whatsapp.net",
+        "type" => "set",
+        "xmlns" => "md"
+      },
+      content: [
+        %BinaryNode{
+          tag: "remove-companion-device",
+          attrs: %{"jid" => JID.to_string(data.auth_state.me), "reason" => "user_initiated"}
+        }
+      ]
+    }
+    send_node_internal(data, node)
+    {:next_state, :disconnected, data, [{:reply, from, :ok}]}
+  end
+
+  # --- Dirty Bit Handling (GAP-24) ---
+  # Server sends CB:ib,,dirty notifications to trigger state refresh.
+  # Types: "groups", "account_sync"
+
+  defp handle_dirty_notification(%BinaryNode{} = node, conn) do
+    dirty_type = get_child_attr(node, "dirty", "type")
+    case dirty_type do
+      "groups" -> Feature.Group.fetch_all_participating(conn)
+      "account_sync" -> clean_dirty_bits(conn, "account_sync")
+      _ -> :ok
+    end
+  end
+
+  defp clean_dirty_bits(conn, type) do
+    node = %BinaryNode{
+      tag: "iq",
+      attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "urn:xmpp:whatsapp:dirty"},
+      content: [%BinaryNode{tag: "clean", attrs: %{"type" => type}}]
+    }
+    send_node_internal(conn, node)
+  end
+
+  # --- Unified Session (GAP-33) ---
+  # Session deduplication across reconnects within a 7-day window.
+  # Called on connection open and when presence changes to :available.
+
+  defp send_unified_session(data) do
+    # Session ID = (now_ms + 3_days_ms) rem 7_days_ms using server time offset
+    server_offset = data.server_time_offset || 0
+    now = System.os_time(:millisecond) + server_offset
+    three_days = 3 * 24 * 60 * 60 * 1000
+    seven_days = 7 * 24 * 60 * 60 * 1000
+    session_id = rem(now + three_days, seven_days)
+
+    node = %BinaryNode{
+      tag: "ib",
+      attrs: %{},
+      content: [
+        %BinaryNode{tag: "unified_session", attrs: %{"id" => to_string(session_id)}}
+      ]
+    }
+    send_node_internal(data, node)
+  end
+
+  # --- Init Queries (GAP-34) ---
+  # On connection open, fetch server props, blocklist, and privacy settings
+  # in parallel. Props include server-side feature flags cached via lastPropHash.
+
+  defp execute_init_queries(conn) do
+    Task.Supervisor.async_nolink(task_supervisor(conn), fn ->
+      tasks = [
+        Task.async(fn -> Feature.Privacy.fetch_settings(conn, true) end),
+        Task.async(fn -> Feature.Privacy.fetch_blocklist(conn) end),
+        Task.async(fn -> fetch_server_props(conn) end)
+      ]
+      Task.await_many(tasks, 15_000)
+    end)
+  end
+
+  defp fetch_server_props(conn) do
+    # IQ: xmlns='w', type='get', content: <props protocol='2'/>
+    # Response contains server feature flags
+    # Cache lastPropHash on creds for delta updates
+  end
+
+  # --- WAM Analytics (GAP-31) ---
+  # WhatsApp Analytics/Metrics. Server may expect periodic analytics pings.
+  # Baileys sends via xmlns='w:stats' with 'add' tag and Unix timestamp.
+
+  defp send_wam_buffer(data, wam_buffer) do
+    node = %BinaryNode{
+      tag: "iq",
+      attrs: %{
+        "to" => "s.whatsapp.net",
+        "type" => "set",
+        "xmlns" => "w:stats"
+      },
+      content: [
+        %BinaryNode{
+          tag: "add",
+          attrs: %{"t" => to_string(System.os_time(:second))},
+          content: wam_buffer
+        }
+      ]
+    }
+    send_node_internal(data, node)
+  end
+end
+```
+
+### 6.3 Frame handling
+
+Within the socket module, handle WebSocket frame reassembly:
+
+```elixir
+defp process_frames(data, frames) do
+  Enum.reduce(frames, {data, []}, fn
+    {:binary, raw_frame}, {data, nodes} ->
+      case reassemble_frame(data.buffer, raw_frame) do
+        {:complete, frame, rest} ->
+          {:ok, decrypted} = Protocol.Noise.decrypt_frame(data.transport, frame)
+          {:ok, node} = BinaryNode.decode(decrypted)
+          {%{data | buffer: rest}, [node | nodes]}
+        {:incomplete, buffer} ->
+          {%{data | buffer: buffer}, nodes}
+      end
+  end)
+end
+```
+
+### 6.4 Per-connection supervisor
+
+File: `lib/baileys_ex/connection/supervisor.ex`
+
+```elixir
+defmodule BaileysEx.Connection.Supervisor do
+  use Supervisor
+
+  def start_link(opts) do
+    name = {:via, Registry, {BaileysEx.Registry, opts[:name] || make_ref()}}
+    Supervisor.start_link(__MODULE__, opts, name: name)
+  end
+
+  @impl true
+  def init(opts) do
+    children = [
+      {BaileysEx.Connection.Socket, opts},
+      {BaileysEx.Connection.Store, opts},
+      {BaileysEx.Connection.EventEmitter, opts},
+      {Task.Supervisor, name: task_sup_name(opts)}
+    ]
+
+    Supervisor.init(children, strategy: :rest_for_one)
+  end
+end
+```
+
+### 6.5 Event emitter (GAP-07, GAP-22)
+
+File: `lib/baileys_ex/connection/event_emitter.ex`
+
+```elixir
+defmodule BaileysEx.Connection.EventEmitter do
+  use GenServer
+
+  @moduledoc """
+  Event dispatch with buffering support. Buffers events during offline
+  message processing to ensure consistent ordering.
+  """
+
+  # --- Full Event Type Catalog ---
+  # All event types that can be emitted:
+
+  @event_types [
+    # Connection
+    :connection_update,          # %{connection: :open | :close | :connecting, qr: str, is_online: bool, ...}
+    :creds_update,               # Auth credential changes (MUST persist immediately)
+
+    # Messages
+    :messages_upsert,            # %{messages: [msg], type: :notify | :append}
+    :messages_update,            # [%{key: key, update: changes}]
+    :messages_delete,            # %{keys: [key]} or %{jid: jid, all: true}
+    :messages_media_update,      # [%{key: key, media: media_data}]
+    :message_receipt_update,     # [%{key: key, receipt: %{user_jid: jid, read_timestamp: ts}}]
+
+    # Contacts
+    :contacts_upsert,            # [%{id: jid, ...}]
+    :contacts_update,            # [%{id: jid, img_url: :changed | :removed, ...}]
+
+    # Chats
+    :chats_upsert,               # [%{id: jid, ...}]
+    :chats_update,               # [%{id: jid, ...changes}]
+    :chats_delete,               # [jid]
+
+    # Groups
+    :groups_upsert,              # [GroupMetadata]
+    :groups_update,              # [%{id: jid, ...changes}]
+
+    # Presence
+    :presence_update,            # %{id: jid, presences: %{participant_jid => presence_data}}
+
+    # Privacy
+    :blocklist_update,           # %{blocklist: [jid], type: :add | :remove}
+
+    # Labels
+    :labels_edit,                # label changes
+    :labels_association,         # label ↔ chat/message associations
+
+    # Calls
+    :call,                       # [WACallEvent]
+
+    # Newsletter
+    :newsletter_settings_update, # %{id: jid, update: changes}
+    :newsletter_participants_update, # %{id: jid, author: jid, ...}
+    :newsletter_reaction,        # %{id: jid, server_id: id, reaction: %{code: emoji, count: n}}
+    :newsletter_view             # %{id: jid, server_id: id, count: n}
+  ]
+
+  # --- Buffering ---
+  # 12 bufferable event types (same as Baileys BUFFERABLE_EVENT)
+  @bufferable_events [
+    :messages_upsert, :messages_update, :messages_delete, :messages_media_update,
+    :message_receipt_update, :contacts_upsert, :contacts_update,
+    :chats_upsert, :chats_update, :chats_delete,
+    :groups_upsert, :groups_update
+  ]
+
+  @buffer_timeout_ms 30_000  # Auto-flush after 30 seconds
+
+  # Subscribers are stored as MapSet of {pid, event_filter}
+  # Events dispatched via send/2 to subscriber pids
+  #
+  # Buffer mode: during offline sync, events are accumulated and flushed
+  # together for consistent ordering. Auto-flush timer prevents stuck buffers.
+
+  def buffer(pid), do: GenServer.call(pid, :start_buffer)
+  def flush(pid), do: GenServer.call(pid, :flush_buffer)
+  def buffering?(pid), do: GenServer.call(pid, :is_buffering)
+
+  # --- Conditional Chat Updates (GAP-48) ---
+  # Chat updates from sync patches (mute/archive) include a condition that
+  # checks whether relevant message ranges have been populated by history sync.
+  # During AwaitingInitialSync, these updates are held as "conditional" and
+  # only applied when the condition evaluates to true after history populates.
+
+  @doc "Emit a conditional event that is evaluated on flush"
+  def emit_conditional(pid, event_type, data, condition_fn) do
+    GenServer.cast(pid, {:emit_conditional, event_type, data, condition_fn})
+  end
+
+  # Internal: when flushing, evaluate each conditional event's condition_fn.
+  # If condition returns true, include in flush batch. Otherwise discard.
+  # This prevents chat mute/archive patches from being applied before
+  # their target messages exist in the store.
+
+  # Sync state machine:
+  # :connecting → :awaiting_initial_sync → :syncing → :online
+  # Buffer starts at :awaiting_initial_sync, flushes at :online transition.
+  # 20-second timeout forces :online if no history sync message arrives.
+end
+```
+
+### 6.6 Store (GenServer + ETS)
+
+File: `lib/baileys_ex/connection/store.ex`
+
+```elixir
+defmodule BaileysEx.Connection.Store do
+  use GenServer
+
+  # ETS table for concurrent reads
+  # GenServer serializes writes
+  # Stores: auth credentials, signal context ref, connection metadata
+  # Persistence behaviour callback on write
+end
+```
+
+### 6.7 Tests
+
+- `:gen_statem` state transitions (mock WebSocket)
+- Frame reassembly (split frames, concatenated frames)
+- Keep-alive timer fires correctly
+- Reconnection after disconnect
+- Supervisor restart behavior
+- Event emitter subscribe/dispatch
+- Store read/write with ETS
+
+---
+
+## Acceptance Criteria
+
+- [ ] Connection state machine transitions correctly through all states
+- [ ] Noise handshake integrates with WebSocket transport
+- [ ] Frame encoding/decoding with length prefix works
+- [ ] Keep-alive prevents timeout disconnection
+- [ ] Reconnection works after unexpected disconnect
+- [ ] Supervisor :rest_for_one restarts children correctly
+- [ ] Event emitter dispatches to subscribers
+- [ ] Store reads are concurrent via ETS
+- [ ] Every received node with an "id" attribute gets an automatic ACK (GAP-03)
+- [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
+- [ ] EventEmitter supports all 25+ event types (GAP-07)
+- [ ] Event buffering accumulates events and flushes on demand (GAP-22)
+- [ ] Buffer auto-flushes after 30 seconds (GAP-22)
+- [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
+- [ ] Platform type correctly mapped for device registration (GAP-27)
+- [ ] Unified session sent on connection open and presence available (GAP-33)
+- [ ] Init queries (props, blocklist, privacy) fetched in parallel on connection open (GAP-34)
+- [ ] Conditional chat updates held during sync, evaluated on flush (GAP-48)
+- [ ] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
+
+## Files Created/Modified
+
+- `lib/baileys_ex/connection/config.ex` — includes browser/platform identification (GAP-27)
+- `lib/baileys_ex/connection/socket.ex` — includes automatic ACK (GAP-03), logout (GAP-18), dirty bit handling (GAP-24)
+- `lib/baileys_ex/connection/supervisor.ex`
+- `lib/baileys_ex/connection/event_emitter.ex` — full event catalog (GAP-07), buffering support with auto-flush (GAP-22)
+- `lib/baileys_ex/connection/store.ex`
+- `test/baileys_ex/connection/socket_test.exs`
+- `test/baileys_ex/connection/event_emitter_test.exs`
+- `test/baileys_ex/connection/store_test.exs`

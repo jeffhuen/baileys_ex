@@ -5,10 +5,11 @@ In-progress Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) 
 - **Foundation phase** is complete
 - **Crypto** is complete for the current Phase 2 scope
 - **Protocol layer and Noise transport foundations** are implemented in-tree for the current scope
-- **Signal, connection, auth, messaging, media, and feature layers** are still planned work
+- **Signal Phase 5 is in progress** for the repository/address boundary and narrow verification helpers
+- **Connection, auth, messaging, media, and feature layers** are still planned work
 - Targets Elixir 1.19+ / OTP 28
 
-> **Status:** Phases 1-3 are complete for their current scope, and Phase 4 now has a reference-aligned Noise implementation. Broad WAProto message/auth code generation is intentionally deferred to the later phases that consume it. See `dev/implementation_plan/PROGRESS.md`.
+> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, and Phase 5 has started with the Signal curve/repository boundary. Broad WAProto message/auth code generation is intentionally deferred to the later phases that consume it. See `dev/implementation_plan/PROGRESS.md`.
 
 ## Target Architecture
 
@@ -32,9 +33,9 @@ BaileysEx.Application (Supervisor)
 |-------|----------|
 | Crypto primitives | Erlang `:crypto` (AES, HMAC, SHA, PBKDF2, Curve25519, Ed25519) |
 | HKDF | Pure Elixir using `:crypto.mac/4` |
-| Signal Protocol | Rust NIF wrapping `libsignal-protocol` (planned) — sessions, sender keys, and identity verification |
+| Signal Protocol | Baileys-compatible Elixir repository boundary with the smallest native helper surface justified by interoperability |
 | Noise Protocol | Elixir protocol layer aligned with Baileys, using native crypto primitives and a narrow XEdDSA helper |
-| Signature helpers | Expose the Baileys/libsignal-compatible verification primitive from the Signal/native layer; keep a narrow helper NIF only if the Signal wrapper does not cover it |
+| Signature helpers | Narrow XEdDSA helper plus Elixir wrappers that expose the Baileys-compatible verification primitive |
 | Wire format | Pure Elixir (WABinary encode/decode) |
 | Protobuf | `protox` (pure Elixir codegen) |
 | WebSocket | `Mint.WebSocket` (process-less) |

@@ -13,6 +13,11 @@
 > the existing narrow XEdDSA helper plus `BaileysEx.Signal.Curve`. There is no
 > `native/baileys_nif/src/signal.rs` yet, and that is by design until a broader
 > native boundary is proven necessary.
+>
+> **Current implementation note:** Task 5.2 is intentionally being satisfied by
+> `BaileysEx.Signal.Repository` plus `BaileysEx.Signal.Address`, which define the
+> public repository/address contract before the later LID mapping, store, and
+> sender-key tasks fill in the remaining engine details.
 
 **Goal:** Provide a Signal layer that matches Baileys' behavior while keeping
 persistence, orchestration, and BEAM concurrency in Elixir and avoiding an
@@ -118,6 +123,8 @@ The native/repository layer must operate on these logical key families:
 
 This section describes the older pure-Elixir draft. Keep it only as background
 research until the phase is rewritten around the libsignal-backed approach above.
+The numbered subsections below do **not** define the active Phase 5 task order;
+`dev/implementation_plan/PROGRESS.md` is authoritative for current task numbering.
 
 **No process needed.** Signal operations are stateless functions that take session
 state as structs and return updated structs. The connection Store (GenServer + ETS)

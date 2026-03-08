@@ -25,6 +25,9 @@ baileys_ex-*.tar
 # Reference source code (large, not ours)
 /dev/reference/
 
+# Agent scratch files (working memory, not committed)
+/dev/implementation_plan/scratch/
+
 # Rust build artifacts
 /native/baileys_nif/target/
 

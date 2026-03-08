@@ -28,6 +28,9 @@ baileys_ex-*.tar
 # Agent scratch files (working memory, not committed)
 /dev/implementation_plan/scratch/
 
+# Compiled NIF binaries (built by mix compile)
+/priv/native/
+
 # Rust build artifacts
 /native/baileys_nif/target/
 

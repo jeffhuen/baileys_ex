@@ -1,3 +1,6 @@
+# Note: BaileysEx.Message and BaileysEx.ConnectionConfig are defined in their
+# respective phases (Phase 8 and Phase 6) where their full shape is known.
+
 defmodule BaileysEx.JID do
   @moduledoc """
   WhatsApp Jabber ID — the address format for users, groups, and broadcasts.
@@ -16,6 +19,7 @@ defmodule BaileysEx.JID do
           agent: non_neg_integer() | nil
         }
 
+  @enforce_keys [:server]
   defstruct [:user, :server, :device, :agent]
 end
 
@@ -32,5 +36,6 @@ defmodule BaileysEx.BinaryNode do
           content: [t()] | binary() | nil
         }
 
+  @enforce_keys [:tag]
   defstruct [:tag, attrs: %{}, content: nil]
 end

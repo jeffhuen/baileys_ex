@@ -16,7 +16,7 @@
 | 2 | Crypto | 3 | COMPLETE | 1 | 7, 9 |
 | 3 | Protocol Layer | 10 | COMPLETE | 1 | 6 |
 | 4 | Noise NIF | 6 | IN PROGRESS | 1 | 6 |
-| 5 | Signal Protocol | 8 | NOT STARTED | 1, 2 | 7, 8 |
+| 5 | Signal Protocol | 8 | IN PROGRESS | 1, 2 | 7, 8 |
 | 6 | Connection | 7 | NOT STARTED | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | NOT STARTED | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | NOT STARTED | 5, 6, 7 | 9, 10 |

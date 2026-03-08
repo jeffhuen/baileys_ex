@@ -93,6 +93,17 @@ defmodule BaileysEx.Signal.RepositoryTest do
                Repository.jid_to_signal_protocol_address("user:99@hosted.lid")
     end
 
+    test "uses agent field as domain type for standard servers" do
+      assert {:ok, "12345_128.0"} =
+               Repository.jid_to_signal_protocol_address("12345_128@s.whatsapp.net")
+
+      assert {:ok, "12345_128.3"} =
+               Repository.jid_to_signal_protocol_address("12345_128:3@s.whatsapp.net")
+
+      assert {:ok, "12345_128.0"} =
+               Repository.jid_to_signal_protocol_address("12345_128@c.us")
+    end
+
     test "rejects invalid device 99 addresses outside hosted domains" do
       assert {:error, :invalid_signal_address} =
                Repository.jid_to_signal_protocol_address("user:99@s.whatsapp.net")
@@ -160,6 +171,139 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
       assert {:ok, %{exists: false, reason: :no_session}} =
                Repository.validate_session(repo, "5511999887766@s.whatsapp.net")
+    end
+  end
+
+  describe "error paths" do
+    test "inject_e2e_session rejects malformed session data" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :invalid_session} =
+               Repository.inject_e2e_session(repo, %{jid: "user@s.whatsapp.net", session: %{}})
+
+      assert {:error, :invalid_session} =
+               Repository.inject_e2e_session(repo, %{
+                 jid: "user@s.whatsapp.net",
+                 session: %{
+                   registration_id: -1,
+                   identity_key: :crypto.strong_rand_bytes(32),
+                   signed_pre_key: %{
+                     key_id: 1,
+                     public_key: :crypto.strong_rand_bytes(32),
+                     signature: :crypto.strong_rand_bytes(64)
+                   },
+                   pre_key: %{key_id: 1, public_key: :crypto.strong_rand_bytes(32)}
+                 }
+               })
+    end
+
+    test "inject_e2e_session rejects session with wrong-size public keys" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :invalid_session} =
+               Repository.inject_e2e_session(repo, %{
+                 jid: "user@s.whatsapp.net",
+                 session: %{
+                   registration_id: 1,
+                   identity_key: <<1, 2, 3>>,
+                   signed_pre_key: %{
+                     key_id: 1,
+                     public_key: :crypto.strong_rand_bytes(32),
+                     signature: :crypto.strong_rand_bytes(64)
+                   },
+                   pre_key: %{key_id: 1, public_key: :crypto.strong_rand_bytes(32)}
+                 }
+               })
+    end
+
+    test "inject_e2e_session rejects invalid JIDs" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :invalid_signal_address} =
+               Repository.inject_e2e_session(repo, %{
+                 jid: "user@g.us",
+                 session: %{
+                   registration_id: 1,
+                   identity_key: :crypto.strong_rand_bytes(32),
+                   signed_pre_key: %{
+                     key_id: 1,
+                     public_key: :crypto.strong_rand_bytes(32),
+                     signature: :crypto.strong_rand_bytes(64)
+                   },
+                   pre_key: %{key_id: 1, public_key: :crypto.strong_rand_bytes(32)}
+                 }
+               })
+    end
+
+    test "inject_e2e_session rejects non-map second argument" do
+      repo = Repository.new(adapter: FakeAdapter)
+      assert {:error, :invalid_session} = Repository.inject_e2e_session(repo, "not a map")
+    end
+
+    test "encrypt_message rejects non-binary data" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :invalid_session} =
+               Repository.encrypt_message(repo, %{jid: "u@s.whatsapp.net", data: 123})
+    end
+
+    test "encrypt_message propagates adapter no_session error" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :no_session} =
+               Repository.encrypt_message(repo, %{
+                 jid: "user@s.whatsapp.net",
+                 data: "hello"
+               })
+    end
+
+    test "decrypt_message rejects invalid type" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :invalid_ciphertext} =
+               Repository.decrypt_message(repo, %{
+                 jid: "user@s.whatsapp.net",
+                 type: :unknown,
+                 ciphertext: "data"
+               })
+    end
+
+    test "decrypt_message propagates adapter no_session error" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :no_session} =
+               Repository.decrypt_message(repo, %{
+                 jid: "user@s.whatsapp.net",
+                 type: :pkmsg,
+                 ciphertext: "garbage"
+               })
+    end
+
+    test "delete_session rejects invalid JIDs in the list" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :invalid_signal_address} =
+               Repository.delete_session(repo, ["valid@s.whatsapp.net", "invalid@g.us"])
+    end
+
+    test "delete_session rejects non-list argument" do
+      repo = Repository.new(adapter: FakeAdapter)
+      assert {:error, :invalid_signal_address} = Repository.delete_session(repo, "not a list")
+    end
+
+    test "validate_session rejects invalid JIDs" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :invalid_signal_address} =
+               Repository.validate_session(repo, "user@g.us")
+    end
+
+    test "jid_to_signal_protocol_address rejects invalid JIDs" do
+      assert {:error, :invalid_signal_address} =
+               Repository.jid_to_signal_protocol_address("no-at-sign")
+
+      assert {:error, :invalid_signal_address} =
+               Repository.jid_to_signal_protocol_address("user@g.us")
     end
   end
 end

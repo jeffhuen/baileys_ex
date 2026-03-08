@@ -19,13 +19,20 @@ defmodule BaileysEx.Signal.Address do
   @enforce_keys [:name, :device_id]
   defstruct [:name, :device_id]
 
-  @whatsapp_servers MapSet.new(["s.whatsapp.net", "c.us", "lid", "hosted", "hosted.lid"])
+  @whatsapp_servers %{
+    "s.whatsapp.net" => [],
+    "c.us" => [],
+    "lid" => [],
+    "hosted" => [],
+    "hosted.lid" => []
+  }
 
   @spec from_jid(String.t()) :: {:ok, t()} | {:error, error()}
   def from_jid(jid) when is_binary(jid) do
     case JID.parse(jid) do
-      %BaileysEx.JID{user: user, server: server, device: device} when is_binary(user) ->
-        maybe_build_address(user, server, device)
+      %BaileysEx.JID{user: user, server: server, device: device, agent: agent}
+      when is_binary(user) ->
+        maybe_build_address(user, server, device, agent)
 
       _ ->
         {:error, :invalid_signal_address}
@@ -37,26 +44,28 @@ defmodule BaileysEx.Signal.Address do
   @spec to_string(t()) :: String.t()
   def to_string(%__MODULE__{name: name, device_id: device_id}), do: "#{name}.#{device_id}"
 
-  @spec build_address(String.t(), String.t(), non_neg_integer() | nil) ::
-          {:ok, t()} | {:error, error()}
-  defp build_address(_user, server, 99) when server not in ["hosted", "hosted.lid"],
+  defp build_address(_user, server, 99, _agent) when server not in ["hosted", "hosted.lid"],
     do: {:error, :invalid_signal_address}
 
-  defp build_address(user, server, device) do
-    domain_type = JID.domain_type_for_server(server)
+  defp build_address(user, server, device, agent) do
+    domain_type = resolve_domain_type(server, agent)
     name = signal_name(user, domain_type)
     {:ok, %__MODULE__{name: name, device_id: device || 0}}
   end
 
-  @spec signal_name(String.t(), non_neg_integer()) :: String.t()
+  defp resolve_domain_type(server, agent) do
+    case JID.domain_type_for_server(server) do
+      0 when is_integer(agent) and agent > 0 -> agent
+      domain_type -> domain_type
+    end
+  end
+
   defp signal_name(user, 0), do: user
   defp signal_name(user, domain_type), do: "#{user}_#{domain_type}"
 
-  @spec maybe_build_address(String.t(), String.t(), non_neg_integer() | nil) ::
-          {:ok, t()} | {:error, error()}
-  defp maybe_build_address(user, server, device) do
-    if MapSet.member?(@whatsapp_servers, server) do
-      build_address(user, server, device)
+  defp maybe_build_address(user, server, device, agent) do
+    if is_map_key(@whatsapp_servers, server) do
+      build_address(user, server, device, agent)
     else
       {:error, :invalid_signal_address}
     end

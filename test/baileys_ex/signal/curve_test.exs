@@ -46,4 +46,52 @@ defmodule BaileysEx.Signal.CurveTest do
     assert {:ok, signal_public_key} = Curve.generate_signal_pub_key(key_pair.public)
     assert Curve.verify(identity_key_pair.public, signal_public_key, signature)
   end
+
+  describe "error paths" do
+    test "shared_key rejects invalid private key sizes" do
+      valid_public = :crypto.strong_rand_bytes(32)
+      assert {:error, :invalid_private_key} = Curve.shared_key(<<1, 2, 3>>, valid_public)
+      assert {:error, :invalid_private_key} = Curve.shared_key(<<>>, valid_public)
+
+      too_long = :crypto.strong_rand_bytes(33)
+      assert {:error, :invalid_private_key} = Curve.shared_key(too_long, valid_public)
+    end
+
+    test "shared_key rejects invalid public key sizes" do
+      valid_private = :crypto.strong_rand_bytes(32)
+      assert {:error, :invalid_public_key} = Curve.shared_key(valid_private, <<1, 2, 3>>)
+      assert {:error, :invalid_public_key} = Curve.shared_key(valid_private, <<>>)
+
+      too_long = :crypto.strong_rand_bytes(34)
+      assert {:error, :invalid_public_key} = Curve.shared_key(valid_private, too_long)
+    end
+
+    test "shared_key accepts Signal-prefixed (33-byte) public keys" do
+      alice = Curve.generate_key_pair()
+      bob = Curve.generate_key_pair()
+      prefixed_bob = <<5, bob.public::binary>>
+
+      assert {:ok, shared_raw} = Curve.shared_key(alice.private, bob.public)
+      assert {:ok, shared_prefixed} = Curve.shared_key(alice.private, prefixed_bob)
+      assert shared_raw == shared_prefixed
+    end
+
+    test "sign rejects invalid private key sizes" do
+      assert {:error, :invalid_private_key} = Curve.sign(<<1, 2, 3>>, "message")
+      assert {:error, :invalid_private_key} = Curve.sign(<<>>, "message")
+    end
+
+    test "verify returns false for invalid public key sizes" do
+      refute Curve.verify(<<1, 2, 3>>, "message", :crypto.strong_rand_bytes(64))
+    end
+
+    test "signed_key_pair rejects non-map identity key" do
+      assert {:error, :invalid_identity_key} = Curve.signed_key_pair("not a map", 1)
+    end
+
+    test "signed_key_pair rejects negative key_id" do
+      key_pair = Curve.generate_key_pair()
+      assert {:error, :invalid_identity_key} = Curve.signed_key_pair(key_pair, -1)
+    end
+  end
 end

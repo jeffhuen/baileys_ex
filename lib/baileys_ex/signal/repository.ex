@@ -1,11 +1,10 @@
 defmodule BaileysEx.Signal.Repository do
   @moduledoc """
-  Public Signal repository boundary used by later connection and messaging phases.
+  Public Signal repository boundary for connection and messaging consumers.
 
   This module owns JID-to-Signal address translation, session bundle normalization,
-  and the Elixir-facing return contracts. The cryptographic/session engine stays
-  behind the adapter boundary so Phase 5 can grow without committing to an
-  oversized native surface.
+  and the Elixir-facing return contracts. The cryptographic and session engine stays
+  behind an adapter boundary, keeping the native surface minimal.
   """
 
   alias BaileysEx.Signal.Address

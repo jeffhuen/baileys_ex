@@ -191,11 +191,11 @@ remains an open hardening task until verified with dedicated native tooling.
 
 ## Phase 5: Signal Protocol (libsignal-compatible boundary)
 
-**Status:** NOT STARTED · **Depends on:** Phases 1, 2 · **Blocks:** 7, 8
+**Status:** IN PROGRESS · **Depends on:** Phases 1, 2 · **Blocks:** 7, 8
 
 ### Tasks
 
-- [ ] 5.1 Minimal native Signal boundary + verification helper boundary
+- [x] 5.1 Minimal native Signal boundary + verification helper boundary
 - [ ] 5.2 Signal repository API (encrypt/decrypt/session operations)
 - [ ] 5.3 LID mapping store + session migration
 - [ ] 5.4 Sender-key group crypto + distribution processing
@@ -211,13 +211,13 @@ remains an open hardening task until verified with dedicated native tooling.
 - [ ] Sender-key encrypt/decrypt and distribution interoperate with Baileys
 - [ ] Signal store contract covers sessions, pre-keys, sender-key-memory, LID mappings, device lists, tc tokens, and identity keys
 - [ ] Cross-validation uses Baileys-compatible ciphertext/session data
-- [ ] Native boundary is no broader than necessary for correctness, interop, and performance
+- [x] Native boundary is no broader than necessary for correctness, interop, and performance
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `native/baileys_nif/src/signal.rs` | ⬜ |
+| `lib/baileys_ex/signal/curve.ex` | ✅ |
 | `lib/baileys_ex/signal/repository.ex` | ⬜ |
 | `lib/baileys_ex/signal/lid_mapping_store.ex` | ⬜ |
 | `lib/baileys_ex/signal/address.ex` | ⬜ |
@@ -227,7 +227,8 @@ remains an open hardening task until verified with dedicated native tooling.
 | `lib/baileys_ex/signal/group_cipher.ex` | ⬜ |
 | `lib/baileys_ex/signal/group_session.ex` | ⬜ |
 | `lib/baileys_ex/signal/device.ex` | ⬜ |
-| `test/baileys_ex/signal/*_test.exs` | ⬜ |
+| `lib/baileys_ex/native/xeddsa.ex` | ✅ |
+| `test/baileys_ex/signal/curve_test.exs` | ✅ |
 
 ---
 

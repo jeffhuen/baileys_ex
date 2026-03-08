@@ -11,7 +11,7 @@ defmodule BaileysEx.Protocol.Noise do
   import Bitwise
 
   alias BaileysEx.Crypto
-  alias BaileysEx.Native.XEdDSA
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.Protocol.Proto.CertChain
   alias BaileysEx.Protocol.Proto.CertChain.NoiseCertificate
   alias BaileysEx.Protocol.Proto.CertChain.NoiseCertificate.Details
@@ -291,9 +291,9 @@ defmodule BaileysEx.Protocol.Noise do
          {:ok, %Details{key: intermediate_key, issuer_serial: issuer_serial}} <-
            Details.decode(intermediate.details),
          true <- is_binary(intermediate_key),
-         true <- XEdDSA.verify(intermediate_key, leaf.details, leaf.signature),
+         true <- Curve.verify(intermediate_key, leaf.details, leaf.signature),
          true <-
-           XEdDSA.verify(trusted_cert.public_key, intermediate.details, intermediate.signature),
+           Curve.verify(trusted_cert.public_key, intermediate.details, intermediate.signature),
          true <- issuer_serial == trusted_cert.serial do
       :ok
     else

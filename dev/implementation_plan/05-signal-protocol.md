@@ -8,6 +8,11 @@
 > `src/Utils/signal.ts`. Do not assume a broad `libsignal-protocol` NIF up front;
 > prefer the smallest native boundary that is actually required for correctness,
 > interoperability, and performance.
+>
+> **Current implementation note:** Task 5.1 is intentionally being satisfied with
+> the existing narrow XEdDSA helper plus `BaileysEx.Signal.Curve`. There is no
+> `native/baileys_nif/src/signal.rs` yet, and that is by design until a broader
+> native boundary is proven necessary.
 
 **Goal:** Provide a Signal layer that matches Baileys' behavior while keeping
 persistence, orchestration, and BEAM concurrency in Elixir and avoiding an
@@ -66,6 +71,9 @@ actually consumes:
 
 ### Required supporting components
 
+- `BaileysEx.Signal.Curve`
+  - small helper boundary matching Baileys `Utils/crypto.ts` for Signal-specific
+    key generation, shared key derivation, and XEdDSA-backed sign/verify helpers
 - `BaileysEx.Signal.Repository`
   - Elixir-facing repository that provides the Baileys-compatible behavior
     surface, regardless of how much of the inner crypto stays native

@@ -2,6 +2,10 @@ defmodule BaileysEx.Signal.RepositoryTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Signal.Repository
+  alias BaileysEx.Signal.Group.Cipher, as: GroupCipher
+  alias BaileysEx.Signal.Group.SessionBuilder, as: GroupSessionBuilder
+  alias BaileysEx.Signal.Group.SenderKeyName
+  alias BaileysEx.Signal.Group.SenderKeyRecord
 
   defmodule FakeAdapter do
     @behaviour Repository.Adapter
@@ -107,6 +111,55 @@ defmodule BaileysEx.Signal.RepositoryTest do
         end)
 
       {:ok, new_state, %{migrated: migrated, skipped: total - migrated, total: total}}
+    end
+
+    @impl true
+    def encrypt_group_message(state, sender_key_name, plaintext) do
+      record =
+        Map.get(
+          state,
+          {:sender_key, SenderKeyName.serialize(sender_key_name)},
+          SenderKeyRecord.new()
+        )
+
+      with {:ok, record, distribution_message} <- GroupSessionBuilder.create(record),
+           {:ok, record, ciphertext} <- GroupCipher.encrypt(record, plaintext) do
+        state =
+          Map.put(state, {:sender_key, SenderKeyName.serialize(sender_key_name)}, record)
+
+        {:ok, state,
+         %{ciphertext: ciphertext, sender_key_distribution_message: distribution_message}}
+      end
+    end
+
+    @impl true
+    def process_sender_key_distribution_message(state, sender_key_name, distribution_message) do
+      record =
+        Map.get(
+          state,
+          {:sender_key, SenderKeyName.serialize(sender_key_name)},
+          SenderKeyRecord.new()
+        )
+
+      with {:ok, record} <- GroupSessionBuilder.process(record, distribution_message) do
+        state = Map.put(state, {:sender_key, SenderKeyName.serialize(sender_key_name)}, record)
+        {:ok, state}
+      end
+    end
+
+    @impl true
+    def decrypt_group_message(state, sender_key_name, ciphertext) do
+      record =
+        Map.get(
+          state,
+          {:sender_key, SenderKeyName.serialize(sender_key_name)},
+          SenderKeyRecord.new()
+        )
+
+      with {:ok, record, plaintext} <- GroupCipher.decrypt(record, ciphertext) do
+        state = Map.put(state, {:sender_key, SenderKeyName.serialize(sender_key_name)}, record)
+        {:ok, state, plaintext}
+      end
     end
   end
 
@@ -289,6 +342,37 @@ defmodule BaileysEx.Signal.RepositoryTest do
       assert Map.has_key?(repo.adapter_state, "12345_129.99")
       refute Map.has_key?(repo.adapter_state, "5511999887766_128.99")
     end
+
+    test "encrypts group messages, processes sender key distribution, and decrypts them" do
+      sender_repo = Repository.new(adapter: FakeAdapter)
+      recipient_repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:ok, next_sender_repo,
+              %{ciphertext: ciphertext, sender_key_distribution_message: distribution_message}} =
+               Repository.encrypt_group_message(sender_repo, %{
+                 group: "120363001234567890@g.us",
+                 me_id: "5511999887766@s.whatsapp.net",
+                 data: "hello group"
+               })
+
+      assert {:ok, recipient_repo} =
+               Repository.process_sender_key_distribution_message(recipient_repo, %{
+                 author_jid: "5511999887766@s.whatsapp.net",
+                 item: %{
+                   group_id: "120363001234567890@g.us",
+                   axolotl_sender_key_distribution_message: distribution_message
+                 }
+               })
+
+      assert {:ok, _recipient_repo, "hello group"} =
+               Repository.decrypt_group_message(recipient_repo, %{
+                 group: "120363001234567890@g.us",
+                 author_jid: "5511999887766@s.whatsapp.net",
+                 msg: ciphertext
+               })
+
+      refute next_sender_repo.adapter_state == %{}
+    end
   end
 
   describe "error paths" do
@@ -441,6 +525,24 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
       assert {:ok, ^repo, %{migrated: 0, skipped: 0, total: 0}} =
                Repository.migrate_session(repo, "5511999887766@s.whatsapp.net", "12345@lid")
+    end
+
+    test "decrypt_group_message propagates missing sender key state" do
+      repo = Repository.new(adapter: FakeAdapter)
+      sender_record = SenderKeyRecord.new()
+
+      assert {:ok, sender_record, _distribution_message} =
+               GroupSessionBuilder.create(sender_record)
+
+      assert {:ok, _sender_record, ciphertext} =
+               GroupCipher.encrypt(sender_record, "hello group")
+
+      assert {:error, :no_sender_key_state} =
+               Repository.decrypt_group_message(repo, %{
+                 group: "120363001234567890@g.us",
+                 author_jid: "5511999887766@s.whatsapp.net",
+                 msg: ciphertext
+               })
     end
   end
 end

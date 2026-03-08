@@ -35,6 +35,7 @@ defmodule BaileysEx.Signal.Repository do
           :invalid_ciphertext
           | :invalid_session
           | :invalid_signal_address
+          | :no_sender_key_state
           | :no_session
           | term()
 
@@ -86,6 +87,16 @@ defmodule BaileysEx.Signal.Repository do
 
     @callback migrate_sessions(term(), [Repository.migration_operation()]) ::
                 {:ok, term(), Repository.migration_result()} | {:error, term()}
+
+    @callback encrypt_group_message(term(), term(), binary()) ::
+                {:ok, term(), %{ciphertext: binary(), sender_key_distribution_message: binary()}}
+                | {:error, term()}
+
+    @callback process_sender_key_distribution_message(term(), term(), binary()) ::
+                {:ok, term()} | {:error, term()}
+
+    @callback decrypt_group_message(term(), term(), binary()) ::
+                {:ok, term(), binary()} | {:error, term()}
 
     @spec session_key(Address.t()) :: String.t()
     def session_key(%Address{} = address), do: Address.to_string(address)
@@ -168,6 +179,77 @@ defmodule BaileysEx.Signal.Repository do
   end
 
   def delete_session(%__MODULE__{}, _jids), do: {:error, :invalid_signal_address}
+
+  @spec encrypt_group_message(t(), %{group: String.t(), me_id: String.t(), data: binary()}) ::
+          {:ok, t(), %{ciphertext: binary(), sender_key_distribution_message: binary()}}
+          | {:error, adapter_error()}
+  def encrypt_group_message(%__MODULE__{} = repository, %{group: group, me_id: me_id, data: data})
+      when is_binary(group) and is_binary(me_id) and is_binary(data) do
+    with {:ok, sender_key_name} <- sender_key_name(group, me_id),
+         {:ok, adapter_state, encrypted} <-
+           repository.adapter.encrypt_group_message(
+             repository.adapter_state,
+             sender_key_name,
+             data
+           ) do
+      {:ok, %{repository | adapter_state: adapter_state}, encrypted}
+    end
+  end
+
+  def encrypt_group_message(%__MODULE__{}, _opts), do: {:error, :invalid_signal_address}
+
+  @spec process_sender_key_distribution_message(
+          t(),
+          %{
+            author_jid: String.t(),
+            item: %{group_id: String.t(), axolotl_sender_key_distribution_message: binary()}
+          }
+        ) :: {:ok, t()} | {:error, adapter_error()}
+  def process_sender_key_distribution_message(
+        %__MODULE__{} = repository,
+        %{
+          author_jid: author_jid,
+          item: %{
+            group_id: group_id,
+            axolotl_sender_key_distribution_message: distribution_message
+          }
+        }
+      )
+      when is_binary(author_jid) and is_binary(group_id) and is_binary(distribution_message) do
+    with {:ok, sender_key_name} <- sender_key_name(group_id, author_jid),
+         {:ok, adapter_state} <-
+           repository.adapter.process_sender_key_distribution_message(
+             repository.adapter_state,
+             sender_key_name,
+             distribution_message
+           ) do
+      {:ok, %{repository | adapter_state: adapter_state}}
+    end
+  end
+
+  def process_sender_key_distribution_message(%__MODULE__{}, _opts),
+    do: {:error, :invalid_signal_address}
+
+  @spec decrypt_group_message(t(), %{group: String.t(), author_jid: String.t(), msg: binary()}) ::
+          {:ok, t(), binary()} | {:error, adapter_error()}
+  def decrypt_group_message(%__MODULE__{} = repository, %{
+        group: group,
+        author_jid: author_jid,
+        msg: msg
+      })
+      when is_binary(group) and is_binary(author_jid) and is_binary(msg) do
+    with {:ok, sender_key_name} <- sender_key_name(group, author_jid),
+         {:ok, adapter_state, plaintext} <-
+           repository.adapter.decrypt_group_message(
+             repository.adapter_state,
+             sender_key_name,
+             msg
+           ) do
+      {:ok, %{repository | adapter_state: adapter_state}, plaintext}
+    end
+  end
+
+  def decrypt_group_message(%__MODULE__{}, _opts), do: {:error, :invalid_signal_address}
 
   @spec store_lid_pn_mappings(t(), [LIDMappingStore.mapping()]) ::
           {:ok, t()} | {:error, LIDMappingStore.error()}
@@ -370,4 +452,10 @@ defmodule BaileysEx.Signal.Repository do
 
   defp build_lid_device_jid(lid_user, lid_server, device_id),
     do: "#{lid_user}:#{device_id}@#{lid_server}"
+
+  defp sender_key_name(group, jid) do
+    with {:ok, address} <- Address.from_jid(jid) do
+      {:ok, BaileysEx.Signal.Group.SenderKeyName.new(group, address)}
+    end
+  end
 end

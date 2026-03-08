@@ -8,6 +8,11 @@ addressing, mapping, and persistence-friendly state transitions in Elixir.
 **Reference files:**
 - `dev/reference/Baileys-master/src/Signal/libsignal.ts`
 - `dev/reference/Baileys-master/src/Signal/lid-mapping.ts`
+- `dev/reference/Baileys-master/src/Signal/Group/group-session-builder.ts`
+- `dev/reference/Baileys-master/src/Signal/Group/group_cipher.ts`
+- `dev/reference/Baileys-master/src/Signal/Group/sender-key-message.ts`
+- `dev/reference/Baileys-master/src/Signal/Group/sender-key-distribution-message.ts`
+- `dev/reference/Baileys-master/src/__tests__/Signal/Group/sender-key-state-regression.test.ts`
 - `dev/reference/Baileys-master/src/Utils/signal.ts`
 - `dev/reference/Baileys-master/src/Utils/decode-wa-message.ts`
 
@@ -36,10 +41,14 @@ Current implemented surface:
 - `BaileysEx.Signal.LIDMappingStore`
   - repository-resident PN<->LID mapping store with reverse lookup and optional
     lookup-hook backfill
+- `BaileysEx.Signal.Group.*`
+  - pure Elixir sender-key state, distribution, and group cipher modules aligned
+    to Baileys' group-session-builder/group-cipher flow
+  - repository-owned orchestration via `encrypt_group_message/2`,
+    `process_sender_key_distribution_message/2`, and `decrypt_group_message/2`
 
 Not implemented yet:
 
-- sender-key group crypto
 - TOFU identity persistence/invalidation
 - durable Signal key-store contract
 - Baileys cross-validation fixtures for full Signal payload/session interoperability
@@ -103,10 +112,25 @@ Explicit non-goal for 5.3:
 
 ### 5.4 Sender-key group crypto and distribution processing
 
-Planned scope:
+Completed:
 - `encrypt_group_message/2`
 - `process_sender_key_distribution_message/2`
-- Baileys-compatible sender-key record handling
+- `decrypt_group_message/2`
+- Baileys-compatible sender-key record handling via nested `BaileysEx.Signal.Group`
+  modules:
+  - `SenderKeyName`
+  - `SenderChainKey`
+  - `SenderMessageKey`
+  - `SenderKeyState`
+  - `SenderKeyRecord`
+  - `SenderKeyDistributionMessage`
+  - `SenderKeyMessage`
+  - `SessionBuilder`
+  - `Cipher`
+
+Explicit non-goal for 5.4:
+- cross-runtime compatibility is not claimed yet from self-roundtrip tests alone;
+  5.7 remains the gate for fixture-based Baileys interoperability validation
 
 ### 5.5 Signal identity handling
 
@@ -161,12 +185,21 @@ Implemented:
 - `lib/baileys_ex/signal/address.ex`
 - `lib/baileys_ex/signal/repository.ex`
 - `lib/baileys_ex/signal/lid_mapping_store.ex`
+- `lib/baileys_ex/signal/group/sender_key_name.ex`
+- `lib/baileys_ex/signal/group/sender_chain_key.ex`
+- `lib/baileys_ex/signal/group/sender_message_key.ex`
+- `lib/baileys_ex/signal/group/sender_key_state.ex`
+- `lib/baileys_ex/signal/group/sender_key_record.ex`
+- `lib/baileys_ex/signal/group/sender_key_distribution_message.ex`
+- `lib/baileys_ex/signal/group/sender_key_message.ex`
+- `lib/baileys_ex/signal/group/session_builder.ex`
+- `lib/baileys_ex/signal/group/cipher.ex`
 - `test/baileys_ex/signal/curve_test.exs`
 - `test/baileys_ex/signal/address_test.exs`
 - `test/baileys_ex/signal/repository_test.exs`
 - `test/baileys_ex/signal/lid_mapping_store_test.exs`
+- `test/baileys_ex/signal/group_test.exs`
 
 Planned:
 - `lib/baileys_ex/signal/identity.ex`
 - `lib/baileys_ex/signal/store.ex`
-- sender-key/group modules as Phase 5.4 defines

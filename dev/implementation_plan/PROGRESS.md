@@ -198,7 +198,7 @@ remains an open hardening task until verified with dedicated native tooling.
 - [x] 5.1 Minimal native Signal boundary + verification helper boundary
 - [x] 5.2 Signal repository boundary (address translation, inject/validate/encrypt/decrypt/delete contracts)
 - [x] 5.3 LID mapping store + session migration
-- [ ] 5.4 Sender-key group crypto + distribution processing
+- [x] 5.4 Sender-key group crypto + distribution processing
 - [ ] 5.5 Signal identity handling (TOFU + invalidation)
 - [ ] 5.6 Store contract for sessions, pre-keys, sender-keys, mappings, identities
 - [ ] 5.7 Cross-validation tests against Baileys-compatible data
@@ -221,17 +221,25 @@ remains an open hardening task until verified with dedicated native tooling.
 | `lib/baileys_ex/signal/repository.ex` | ✅ |
 | `lib/baileys_ex/signal/lid_mapping_store.ex` | ✅ |
 | `lib/baileys_ex/signal/address.ex` | ✅ |
+| `lib/baileys_ex/signal/group/sender_key_name.ex` | ✅ |
+| `lib/baileys_ex/signal/group/sender_chain_key.ex` | ✅ |
+| `lib/baileys_ex/signal/group/sender_message_key.ex` | ✅ |
+| `lib/baileys_ex/signal/group/sender_key_state.ex` | ✅ |
+| `lib/baileys_ex/signal/group/sender_key_record.ex` | ✅ |
+| `lib/baileys_ex/signal/group/sender_key_distribution_message.ex` | ✅ |
+| `lib/baileys_ex/signal/group/sender_key_message.ex` | ✅ |
+| `lib/baileys_ex/signal/group/session_builder.ex` | ✅ |
+| `lib/baileys_ex/signal/group/cipher.ex` | ✅ |
 | `lib/baileys_ex/signal/identity.ex` | ⬜ |
 | `lib/baileys_ex/signal/store.ex` | ⬜ |
 | `lib/baileys_ex/signal/prekey.ex` | ⬜ |
-| `lib/baileys_ex/signal/group_cipher.ex` | ⬜ |
-| `lib/baileys_ex/signal/group_session.ex` | ⬜ |
 | `lib/baileys_ex/signal/device.ex` | ⬜ |
 | `lib/baileys_ex/native/xeddsa.ex` | ✅ |
 | `test/baileys_ex/signal/curve_test.exs` | ✅ |
 | `test/baileys_ex/signal/address_test.exs` | ✅ |
 | `test/baileys_ex/signal/repository_test.exs` | ✅ |
 | `test/baileys_ex/signal/lid_mapping_store_test.exs` | ✅ |
+| `test/baileys_ex/signal/group_test.exs` | ✅ |
 
 ---
 

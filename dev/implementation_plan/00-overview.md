@@ -141,10 +141,14 @@ lib/baileys_ex/
 │   ├── store.ex           # Store behaviour for signal state persistence
 │   ├── session_cipher.ex  # Elixir-side orchestration around native sessions
 │   ├── session_builder.ex # Outgoing/incoming session orchestration
-│   ├── group_cipher.ex    # Group send/receive orchestration
 │   ├── prekey.ex          # Pre-key generation, upload, rotation
 │   ├── key_helper.ex      # Convenience key generation utilities
-│   └── device.ex          # Multi-device discovery
+│   ├── device.ex          # Multi-device discovery
+│   └── group/             # Sender-key group state and crypto
+│       ├── cipher.ex
+│       ├── session_builder.ex
+│       ├── sender_key_record.ex
+│       └── sender_key_message.ex
 ├── message/
 │   ├── builder.ex        # Construct WAProto messages from ALL types
 │   ├── parser.ex         # Normalize/unwrap inbound messages, detect content type

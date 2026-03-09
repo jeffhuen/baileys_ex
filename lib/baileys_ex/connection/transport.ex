@@ -1,9 +1,10 @@
 defmodule BaileysEx.Connection.Transport do
   @moduledoc """
-  Minimal transport behavior for the connection socket skeleton.
+  Evented transport behaviour for the connection socket runtime.
 
-  The real Mint/WebSocket integration can satisfy this boundary in later
-  work without changing the socket state contract introduced in this slice.
+  Transport implementations own HTTP and WebSocket connectivity and expose raw
+  binary frame events back to the socket, which remains the owner of Noise and
+  higher-level connection state.
   """
 
   alias BaileysEx.Connection.Config

@@ -3,7 +3,7 @@ defmodule BaileysEx.Connection.ConfigTest do
 
   alias BaileysEx.Connection.Config
 
-  test "new/1 returns the phase 6 transport defaults" do
+  test "new/1 returns the default transport configuration" do
     config = Config.new()
 
     assert config.ws_url == "wss://web.whatsapp.com/ws/chat"

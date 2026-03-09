@@ -1,10 +1,11 @@
 defmodule BaileysEx.Connection.Socket do
   @moduledoc """
-  Connection state machine skeleton.
+  Connection state machine for the WebSocket and Noise transport lifecycle.
 
-  This first slice owns the socket state contract and transport startup seam.
-  The full Mint/WebSocket, Noise handshake, and auth runtime behavior will be
-  layered onto this module in later connection work.
+  The current implementation owns transport startup, the Baileys-style Noise
+  handshake, and the transition into `:authenticating`. Later connection work
+  will layer in auth validation, keep-alive, reconnect policy, and the runtime
+  store and event infrastructure.
   """
 
   @behaviour :gen_statem
@@ -191,16 +192,14 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp handle_call(:connected, from, {:send_payload, payload}, data) do
-    reply =
-      case data.transport_module.send_binary(data.transport_state, payload) do
-        {:ok, _transport_state} ->
-          :ok
+    case data.transport_module.send_binary(data.transport_state, payload) do
+      {:ok, transport_state} ->
+        {:keep_state, %{data | transport_state: transport_state}, [{:reply, from, :ok}]}
 
-        {:error, _transport_state, reason} ->
-          {:error, reason}
-      end
-
-    {:keep_state, data, [{:reply, from, reply}]}
+      {:error, transport_state, reason} ->
+        {:keep_state, %{data | transport_state: transport_state},
+         [{:reply, from, {:error, reason}}]}
+    end
   end
 
   defp handle_call(_current_state, from, {:send_payload, _payload}, data) do

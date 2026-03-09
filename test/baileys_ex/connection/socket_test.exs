@@ -79,6 +79,7 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert :ok = Socket.connect(pid)
     assert_eventually(fn -> Socket.state(pid) == :connecting end)
+    assert Socket.snapshot(pid).transport_connected? == false
     refute_received {:transport_sent, _payload}
 
     Kernel.send(pid, {:scripted_transport, :connected})
@@ -91,7 +92,10 @@ defmodule BaileysEx.Connection.SocketTest do
             }} = HandshakeMessage.decode(client_hello)
 
     assert is_binary(client_ephemeral)
-    assert_eventually(fn -> Socket.state(pid) == :noise_handshake end)
+
+    assert_eventually(fn ->
+      Socket.state(pid) == :noise_handshake and Socket.snapshot(pid).transport_connected?
+    end)
   end
 
   test "a valid server hello advances the socket into authenticating and sends client finish" do

@@ -61,6 +61,28 @@ defmodule BaileysEx.Connection.Transport.MintWebSocketTest do
     assert state != nil
   end
 
+  test "connect/2 rejects unsupported websocket url schemes without touching the adapter" do
+    assert {:error, {:invalid_ws_url, :unsupported_scheme}} =
+             MintWebSocket.connect(
+               Config.new(ws_url: "https://web.whatsapp.com/ws/chat"),
+               adapter: FakeAdapter,
+               test_pid: self()
+             )
+
+    refute_received {:http_connect, _, _, _}
+  end
+
+  test "connect/2 rejects websocket urls without a host without touching the adapter" do
+    assert {:error, {:invalid_ws_url, :missing_host}} =
+             MintWebSocket.connect(
+               Config.new(ws_url: "wss:///ws/chat"),
+               adapter: FakeAdapter,
+               test_pid: self()
+             )
+
+    refute_received {:http_connect, _, _, _}
+  end
+
   test "handle_info/2 emits :connected when the websocket upgrade completes" do
     {:ok, state} =
       MintWebSocket.connect(

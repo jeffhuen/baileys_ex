@@ -35,10 +35,10 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
   @spec connect(Config.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def connect(%Config{} = config, opts) do
     adapter = Keyword.get(opts, :adapter, MintAdapter)
-    {http_scheme, ws_scheme, host, port, path} = parse_ws_url(config.ws_url)
     connect_opts = connect_opts(config, opts)
 
-    with {:ok, conn} <- adapter.http_connect(http_scheme, host, port, connect_opts),
+    with {:ok, {http_scheme, ws_scheme, host, port, path}} <- parse_ws_url(config.ws_url),
+         {:ok, conn} <- adapter.http_connect(http_scheme, host, port, connect_opts),
          {:ok, conn, request_ref} <-
            adapter.websocket_upgrade(ws_scheme, conn, path, [], connect_opts) do
       {:ok,
@@ -157,11 +157,14 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
 
   defp parse_ws_url(ws_url) when is_binary(ws_url) do
     uri = URI.parse(ws_url)
-    ws_scheme = parse_ws_scheme(uri.scheme)
-    http_scheme = if ws_scheme == :wss, do: :https, else: :http
-    port = uri.port || default_port(ws_scheme)
-    path = build_request_path(uri)
-    {http_scheme, ws_scheme, uri.host, port, path}
+
+    with {:ok, ws_scheme} <- parse_ws_scheme(uri.scheme),
+         {:ok, host} <- fetch_ws_host(uri.host) do
+      http_scheme = if ws_scheme == :wss, do: :https, else: :http
+      port = uri.port || default_port(ws_scheme)
+      path = build_request_path(uri)
+      {:ok, {http_scheme, ws_scheme, host, port, path}}
+    end
   end
 
   defp build_request_path(%URI{path: nil, query: nil}), do: "/"
@@ -176,8 +179,12 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
   defp default_port(:wss), do: 443
   defp default_port(:ws), do: 80
 
-  defp parse_ws_scheme("wss"), do: :wss
-  defp parse_ws_scheme("ws"), do: :ws
+  defp parse_ws_scheme("wss"), do: {:ok, :wss}
+  defp parse_ws_scheme("ws"), do: {:ok, :ws}
+  defp parse_ws_scheme(_scheme), do: {:error, {:invalid_ws_url, :unsupported_scheme}}
+
+  defp fetch_ws_host(host) when is_binary(host) and byte_size(host) > 0, do: {:ok, host}
+  defp fetch_ws_host(_host), do: {:error, {:invalid_ws_url, :missing_host}}
 
   defp connect_opts(%Config{} = config, opts) do
     [

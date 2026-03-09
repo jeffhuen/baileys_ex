@@ -39,6 +39,7 @@ defmodule BaileysEx.Connection.Socket do
           transport_module: module(),
           transport_options: term(),
           transport_state: term() | nil,
+          transport_connected?: boolean(),
           buffer: binary(),
           retry_count: non_neg_integer(),
           epoch: non_neg_integer(),
@@ -56,6 +57,7 @@ defmodule BaileysEx.Connection.Socket do
     :transport_state,
     :last_error,
     noise_opts: [],
+    transport_connected?: false,
     buffer: <<>>,
     retry_count: 0,
     epoch: 0
@@ -178,7 +180,7 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp handle_call(:disconnected, from, :connect, data) do
-    {:next_state, :connecting, %{data | last_error: nil},
+    {:next_state, :connecting, %{data | last_error: nil, transport_connected?: false},
      [{:reply, from, :ok}, {:next_event, :internal, :establish_transport}]}
   end
 
@@ -188,7 +190,9 @@ defmodule BaileysEx.Connection.Socket do
 
   defp handle_call(_current_state, from, :disconnect, data) do
     disconnect_transport(data)
-    {:next_state, :disconnected, %{data | transport_state: nil}, [{:reply, from, :ok}]}
+
+    {:next_state, :disconnected, %{data | transport_state: nil, transport_connected?: false},
+     [{:reply, from, :ok}]}
   end
 
   defp handle_call(:connected, from, {:send_payload, payload}, data) do
@@ -211,7 +215,7 @@ defmodule BaileysEx.Connection.Socket do
       state: current_state,
       retry_count: data.retry_count,
       buffer_size: byte_size(data.buffer),
-      transport_connected?: not is_nil(data.transport_state),
+      transport_connected?: data.transport_connected?,
       last_error: data.last_error
     }
   end
@@ -262,6 +266,8 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp apply_transport_event(:connecting, :connected, data) do
+    data = %{data | transport_connected?: true}
+
     case start_noise_handshake(data) do
       {:ok, data} -> {:ok, :noise_handshake, data}
       {:error, reason, data} -> {:error, reason, data}
@@ -341,6 +347,7 @@ defmodule BaileysEx.Connection.Socket do
      %{
        data
        | transport_state: nil,
+         transport_connected?: false,
          noise: nil,
          retry_count: data.retry_count + 1,
          last_error: reason

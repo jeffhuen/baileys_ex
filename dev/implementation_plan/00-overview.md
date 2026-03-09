@@ -4,19 +4,19 @@
 
 Full-featured Elixir port of Baileys (WhatsApp Web API). The current architectural
 direction is to keep connection management, state machines, concurrency, and business
-logic in Elixir, while exposing battle-tested native crypto and Signal primitives where
-Baileys already relies on them. The WhatsApp-specific Noise handler should mirror the
-Baileys reference in Elixir rather than delegating the whole handshake to a generic raw
-XX engine.
+logic in Elixir, while exposing battle-tested native crypto or narrowly-scoped Signal
+helpers only where they are actually required. The WhatsApp-specific Noise handler
+should mirror the Baileys reference in Elixir rather than delegating the whole handshake
+to a generic raw XX engine.
 
 ## Core Principles
 
 1. **Native first, Rust NIF only when necessary** — Use Erlang `:crypto` (OTP 28) and
-   pure Elixir for generic crypto, framing, and orchestration. Use Rust NIFs for
-   battle-tested protocol primitives that should not be reimplemented here:
-   `libsignal-protocol` for Signal and a tiny helper only if a required verification
-   primitive is missing from that wrapper. The higher-level Noise choreography stays
-   in Elixir so it can match `dev/reference/Baileys-master/src/Utils/noise-handler.ts`.
+   pure Elixir for generic crypto, framing, and orchestration. Use Rust NIFs only for
+   protocol pieces or curve conversions that are not safely or efficiently available
+   from OTP. The higher-level Noise choreography stays in Elixir so it can match
+   `dev/reference/Baileys-master/src/Utils/noise-handler.ts`, and the Phase 5 Signal
+   boundary should stay adapter-driven until a broader native surface is proven needed.
 2. **No process without a runtime reason** — Modules organize code; processes manage
    runtime state, concurrency, or fault isolation.
 3. **GenServer is a bottleneck by design** — Use ETS for concurrent reads, GenServer
@@ -28,6 +28,9 @@ XX engine.
    They don't need their own processes.
 6. **Behaviours for extensibility** — Credential persistence, event handling, and store
    backends use behaviours so users can swap implementations.
+7. **Runtime Signal store boundary** — Phase 5's Signal store is a process-backed
+   runtime contract (`get/set/transaction`) with ETS-backed reads. Phase 7 owns
+   durable persistence implementations that satisfy that contract.
 
 ## Supervision Tree
 
@@ -89,23 +92,22 @@ lib/baileys_ex/crypto.ex    # Thin wrappers around :crypto
 ```
 lib/baileys_ex/native/
 ├── noise.ex      # Noise protocol — no Elixir/Erlang equivalent
-├── signal.ex     # libsignal-protocol wrapper (planned)
-└── xeddsa.ex     # Optional narrow helper if the Signal wrapper lacks needed verification
+└── xeddsa.ex     # Narrow XEdDSA helper used by Noise/Signal verification
 
 native/baileys_nif/
 ├── Cargo.toml
 └── src/
     ├── lib.rs       # Rustler setup
     ├── noise.rs     # snow crate wrapper
-    ├── signal.rs    # libsignal-protocol wrapper (planned)
-    └── xeddsa.rs    # optional curve helper, only if still needed
+    └── xeddsa.rs    # narrow curve helper
 ```
 
 **NIF state strategy:**
 - Noise: `NoiseSession` ResourceArc with enum (Handshake | Transport) behind Mutex.
-- Signal: native session/key resources exposed through a narrow Elixir wrapper.
-- Optional signature helper: stateless functions only if the Signal wrapper does not
-  already expose the verification primitive Phase 4 needs.
+- Signal: start with Elixir repository/address/orchestration layers and keep any future
+  native session/key boundary as small as possible.
+- Signature helper: stateless XEdDSA functions for the verification primitive Phase 4
+  and Phase 5 already need.
 - **No generic crypto NIF** — AES/HMAC/HKDF/PBKDF2 stay in Erlang `:crypto` / Elixir.
 
 ### Layer 2: Wire Protocol (pure functions, no processes)
@@ -138,14 +140,19 @@ lib/baileys_ex/
 │   ├── qr.ex             # QR code pairing flow
 │   ├── phone.ex          # Phone number pairing flow
 │   └── persistence.ex    # Behaviour for credential storage backends
-├── signal/                # Provisional Phase 5 area — to be redesigned around libsignal
+├── signal/                # Phase 5 area — curve/address/repository first, deeper session logic later
 │   ├── store.ex           # Store behaviour for signal state persistence
+│   ├── identity.ex        # TOFU identity storage + invalidation semantics
 │   ├── session_cipher.ex  # Elixir-side orchestration around native sessions
 │   ├── session_builder.ex # Outgoing/incoming session orchestration
-│   ├── group_cipher.ex    # Group send/receive orchestration
 │   ├── prekey.ex          # Pre-key generation, upload, rotation
 │   ├── key_helper.ex      # Convenience key generation utilities
-│   └── device.ex          # Multi-device discovery
+│   ├── device.ex          # Multi-device discovery
+│   └── group/             # Sender-key group state and crypto
+│       ├── cipher.ex
+│       ├── session_builder.ex
+│       ├── sender_key_record.ex
+│       └── sender_key_message.ex
 ├── message/
 │   ├── builder.ex        # Construct WAProto messages from ALL types
 │   ├── parser.ex         # Normalize/unwrap inbound messages, detect content type
@@ -203,10 +210,11 @@ Phase 4: Noise NIF ────────────────────�
   Rust NIF wrapping snow crate (no Elixir equivalent exists)
   Depends on: Phase 1 (NIF scaffold)
 
-Phase 5: Signal Protocol (libsignal-backed redesign) ────────────
-  Rust NIF wrapping libsignal-protocol or equivalent
-  Elixir wrappers for session orchestration, persistence, and device discovery
-  Depends on: Phase 1 (NIF scaffold), Phase 2 (Crypto)
+Phase 5: Signal Protocol (adapter-driven boundary) ──────────────
+  Elixir Signal compatibility boundary: address translation, LID mapping,
+  sender-key group crypto, identity handling, runtime store contract,
+  and Baileys-generated cross-validation fixtures
+  Depends on: Phase 1 (foundation), Phase 2 (Crypto)
   (parallel with Phase 4)
 
 Phase 6: Connection ──────────────────────────────────────────────
@@ -248,7 +256,7 @@ Phase 12: Polish ─────────────────────
   (Crypto)   (Protocol)   (Noise NIF)
       |          |           |
       +--- Phase 5 -------------------+
-      |  (Signal: libsignal-backed    |
+      |  (Signal: adapter-driven      |
       |   redesign)                   |
       |          |             |
        \         |            /

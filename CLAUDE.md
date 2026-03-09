@@ -1,8 +1,10 @@
 # BaileysEx
 
 Full-featured Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) —
-a WhatsApp Web API library. Signal protocol implemented in pure Elixir (~1,500 lines).
-Rust NIFs only for Noise protocol (`snow`) and XEdDSA signing (`curve25519-dalek`).
+a WhatsApp Web API library. Signal is currently in Phase 5 implementation and is
+being built around a Baileys-compatible Elixir boundary with the smallest native
+surface justified by interoperability and performance. Rust NIFs are currently used
+for Noise protocol (`snow`) and the narrow XEdDSA helper (`curve25519-dalek`).
 Targets SOTA Elixir patterns (Elixir 1.19+/OTP 28).
 
 Reference source: `dev/reference/Baileys-master/`
@@ -17,8 +19,8 @@ Reference source: `dev/reference/Baileys-master/`
 | Progress | `dev/implementation_plan/PROGRESS.md` | Task/file/acceptance-criteria tracker |
 | Gap analysis | `dev/implementation_plan/GAP_ANALYSIS.md` | Baileys audit (48/48 resolved) |
 
-**Current status:** Planning complete. All 48 gaps from exhaustive Baileys source audit
-resolved into phase files. Implementation not yet started — Phase 1 (Foundation) is next.
+**Current status:** Phases 1-4 are implemented and merged. Phase 5 (Signal Protocol)
+is the active branch and the next implementation target.
 
 ---
 
@@ -159,11 +161,11 @@ Ed25519 sign/verify, random bytes. HKDF implemented in pure Elixir using `:crypt
 | `snow` | Noise Protocol Framework | No Elixir/Erlang implementation exists |
 | `curve25519-dalek` | XEdDSA sign/verify (~80 lines Rust) | Montgomery↔Edwards key conversion — no native equivalent |
 
-**Signal Protocol: Pure Elixir (~1,500 lines across ~20 modules)**
-X3DH key agreement, Double Ratchet, Sender Keys, session management — all implemented
-in Elixir using `:crypto` primitives. Only XEdDSA signing requires a NIF because
-WhatsApp identity keys are Curve25519 (Montgomery) but must produce Ed25519-compatible
-signatures for signed pre-keys and sender key messages.
+**Signal Protocol: Phase 5 implementation in progress**
+The target is a Baileys-compatible Signal boundary in Elixir, with the smallest
+native surface justified by correctness, interoperability, and measured cost.
+Do not assume a broad Signal NIF and do not assume a full pure-Elixir ratchet
+implementation until Phase 5 finalizes that boundary.
 
 **What stays in Elixir:** connection management, event handling, state machines,
 supervision trees, caching, business logic, message routing, all crypto primitives,
@@ -175,7 +177,7 @@ benefits from BEAM concurrency, fault tolerance, or has native support.
 | Baileys Dep | Role | BaileysEx Approach |
 |-------------|------|-------------------|
 | `ws` | WebSocket transport | `Mint.WebSocket` (process-less, explicit encode/decode for Noise layer) |
-| `libsignal` | Signal Protocol | Pure Elixir (~1,500 lines) + XEdDSA NIF (`curve25519-dalek`) |
+| `libsignal` | Signal Protocol | Baileys-compatible Elixir boundary; narrow native helpers only where justified |
 | `whatsapp-rust-bridge` | Crypto (HKDF, MD5) | **Erlang `:crypto`** (native — no NIF needed) |
 | Noise handshake (custom) | Transport encryption | Rustler NIF wrapping `snow` crate |
 | `protobufjs` | Protobuf serialization | `protox` (pure Elixir, good codegen) |

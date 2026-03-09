@@ -14,26 +14,19 @@ fn sign<'a>(env: Env<'a>, private_key: Binary<'a>, message: Binary<'a>) -> NifRe
         .try_into()
         .map_err(|_| rustler::Error::RaiseTerm(Box::new("private key must be 32 bytes")))?;
 
-    let mut random_bytes = [0u8; 64];
-    getrandom::getrandom(&mut random_bytes)
-        .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("rng failed: {e}"))))?;
+    let mut clamped = private_key;
+    clamped[0] &= 248;
+    clamped[31] &= 127;
+    clamped[31] |= 64;
 
-    let a = Scalar::from_bytes_mod_order(private_key);
+    let a = Scalar::from_bytes_mod_order(clamped);
     let big_a = &a * &ED25519_BASEPOINT_POINT;
-
-    let (a_adj, big_a_adj) = if big_a.compress().to_bytes()[31] & 0x80 != 0 {
-        (-a, -big_a)
-    } else {
-        (a, big_a)
-    };
-
-    let big_a_bytes = big_a_adj.compress().to_bytes();
+    let sign_bit = big_a.compress().to_bytes()[31] & 0x80;
+    let big_a_bytes = big_a.compress().to_bytes();
 
     let nonce_hash = Sha512::new()
-        .chain_update([0xFE_u8])
-        .chain_update(a_adj.as_bytes())
+        .chain_update(clamped)
         .chain_update(message.as_slice())
-        .chain_update(random_bytes)
         .finalize();
     let r = Scalar::from_bytes_mod_order_wide(&nonce_hash.into());
 
@@ -47,11 +40,12 @@ fn sign<'a>(env: Env<'a>, private_key: Binary<'a>, message: Binary<'a>) -> NifRe
         .finalize();
     let h = Scalar::from_bytes_mod_order_wide(&h_hash.into());
 
-    let s = r + h * a_adj;
+    let s = r + h * a;
 
     let mut out = NewBinary::new(env, 64);
     out.as_mut_slice()[..32].copy_from_slice(&big_r_bytes);
     out.as_mut_slice()[32..].copy_from_slice(s.as_bytes());
+    out.as_mut_slice()[63] |= sign_bit;
     Ok(out.into())
 }
 
@@ -67,14 +61,16 @@ fn verify(public_key: Binary, message: Binary, signature: Binary) -> bool {
         Err(_) => return false,
     };
 
+    let sign_bit = (signature[63] >> 7) & 1;
     let montgomery = MontgomeryPoint(public_key);
-    let edwards = match montgomery.to_edwards(0) {
+    let edwards = match montgomery.to_edwards(sign_bit) {
         Some(point) => point,
         None => return false,
     };
 
     let big_r_bytes: [u8; 32] = signature[..32].try_into().unwrap();
-    let s_bytes: [u8; 32] = signature[32..].try_into().unwrap();
+    let mut s_bytes: [u8; 32] = signature[32..].try_into().unwrap();
+    s_bytes[31] &= 0x7f;
 
     let big_r = match CompressedEdwardsY(big_r_bytes).decompress() {
         Some(point) => point,

@@ -25,6 +25,18 @@ Pre-handshake: raw binary WebSocket frames carry Noise handshake messages.
 Post-handshake: every frame is Noise-encrypted before sending, Noise-decrypted
 after receiving, then decoded as WABinary nodes.
 
+**Do not cargo-cult ACK behavior.**
+Baileys v7 explicitly warns that sending successful delivery ACKs the way older
+community snippets did can get clients banned. The Elixir port must mirror the
+current Baileys/WhatsApp Web ack/nack behavior exactly, not apply a blanket
+"ack every inbound node" rule.
+
+**Versioning must stay current.**
+Baileys v7 added `fetchWAWebVersion` and Meta coexistence support. The
+connection layer should not hardcode a stale WA Web version string forever; the
+config/runtime story must allow current version selection and coexistence-aware
+behavior.
+
 **Frame format:**
 WhatsApp frames have a 3-byte length prefix (big-endian) followed by the payload.
 Pre-noise: payload is raw. Post-noise: payload is Noise-encrypted.
@@ -58,6 +70,10 @@ defmodule BaileysEx.Connection.Config do
     browser: {"BaileysEx", "Chrome", "1.0"},
     print_qr_in_terminal: false
   ]
+
+  # Web version selection should remain configurable so later phases can track
+  # Baileys' fetchWAWebVersion/coexistence behavior instead of freezing a stale
+  # browser tuple in code.
 
   # --- Browser/Platform Identification (GAP-27) ---
 
@@ -193,10 +209,10 @@ defmodule BaileysEx.Connection.Socket do
     {:keep_state, %{data | noise_state: noise_state}, [{:reply, from, :ok}]}
   end
 
-  # --- Automatic ACK (GAP-03) ---
-  # Every received message, receipt, and notification with an "id" attribute
-  # MUST be acknowledged with an ack stanza. Without this, the server re-sends
-  # and eventually disconnects.
+  # --- ACK policy (GAP-03 / v7 parity) ---
+  # Do not implement blanket automatic success ACKs here.
+  # ACK/NACK behavior must be decided by the receive pipeline using the same
+  # per-node rules Baileys v7 applies. Incorrect positive ACKing is a ban risk.
 
   defp send_ack(data, %BinaryNode{tag: tag, attrs: attrs} = node) do
     ack_attrs = %{

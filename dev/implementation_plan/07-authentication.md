@@ -20,6 +20,11 @@ them to/from disk. Even if Signal session/state operations are backed by a nativ
 library in Phase 5, the persisted auth envelope and connection-facing data model
 should stay ordinary Elixir data.
 
+**v7 auth state must preserve LID-era datasets.**
+Baileys v7 treats `lid-mapping`, `device-list`, and `tctoken` as first-class
+datasets in the auth/key-store surface. They are not optional extras if we want
+current multi-device parity.
+
 ---
 
 ## Tasks
@@ -167,6 +172,8 @@ Upload pre-keys to WhatsApp server after authentication:
 - Generate batch of new pre-keys if needed
 - Upload via binary node
 - Track uploaded key IDs in auth state
+- Run the sync on socket open and serialize concurrent upload attempts, matching
+  the v7 pre-key synchronization hardening work
 
 ### 7.7 Transactional Signal Key Storage (GAP-44)
 

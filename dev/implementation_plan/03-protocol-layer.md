@@ -146,7 +146,7 @@ defmodule BaileysEx.Protocol.JID do
   #
   # WhatsApp uses two addressing modes:
   # - PN (Phone Number): Traditional `user@s.whatsapp.net` format
-  # - LID (Logical Device ID): `lid_user@lid` format for multi-device
+  # - LID (Local Identifier): `lid_user@lid` format for multi-device
   # - Hosted PN / Hosted LID: `user@hosted` and `user@hosted.lid` variants used
   #   in history sync, routing, and decryption helpers
   #

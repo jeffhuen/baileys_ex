@@ -3,7 +3,7 @@ defmodule BaileysEx.Protocol.JID do
   JID (Jabber ID) parsing, formatting, and utility functions for WhatsApp addressing.
 
   Handles all WhatsApp JID formats including users, groups, broadcasts, LID
-  (Logical Device ID) addresses, newsletters, and device-specific addresses.
+  (Local Identifier) addresses, newsletters, and device-specific addresses.
   """
 
   alias BaileysEx.JID
@@ -151,7 +151,7 @@ defmodule BaileysEx.Protocol.JID do
   def addressing_mode(%JID{server: @lid}), do: :lid
   def addressing_mode(%JID{}), do: :pn
 
-  @doc "Check if JID is a LID (Logical Device ID)."
+  @doc "Check if JID is a LID (Local Identifier)."
   @spec lid?(JID.t() | String.t() | nil) :: boolean()
   def lid?(%JID{server: @lid}), do: true
   def lid?(%JID{}), do: false

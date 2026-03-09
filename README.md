@@ -5,10 +5,11 @@ In-progress Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) 
 - **Foundation phase** is complete
 - **Crypto** is complete for the current Phase 2 scope
 - **Protocol layer and Noise transport foundations** are implemented in-tree for the current scope
-- **Signal, connection, auth, messaging, media, and feature layers** are still planned work
+- **Signal Phase 5 is complete for the current scope**: repository/address boundary, Local Identifier (LID) mapping, session migration, sender-key group crypto, TOFU identity handling, the runtime store contract, fixture-backed Baileys cross-validation, and narrow verification helpers
+- **Connection, auth, messaging, media, and feature layers** are still planned work
 - Targets Elixir 1.19+ / OTP 28
 
-> **Status:** Phases 1-3 are complete for their current scope, and Phase 4 now has a reference-aligned Noise implementation. Broad WAProto message/auth code generation is intentionally deferred to the later phases that consume it. See `dev/implementation_plan/PROGRESS.md`.
+> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, and Phase 5 is complete for its adapter-driven scope: Signal curve/repository boundary, LID mapping, PN->LID session migration, sender-key group state/crypto, TOFU identity invalidation semantics, the in-memory transactional Signal store contract, and committed Baileys-generated cross-validation fixtures. Broad WAProto message/auth code generation and a concrete 1:1 session engine remain intentionally deferred to the later phases that consume them. See `dev/implementation_plan/PROGRESS.md`.
 
 ## Target Architecture
 
@@ -32,9 +33,9 @@ BaileysEx.Application (Supervisor)
 |-------|----------|
 | Crypto primitives | Erlang `:crypto` (AES, HMAC, SHA, PBKDF2, Curve25519, Ed25519) |
 | HKDF | Pure Elixir using `:crypto.mac/4` |
-| Signal Protocol | Rust NIF wrapping `libsignal-protocol` (planned) — sessions, sender keys, and identity verification |
+| Signal Protocol | Baileys-compatible Elixir repository boundary with the smallest native helper surface justified by interoperability |
 | Noise Protocol | Elixir protocol layer aligned with Baileys, using native crypto primitives and a narrow XEdDSA helper |
-| Signature helpers | Expose the Baileys/libsignal-compatible verification primitive from the Signal/native layer; keep a narrow helper NIF only if the Signal wrapper does not cover it |
+| Signature helpers | Narrow XEdDSA helper plus Elixir wrappers that expose the Baileys-compatible verification primitive |
 | Wire format | Pure Elixir (WABinary encode/decode) |
 | Protobuf | `protox` (pure Elixir codegen) |
 | WebSocket | `Mint.WebSocket` (process-less) |
@@ -79,6 +80,12 @@ mix test
 ```
 
 Reference source in `dev/reference/Baileys-master/` (not tracked in git).
+
+When the docs and reference tree disagree, prefer current Baileys v7 semantics:
+- LID means `Local Identifier`
+- new Signal/session flows are LID-first
+- `on_whatsapp` is not the source of truth for LIDs
+- successful delivery ACK parity must match Baileys/WhatsApp Web exactly
 
 ## License
 

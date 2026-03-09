@@ -8,9 +8,9 @@ defmodule BaileysEx.Signal.Store do
   - `set/2` for batched updates and deletions (`nil` removes an entry)
   - `transaction/3` for per-key serialized work with caller-local read/write caching
 
-  Concrete persistence remains swappable. Phase 5.6 ships an in-memory runtime
-  implementation; later phases can replace it with file/ETS/DB-backed variants
-  without changing repository consumers.
+  Concrete persistence remains swappable. The default in-memory runtime
+  implementation can be replaced with file/ETS/DB-backed variants without
+  changing repository consumers.
   """
 
   alias BaileysEx.Signal.Store.Memory

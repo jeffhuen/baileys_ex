@@ -165,6 +165,12 @@ defmodule BaileysEx.Signal.RepositoryTest do
   end
 
   describe "jid_to_signal_protocol_address/1" do
+    test "requires store in direct struct construction" do
+      assert_raise ArgumentError, fn ->
+        struct!(Repository, adapter: FakeAdapter)
+      end
+    end
+
     test "translates WhatsApp JIDs to Baileys-compatible signal addresses" do
       assert {:ok, "5511999887766.0"} =
                Repository.jid_to_signal_protocol_address("5511999887766@s.whatsapp.net")

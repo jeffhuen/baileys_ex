@@ -126,10 +126,8 @@ defmodule BaileysEx.Signal.LIDMappingStore do
 
   defp resolve_pending_pns(_store, resolved, [], _lookup), do: values_or_nil(resolved)
 
-  defp resolve_pending_pns(%Store{}, resolved, pending, nil) do
-    pending
-    |> Enum.reduce(resolved, fn _parsed, acc -> acc end)
-    |> values_or_nil()
+  defp resolve_pending_pns(%Store{}, resolved, _pending, nil) do
+    values_or_nil(resolved)
   end
 
   defp resolve_pending_pns(%Store{} = store, resolved, pending, lookup) do

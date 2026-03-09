@@ -104,7 +104,7 @@ defmodule BaileysEx.Signal.Repository do
     def session_key(%Address{} = address), do: Address.to_string(address)
   end
 
-  @enforce_keys [:adapter]
+  @enforce_keys [:adapter, :store]
   defstruct [
     :adapter,
     adapter_state: %{},

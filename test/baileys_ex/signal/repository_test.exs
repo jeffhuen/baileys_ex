@@ -273,6 +273,63 @@ defmodule BaileysEx.Signal.RepositoryTest do
                Repository.get_pn_for_lid(repo, "12345:99@lid")
     end
 
+    test "trusts first use and loads identity keys through the repository" do
+      repo = Repository.new(adapter: FakeAdapter)
+      identity_key = :crypto.strong_rand_bytes(32)
+
+      assert {:ok, expected_identity_key} =
+               BaileysEx.Signal.Curve.generate_signal_pub_key(identity_key)
+
+      assert {:ok, repo, true} =
+               Repository.save_identity(repo, %{
+                 jid: "5511999887766@s.whatsapp.net",
+                 identity_key: identity_key
+               })
+
+      assert {:ok, _repo, ^expected_identity_key} =
+               Repository.load_identity_key(repo, "5511999887766@s.whatsapp.net")
+    end
+
+    test "clears the canonical session when a trusted identity changes" do
+      repo =
+        Repository.new(
+          adapter: FakeAdapter,
+          adapter_state: %{
+            "12345_1.0" => %{open?: true, session: %{id: 0}, history: []}
+          }
+        )
+
+      assert {:ok, repo} =
+               Repository.store_lid_pn_mappings(repo, [
+                 %{lid: "12345@lid", pn: "5511999887766@s.whatsapp.net"}
+               ])
+
+      first_identity = :crypto.strong_rand_bytes(32)
+      second_identity = :crypto.strong_rand_bytes(32)
+
+      assert {:ok, expected_second_identity} =
+               BaileysEx.Signal.Curve.generate_signal_pub_key(second_identity)
+
+      assert {:ok, repo, true} =
+               Repository.save_identity(repo, %{
+                 jid: "5511999887766@s.whatsapp.net",
+                 identity_key: first_identity
+               })
+
+      assert Map.has_key?(repo.adapter_state, "12345_1.0")
+
+      assert {:ok, repo, true} =
+               Repository.save_identity(repo, %{
+                 jid: "5511999887766@s.whatsapp.net",
+                 identity_key: second_identity
+               })
+
+      refute Map.has_key?(repo.adapter_state, "12345_1.0")
+
+      assert {:ok, _repo, ^expected_second_identity} =
+               Repository.load_identity_key(repo, "5511999887766@s.whatsapp.net")
+    end
+
     test "migrates all open device sessions from PN to LID addresses" do
       repo =
         Repository.new(
@@ -505,6 +562,22 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
       assert {:error, :invalid_signal_address} =
                Repository.jid_to_signal_protocol_address("user@g.us")
+    end
+
+    test "save_identity rejects invalid JIDs and invalid identity keys" do
+      repo = Repository.new(adapter: FakeAdapter)
+
+      assert {:error, :invalid_signal_address} =
+               Repository.save_identity(repo, %{
+                 jid: "user@g.us",
+                 identity_key: :crypto.strong_rand_bytes(32)
+               })
+
+      assert {:error, :invalid_identity_key} =
+               Repository.save_identity(repo, %{
+                 jid: "user@s.whatsapp.net",
+                 identity_key: <<1, 2, 3>>
+               })
     end
 
     test "migrate_session returns zero work for unsupported direction changes" do

@@ -199,7 +199,7 @@ remains an open hardening task until verified with dedicated native tooling.
 - [x] 5.2 Signal repository boundary (address translation, inject/validate/encrypt/decrypt/delete contracts)
 - [x] 5.3 LID mapping store + session migration
 - [x] 5.4 Sender-key group crypto + distribution processing
-- [ ] 5.5 Signal identity handling (TOFU + invalidation)
+- [x] 5.5 Signal identity handling (TOFU + invalidation)
 - [ ] 5.6 Store contract for sessions, pre-keys, sender-keys, mappings, identities
 - [ ] 5.7 Cross-validation tests against Baileys-compatible data
 
@@ -208,7 +208,7 @@ remains an open hardening task until verified with dedicated native tooling.
 - [ ] Repository behavior matches Baileys `src/Signal/libsignal.ts` for 1:1 flows
 - [x] PN sessions migrate to LID sessions without losing device separation
 - [x] LID mapping storage mirrors Baileys' forward/reverse key convention for persistent stores
-- [ ] TOFU identity storage detects key changes and invalidates stale sessions
+- [x] TOFU identity storage detects key changes and invalidates stale sessions
 - [ ] Sender-key encrypt/decrypt and distribution interoperate with Baileys
 - [ ] Signal store contract covers sessions, pre-keys, sender-key-memory, LID mappings, device lists, tc tokens, and identity keys
 - [ ] Cross-validation uses Baileys-compatible ciphertext/session data
@@ -231,7 +231,7 @@ remains an open hardening task until verified with dedicated native tooling.
 | `lib/baileys_ex/signal/group/sender_key_message.ex` | ✅ |
 | `lib/baileys_ex/signal/group/session_builder.ex` | ✅ |
 | `lib/baileys_ex/signal/group/cipher.ex` | ✅ |
-| `lib/baileys_ex/signal/identity.ex` | ⬜ |
+| `lib/baileys_ex/signal/identity.ex` | ✅ |
 | `lib/baileys_ex/signal/store.ex` | ⬜ |
 | `lib/baileys_ex/signal/prekey.ex` | ⬜ |
 | `lib/baileys_ex/signal/device.ex` | ⬜ |
@@ -241,6 +241,7 @@ remains an open hardening task until verified with dedicated native tooling.
 | `test/baileys_ex/signal/repository_test.exs` | ✅ |
 | `test/baileys_ex/signal/lid_mapping_store_test.exs` | ✅ |
 | `test/baileys_ex/signal/group_test.exs` | ✅ |
+| `test/baileys_ex/signal/identity_test.exs` | ✅ |
 
 ---
 

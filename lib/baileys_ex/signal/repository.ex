@@ -10,6 +10,7 @@ defmodule BaileysEx.Signal.Repository do
   alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.Group.SenderKeyName
+  alias BaileysEx.Signal.Identity
   alias BaileysEx.Signal.LIDMappingStore
 
   @typedoc "Injected peer session bundle used to bootstrap an outgoing session."
@@ -34,6 +35,7 @@ defmodule BaileysEx.Signal.Repository do
 
   @type adapter_error ::
           :invalid_ciphertext
+          | :invalid_identity_key
           | :invalid_session
           | :invalid_signal_address
           | :no_sender_key_state
@@ -57,6 +59,7 @@ defmodule BaileysEx.Signal.Repository do
   @type t :: %__MODULE__{
           adapter: module(),
           adapter_state: term(),
+          identity_store: Identity.t(),
           lid_mapping: LIDMappingStore.t()
         }
 
@@ -104,13 +107,19 @@ defmodule BaileysEx.Signal.Repository do
   end
 
   @enforce_keys [:adapter]
-  defstruct [:adapter, adapter_state: %{}, lid_mapping: LIDMappingStore.new()]
+  defstruct [
+    :adapter,
+    adapter_state: %{},
+    identity_store: Identity.new(),
+    lid_mapping: LIDMappingStore.new()
+  ]
 
   @spec new(keyword()) :: t()
   def new(opts) do
     %__MODULE__{
       adapter: Keyword.fetch!(opts, :adapter),
       adapter_state: Keyword.get(opts, :adapter_state, %{}),
+      identity_store: Keyword.get(opts, :identity_store, Identity.new()),
       lid_mapping: Keyword.get(opts, :lid_mapping, LIDMappingStore.new())
     }
   end
@@ -180,6 +189,47 @@ defmodule BaileysEx.Signal.Repository do
   end
 
   def delete_session(%__MODULE__{}, _jids), do: {:error, :invalid_signal_address}
+
+  @spec load_identity_key(t(), String.t()) ::
+          {:ok, t(), binary() | nil} | {:error, adapter_error()}
+  def load_identity_key(%__MODULE__{} = repository, jid) when is_binary(jid) do
+    with {:ok, repository, address} <- resolve_identity_address(repository, jid),
+         {:ok, identity_key} <- Identity.load(repository.identity_store, address) do
+      {:ok, repository, identity_key}
+    end
+  end
+
+  def load_identity_key(%__MODULE__{}, _jid), do: {:error, :invalid_signal_address}
+
+  @spec save_identity(t(), %{jid: String.t(), identity_key: binary()}) ::
+          {:ok, t(), boolean()} | {:error, adapter_error()}
+  def save_identity(%__MODULE__{} = repository, %{jid: jid, identity_key: identity_key})
+      when is_binary(jid) and is_binary(identity_key) do
+    with {:ok, repository, address} <- resolve_identity_address(repository, jid),
+         {:ok, identity_store, save_result} <-
+           Identity.save(repository.identity_store, address, identity_key),
+         {:ok, adapter_state} <-
+           maybe_invalidate_session_on_identity_change(
+             repository.adapter,
+             repository.adapter_state,
+             address,
+             save_result
+           ) do
+      changed? = save_result in [:new, :changed]
+
+      {:ok, %{repository | identity_store: identity_store, adapter_state: adapter_state},
+       changed?}
+    end
+  end
+
+  def save_identity(%__MODULE__{}, %{jid: jid, identity_key: _identity_key})
+      when not is_binary(jid),
+      do: {:error, :invalid_signal_address}
+
+  def save_identity(%__MODULE__{}, %{jid: _jid, identity_key: _identity_key}),
+    do: {:error, :invalid_identity_key}
+
+  def save_identity(%__MODULE__{}, _opts), do: {:error, :invalid_signal_address}
 
   @spec encrypt_group_message(t(), %{group: String.t(), me_id: String.t(), data: binary()}) ::
           {:ok, t(), %{ciphertext: binary(), sender_key_distribution_message: binary()}}
@@ -317,6 +367,34 @@ defmodule BaileysEx.Signal.Repository do
   defp normalize_validation(:no_session), do: %{exists: false, reason: :no_session}
   defp normalize_validation(:no_open_session), do: %{exists: false, reason: :no_open_session}
   defp normalize_validation(:validation_error), do: %{exists: false, reason: :validation_error}
+
+  defp resolve_identity_address(%__MODULE__{} = repository, jid) do
+    with {:ok, address} <- Address.from_jid(jid),
+         {:ok, lid_mapping, lid_jid} <-
+           LIDMappingStore.get_lid_for_pn(repository.lid_mapping, jid) do
+      repository
+      |> Map.put(:lid_mapping, lid_mapping)
+      |> resolve_identity_mapping(address, lid_jid)
+    end
+  end
+
+  defp resolve_identity_mapping(repository, address, nil), do: {:ok, repository, address}
+
+  defp resolve_identity_mapping(repository, _address, mapped_lid_jid) do
+    with {:ok, mapped_address} <- Address.from_jid(mapped_lid_jid) do
+      {:ok, repository, mapped_address}
+    end
+  end
+
+  defp maybe_invalidate_session_on_identity_change(_adapter, adapter_state, _address, :new),
+    do: {:ok, adapter_state}
+
+  defp maybe_invalidate_session_on_identity_change(_adapter, adapter_state, _address, :unchanged),
+    do: {:ok, adapter_state}
+
+  defp maybe_invalidate_session_on_identity_change(adapter, adapter_state, address, :changed) do
+    adapter.delete_sessions(adapter_state, [address])
+  end
 
   @spec normalize_session(map()) :: {:ok, e2e_session()} | {:error, :invalid_session}
   defp normalize_session(%{

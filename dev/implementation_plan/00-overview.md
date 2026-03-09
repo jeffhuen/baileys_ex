@@ -139,6 +139,7 @@ lib/baileys_ex/
 │   └── persistence.ex    # Behaviour for credential storage backends
 ├── signal/                # Phase 5 area — curve/address/repository first, deeper session logic later
 │   ├── store.ex           # Store behaviour for signal state persistence
+│   ├── identity.ex        # TOFU identity storage + invalidation semantics
 │   ├── session_cipher.ex  # Elixir-side orchestration around native sessions
 │   ├── session_builder.ex # Outgoing/incoming session orchestration
 │   ├── prekey.ex          # Pre-key generation, upload, rotation

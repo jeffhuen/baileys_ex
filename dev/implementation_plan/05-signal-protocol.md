@@ -46,10 +46,12 @@ Current implemented surface:
     to Baileys' group-session-builder/group-cipher flow
   - repository-owned orchestration via `encrypt_group_message/2`,
     `process_sender_key_distribution_message/2`, and `decrypt_group_message/2`
+- `BaileysEx.Signal.Identity`
+  - repository-resident TOFU identity store with canonical address resolution via
+    the LID mapping store and session invalidation when a trusted identity changes
 
 Not implemented yet:
 
-- TOFU identity persistence/invalidation
 - durable Signal key-store contract
 - Baileys cross-validation fixtures for full Signal payload/session interoperability
 
@@ -136,10 +138,25 @@ Explicit non-goal for 5.4:
 
 ### 5.5 Signal identity handling
 
-Planned scope:
+Completed:
 - TOFU identity storage
 - identity change detection
 - session invalidation semantics matching Baileys/WhatsApp Web expectations
+- repository helpers:
+  - `save_identity/2`
+  - `load_identity_key/2`
+- canonical storage semantics aligned to the reference:
+  - identity keys are normalized to the Signal-prefixed 33-byte form
+  - PN identities resolve through the LID mapping store before persistence when a
+    canonical LID mapping already exists
+  - changed identities clear the existing canonical session before future traffic
+    is re-established
+
+Explicit non-goal for 5.5:
+- automatic `pkmsg` identity extraction during decrypt is not being forced into the
+  current adapter-agnostic repository API. The core TOFU/change semantics are
+  implemented here; receive-path orchestration can layer on top once the richer
+  messaging/decrypt surface exists.
 
 ### 5.6 Signal store contract
 
@@ -196,12 +213,13 @@ Implemented:
 - `lib/baileys_ex/signal/group/sender_key_message.ex`
 - `lib/baileys_ex/signal/group/session_builder.ex`
 - `lib/baileys_ex/signal/group/cipher.ex`
+- `lib/baileys_ex/signal/identity.ex`
 - `test/baileys_ex/signal/curve_test.exs`
 - `test/baileys_ex/signal/address_test.exs`
 - `test/baileys_ex/signal/repository_test.exs`
 - `test/baileys_ex/signal/lid_mapping_store_test.exs`
 - `test/baileys_ex/signal/group_test.exs`
+- `test/baileys_ex/signal/identity_test.exs`
 
 Planned:
-- `lib/baileys_ex/signal/identity.ex`
 - `lib/baileys_ex/signal/store.ex`

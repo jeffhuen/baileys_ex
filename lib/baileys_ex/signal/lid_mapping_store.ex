@@ -6,6 +6,10 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   same forward/reverse keys Baileys writes (`pn_user` and `lid_user_reverse`).
   Device-specific JIDs are derived at read time so Signal addressing preserves
   per-device separation without duplicating stored rows.
+
+  Reverse PN lookup is intentionally limited to base `@lid` users, matching the
+  Baileys reference. Derived `@hosted.lid` device addresses are produced during
+  forward PN lookup, but are not treated as stored reverse-lookup identities.
   """
 
   alias BaileysEx.Protocol.JID
@@ -213,7 +217,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   defp parse_lid(jid) do
     case JID.parse(jid) do
       %BaileysEx.JID{user: user, server: server, device: device}
-      when is_binary(user) and server in ["lid", "hosted.lid"] ->
+      when is_binary(user) and server == "lid" ->
         {:ok, %{original: jid, user: user, server: server, device: device || 0}}
 
       _other ->

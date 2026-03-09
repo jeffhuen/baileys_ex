@@ -1,0 +1,117 @@
+{
+  "meta": {
+    "source": "dev/reference/Baileys-master",
+    "baileys_version": "7.0.0-rc.9",
+    "scope": [
+      "jidToSignalProtocolAddress parity",
+      "LID mapping forward/reverse parity",
+      "sender-key distribution and group cipher parity"
+    ]
+  },
+  "addresses": [
+    {
+      "jid": "5511999887766@s.whatsapp.net",
+      "signal_address": "5511999887766.0"
+    },
+    {
+      "jid": "5511999887766:2@s.whatsapp.net",
+      "signal_address": "5511999887766.2"
+    },
+    {
+      "jid": "12345_128@s.whatsapp.net",
+      "signal_address": "12345_128.0"
+    },
+    {
+      "jid": "12345_128:3@c.us",
+      "signal_address": "12345_128.3"
+    },
+    {
+      "jid": "abc123@lid",
+      "signal_address": "abc123_1.0"
+    },
+    {
+      "jid": "user:99@hosted",
+      "signal_address": "user_128.99"
+    },
+    {
+      "jid": "user:99@hosted.lid",
+      "signal_address": "user_129.99"
+    },
+    {
+      "jid": "user:99@s.whatsapp.net",
+      "error": true
+    }
+  ],
+  "lid_mapping": {
+    "stored_pairs": [
+      {
+        "lid": "12345@lid",
+        "pn": "5511999887766@s.whatsapp.net"
+      }
+    ],
+    "forward_lookups": [
+      {
+        "pn": "5511999887766@s.whatsapp.net",
+        "lid": "12345@lid"
+      },
+      {
+        "pn": "5511999887766:2@s.whatsapp.net",
+        "lid": "12345:2@lid"
+      },
+      {
+        "pn": "5511999887766:99@hosted",
+        "lid": "12345:99@hosted.lid"
+      }
+    ],
+    "reverse_lookups": [
+      {
+        "lid": "12345@lid",
+        "pn": "5511999887766:0@s.whatsapp.net"
+      },
+      {
+        "lid": "12345:2@lid",
+        "pn": "5511999887766:2@s.whatsapp.net"
+      },
+      {
+        "lid": "12345:99@lid",
+        "pn": "5511999887766:99@s.whatsapp.net"
+      },
+      {
+        "lid": "12345:99@hosted.lid",
+        "pn": null
+      }
+    ]
+  },
+  "sender_key": {
+    "group": "120363001234567890@g.us",
+    "author_jid": "5511999887766:3@s.whatsapp.net",
+    "sender_key_name": "120363001234567890@g.us::5511999887766::3",
+    "state": {
+      "key_id": 1729,
+      "iteration": 0,
+      "chain_key": "ABEiM0RVZneImaq7zN3u//7cuph2VDIQASNFZ4mrze8=",
+      "signing_private_key": "AAIcmaF2D5rTsgGZo9h4oqGa393qFKjilfMfUDqr8G8=",
+      "signing_public_key": "BYBnBY4toVNm9NPplrAdbCEr09r7ZvolG0erkS7zMnBY"
+    },
+    "distribution_message": "MwjBDRAAGiAAESIzRFVmd4iZqrvM3e7//ty6mHZUMhABI0VniavN7yIhBYBnBY4toVNm9NPplrAdbCEr09r7ZvolG0erkS7zMnBY",
+    "messages": [
+      {
+        "plaintext": "Zml4dHVyZS1vbmU=",
+        "ciphertext": "MwjBDRAAGhDDJG/osZFJH8LfSmO4txHllzfF2HO68EYgfItTcfLGgic2KXB/NPw5vWNdje+fLLFF8C4v+ayyuxUhtLBCC71dveWYLqvYDr6BQh5P/nVvgw=="
+      },
+      {
+        "plaintext": "Zml4dHVyZS10d28=",
+        "ciphertext": "MwjBDRACGhAY0RSC+Iiozu9WfVJa8IfmMnjA8E9QB63/chWUu6tx3bfqHExlMh8fc96AFrgY3qQQR1CAMgnvE1HVfY1977M8bHLfCMvGjpeTrjYPJLY5iQ=="
+      },
+      {
+        "plaintext": "Zml4dHVyZS10aHJlZQ==",
+        "ciphertext": "MwjBDRAEGhC3VKNoa9Tj9/MAVwCIyxaele5k0nCbpxjpLHd5NNia7bm6dvXUcJAPhkUdcNHsOI5L/8w3twRZqFxXIv4jdXKmU+vNftRaoOywpmPYmmFQjA=="
+      }
+    ],
+    "decrypt_order": [
+      1,
+      0,
+      2
+    ]
+  }
+}

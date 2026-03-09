@@ -1,6 +1,6 @@
 # Phase 5: Signal Protocol
 
-**Status:** IN PROGRESS
+**Status:** COMPLETE
 
 **Goal:** Provide a Baileys-compatible Signal boundary while keeping orchestration,
 addressing, mapping, and persistence-friendly state transitions in Elixir.
@@ -52,8 +52,8 @@ Current implemented surface:
 
 Not implemented yet:
 
-- durable Signal key-store contract
-- Baileys cross-validation fixtures for full Signal payload/session interoperability
+- a concrete 1:1 session-cipher engine behind `BaileysEx.Signal.Repository.Adapter`
+- receive-path `pkmsg` identity extraction wired through the later messaging layer
 
 ## Task Order
 
@@ -200,9 +200,19 @@ Explicit non-goal for 5.6:
 
 ### 5.7 Cross-validation
 
-Planned scope:
-- Baileys-compatible ciphertext/session fixtures
-- interoperability-focused tests instead of self-roundtrip-only checks
+Completed:
+- committed Baileys-generated fixtures under `test/fixtures/signal/baileys_v7.json`
+- local generator script at `dev/tools/generate_signal_fixtures.mts`
+- fixture-driven Elixir tests covering the implemented Baileys-dependent surfaces:
+  - `jidToSignalProtocolAddress` parity
+  - PN<->LID mapping forward/reverse parity
+  - sender-key distribution bytes, ciphertext body parity, and decrypt interoperability
+  - XEdDSA sign/verify compatibility for sender-key signatures
+
+Explicit non-goal for 5.7:
+- full `libsignal.SessionCipher` ciphertext/session parity is not claimed here because
+  the repository still intentionally exposes an adapter boundary rather than a concrete
+  1:1 engine implementation
 
 ---
 
@@ -210,15 +220,22 @@ Planned scope:
 
 Phase 5 is complete only when:
 
-- repository behavior matches the Baileys Signal wrapper for 1:1 flows
+- the repository boundary and its Elixir-owned behavior match Baileys for the
+  currently implemented surfaces: address translation, mapping, migration, identity,
+  store access, and sender-key orchestration
 - PN-addressed sessions can migrate to LID-addressed sessions without losing
   per-device separation
 - TOFU identity storage detects key changes and invalidates stale sessions
 - sender-key encrypt/decrypt and distribution flows interoperate with Baileys
 - the Signal store contract covers the required logical key families
-- interoperability is proven with Baileys-compatible data, not only self-generated
-  roundtrips
+- interoperability is proven with committed Baileys-generated fixtures, not only
+  self-generated roundtrips
 - the native boundary remains no broader than necessary
+
+Phase 5 does not claim that a concrete `libsignal.SessionCipher`-style 1:1 engine is
+already implemented in-tree. That runtime engine remains intentionally hidden behind
+`BaileysEx.Signal.Repository.Adapter` until the later connection/auth/messaging phases
+choose and wire a concrete implementation.
 
 ## Current Files
 
@@ -246,3 +263,6 @@ Implemented:
 - `test/baileys_ex/signal/group_test.exs`
 - `test/baileys_ex/signal/identity_test.exs`
 - `test/baileys_ex/signal/store_test.exs`
+- `test/baileys_ex/signal/cross_validation_test.exs`
+- `test/fixtures/signal/baileys_v7.json`
+- `dev/tools/generate_signal_fixtures.mts`

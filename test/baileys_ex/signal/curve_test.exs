@@ -47,6 +47,22 @@ defmodule BaileysEx.Signal.CurveTest do
     assert Curve.verify(identity_key_pair.public, signal_public_key, signature)
   end
 
+  test "matches the reference curve25519-js signature bytes for sender-key signing" do
+    private_key = Base.decode64!("AAIcmaF2D5rTsgGZo9h4oqGa393qFKjilfMfUDqr8G8=")
+    public_key = Base.decode64!("BYBnBY4toVNm9NPplrAdbCEr09r7ZvolG0erkS7zMnBY")
+    message = <<1, 2, 3>>
+
+    expected_signature =
+      Base.decode16!(
+        "510628a855f33a9cf4d6b3d353d20042d5228c409fed17c5f0121dcc9695c280" <>
+          "da292e0fa34a6af9f4dc0aadb3c1637d8c9c313fa6e0bc188d36472e036ea88c",
+        case: :mixed
+      )
+
+    assert {:ok, ^expected_signature} = Curve.sign(private_key, message)
+    assert Curve.verify(public_key, message, expected_signature)
+  end
+
   describe "error paths" do
     test "shared_key rejects invalid private key sizes" do
       valid_public = :crypto.strong_rand_bytes(32)

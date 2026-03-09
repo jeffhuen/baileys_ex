@@ -5,11 +5,11 @@ In-progress Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) 
 - **Foundation phase** is complete
 - **Crypto** is complete for the current Phase 2 scope
 - **Protocol layer and Noise transport foundations** are implemented in-tree for the current scope
-- **Signal Phase 5 is in progress** for the repository/address boundary, Local Identifier (LID) mapping, session migration, sender-key group crypto, TOFU identity handling, the runtime store contract, and narrow verification helpers
+- **Signal Phase 5 is complete for the current scope**: repository/address boundary, Local Identifier (LID) mapping, session migration, sender-key group crypto, TOFU identity handling, the runtime store contract, fixture-backed Baileys cross-validation, and narrow verification helpers
 - **Connection, auth, messaging, media, and feature layers** are still planned work
 - Targets Elixir 1.19+ / OTP 28
 
-> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, and Phase 5 now includes the Signal curve/repository boundary, LID mapping, PN->LID session migration, sender-key group state/crypto, TOFU identity invalidation semantics, and the in-memory transactional Signal store contract. Broad WAProto message/auth code generation is intentionally deferred to the later phases that consume it. See `dev/implementation_plan/PROGRESS.md`.
+> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, and Phase 5 is complete for its adapter-driven scope: Signal curve/repository boundary, LID mapping, PN->LID session migration, sender-key group state/crypto, TOFU identity invalidation semantics, the in-memory transactional Signal store contract, and committed Baileys-generated cross-validation fixtures. Broad WAProto message/auth code generation and a concrete 1:1 session engine remain intentionally deferred to the later phases that consume them. See `dev/implementation_plan/PROGRESS.md`.
 
 ## Target Architecture
 

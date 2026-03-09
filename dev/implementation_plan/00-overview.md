@@ -211,9 +211,10 @@ Phase 4: Noise NIF ────────────────────�
   Depends on: Phase 1 (NIF scaffold)
 
 Phase 5: Signal Protocol (adapter-driven boundary) ──────────────
-  Rust NIF wrapping libsignal-protocol or equivalent
-  Elixir wrappers for session orchestration, persistence, and device discovery
-  Depends on: Phase 1 (NIF scaffold), Phase 2 (Crypto)
+  Elixir Signal compatibility boundary: address translation, LID mapping,
+  sender-key group crypto, identity handling, runtime store contract,
+  and Baileys-generated cross-validation fixtures
+  Depends on: Phase 1 (foundation), Phase 2 (Crypto)
   (parallel with Phase 4)
 
 Phase 6: Connection ──────────────────────────────────────────────

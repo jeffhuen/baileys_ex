@@ -98,5 +98,14 @@ defmodule BaileysEx.Signal.LIDMappingStoreTest do
     test "returns nil when no reverse mapping exists", %{store: store} do
       assert {:ok, nil} = LIDMappingStore.get_pn_for_lid(store, "nonexistent@lid")
     end
+
+    test "does not reverse-resolve hosted.lid addresses", %{store: store} do
+      assert :ok =
+               LIDMappingStore.store_lid_pn_mappings(store, [
+                 %{lid: "12345@lid", pn: "5511999887766@s.whatsapp.net"}
+               ])
+
+      assert {:ok, nil} = LIDMappingStore.get_pn_for_lid(store, "12345:99@hosted.lid")
+    end
   end
 end

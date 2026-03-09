@@ -256,11 +256,11 @@ falsely marked as implemented here.
 
 **Status:** IN PROGRESS · **Depends on:** Phases 3, 4 · **Blocks:** 7, 8
 
-> **Current snapshot:** the first accepted Phase 6 slice is in-tree: `Connection.Config`,
-> `Connection.Frame`, `Connection.Transport`, and a minimal injected-transport
-> `Connection.Socket` `:gen_statem`. This slice proves the config defaults, platform
-> mapping, 3-byte frame codec, and initial socket state contract. Full Mint/WebSocket
-> integration, Noise/auth flow, keep-alive, reconnection, supervision, event buffering,
+> **Current snapshot:** the first two accepted Phase 6 slices are in-tree:
+> `Connection.Config`, `Connection.Frame`, the evented `Connection.Transport`
+> boundary, `Connection.Transport.MintWebSocket`, and a `Connection.Socket`
+> `:gen_statem` that performs the real Noise handshake up to `:authenticating`.
+> Keep-alive, reconnect policy, per-connection supervision, event buffering,
 > and the connection store are still open.
 
 ### Tasks
@@ -276,7 +276,7 @@ falsely marked as implemented here.
 ### Acceptance Criteria
 
 - [ ] State machine transitions through all states correctly
-- [ ] Noise handshake integrates with WebSocket transport
+- [x] Noise handshake integrates with WebSocket transport up to `:authenticating`
 - [x] Frame encoding/decoding with length prefix works
 - [ ] Keep-alive prevents timeout disconnection
 - [ ] Reconnection works after unexpected disconnect
@@ -304,6 +304,8 @@ falsely marked as implemented here.
 | `lib/baileys_ex/connection/config.ex` | ✅ |
 | `lib/baileys_ex/connection/frame.ex` | ✅ |
 | `lib/baileys_ex/connection/transport.ex` | ✅ |
+| `lib/baileys_ex/connection/transport/mint_adapter.ex` | ✅ |
+| `lib/baileys_ex/connection/transport/mint_web_socket.ex` | ✅ |
 | `lib/baileys_ex/connection/socket.ex` | 🟡 |
 | `lib/baileys_ex/connection/supervisor.ex` | ⬜ |
 | `lib/baileys_ex/connection/event_emitter.ex` | ⬜ |
@@ -311,6 +313,7 @@ falsely marked as implemented here.
 | `test/baileys_ex/connection/config_test.exs` | ✅ |
 | `test/baileys_ex/connection/frame_test.exs` | ✅ |
 | `test/baileys_ex/connection/socket_test.exs` | 🟡 |
+| `test/baileys_ex/connection/transport/mint_web_socket_test.exs` | ✅ |
 | `test/baileys_ex/connection/event_emitter_test.exs` | ⬜ |
 | `test/baileys_ex/connection/store_test.exs` | ⬜ |
 

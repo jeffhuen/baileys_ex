@@ -8,9 +8,13 @@ defmodule BaileysEx.Connection.Transport do
 
   alias BaileysEx.Connection.Config
 
+  @type event :: :connected | {:binary, binary()} | {:closed, term()} | {:error, term()}
+
   @callback connect(Config.t(), term()) :: {:ok, term()} | {:error, term()}
+  @callback handle_info(term(), term()) ::
+              {:ok, term(), [event()]} | {:error, term(), term()} | :unknown
   @callback disconnect(term()) :: :ok
-  @callback send(term(), binary()) :: :ok | {:error, term()}
+  @callback send_binary(term(), binary()) :: {:ok, term()} | {:error, term(), term()}
 
   defmodule Noop do
     @moduledoc false
@@ -21,9 +25,12 @@ defmodule BaileysEx.Connection.Transport do
     def connect(_config, _opts), do: {:error, :transport_not_configured}
 
     @impl true
+    def handle_info(_transport_state, _message), do: :unknown
+
+    @impl true
     def disconnect(_transport_state), do: :ok
 
     @impl true
-    def send(_transport_state, _payload), do: {:error, :not_connected}
+    def send_binary(transport_state, _payload), do: {:error, transport_state, :not_connected}
   end
 end

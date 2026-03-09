@@ -8,12 +8,12 @@ machine, keep-alive, reconnection, per-connection supervision tree.
 
 ---
 
-> **Current snapshot:** Phase 6 has started. The repo now has `Connection.Config`,
-> a pure `Connection.Frame` codec for WhatsApp's 3-byte length prefix, a minimal
-> `Connection.Transport` behavior, and an injected-transport `Connection.Socket`
-> `:gen_statem` skeleton. The accepted slice stops at transport startup/state
-> transitions; full Mint/WebSocket integration, Noise handshake orchestration,
-> keep-alive, reconnection, supervision, and event buffering remain open Phase 6 work.
+> **Current snapshot:** Phase 6 now has two accepted slices in-tree. The repo has
+> `Connection.Config`, a pure `Connection.Frame` codec, an evented `Connection.Transport`
+> boundary, a real `Connection.Transport.MintWebSocket` implementation, and a
+> `Connection.Socket` `:gen_statem` that performs the real Baileys-style Noise handshake
+> up to `:authenticating`. Keep-alive, reconnect policy, per-connection supervision,
+> event buffering, and the connection store remain open Phase 6 work.
 
 ## Design Decisions
 
@@ -49,10 +49,10 @@ WhatsApp frames have a 3-byte length prefix (big-endian) followed by the payload
 Pre-noise: payload is raw. Post-noise: payload is Noise-encrypted.
 
 **Build the connection layer in slices, not one jump.**
-The first accepted slice is deliberately narrower than the eventual phase:
-config defaults, frame encoding/decoding, and the socket's state contract with an
-injected transport seam. That keeps the `:gen_statem` shape stable before the real
-Mint/WebSocket and Noise runtime is layered in.
+The first accepted slice established config defaults, frame encoding/decoding, and
+the socket's state contract with an injected transport seam. The second slice adds
+the real Mint transport and the real Noise handshake up to `:authenticating`
+without prematurely pulling in Phase 7 auth validation or the later supervisor/store work.
 
 ---
 
@@ -113,7 +113,11 @@ end
 
 ### 6.2 Connection socket (:gen_statem)
 
-File: `lib/baileys_ex/connection/socket.ex`
+Files:
+- `lib/baileys_ex/connection/socket.ex`
+- `lib/baileys_ex/connection/transport.ex`
+- `lib/baileys_ex/connection/transport/mint_web_socket.ex`
+- `lib/baileys_ex/connection/transport/mint_adapter.ex`
 
 States:
 ```
@@ -412,6 +416,22 @@ not just "connect then flush events":
 On the BEAM, keep this as part of the socket state machine plus the event buffer;
 do not spawn detached ad-hoc tasks for the transition logic itself.
 
+### 6.2a Current accepted runtime boundary
+
+The current accepted connection runtime stops at the boundary where the socket has:
+
+- opened the real Mint-backed WebSocket transport
+- initialized `Protocol.Noise`
+- sent client hello
+- processed server hello
+- sent client finish
+- transitioned to `:authenticating`
+
+This is intentionally short of a full "open" connection, because Phase 7 still owns
+registration/login payload generation and the post-handshake auth response flow.
+The temporary seam is an injected already-encoded client payload binary used only to
+exercise the real transport + Noise choreography before auth is implemented.
+
 ### 6.3 Frame handling
 
 File: `lib/baileys_ex/connection/frame.ex`
@@ -617,7 +637,7 @@ end
 ## Acceptance Criteria
 
 - [ ] Connection state machine transitions correctly through all states
-- [ ] Noise handshake integrates with WebSocket transport
+- [x] Noise handshake integrates with WebSocket transport up to `:authenticating`
 - [ ] Frame encoding/decoding with length prefix works
 - [ ] Keep-alive prevents timeout disconnection
 - [ ] Reconnection works after unexpected disconnect
@@ -640,13 +660,17 @@ end
 
 - `lib/baileys_ex/connection/config.ex` — accepted in the current slice; includes browser/platform identification (GAP-27)
 - `lib/baileys_ex/connection/frame.ex` — accepted in the current slice; pure 3-byte frame codec
-- `lib/baileys_ex/connection/transport.ex` — accepted in the current slice; injected transport seam for early socket tests
-- `lib/baileys_ex/connection/socket.ex` — prototype state machine skeleton; full Noise/WebSocket/auth behavior remains open
+- `lib/baileys_ex/connection/transport.ex` — accepted in the current slice; evented transport seam for the socket runtime
+- `lib/baileys_ex/connection/transport/mint_adapter.ex` — accepted in the current slice; narrow Mint adapter for deterministic tests
+- `lib/baileys_ex/connection/transport/mint_web_socket.ex` — accepted in the current slice; real Mint-backed WebSocket transport
+- `lib/baileys_ex/connection/socket.ex` — prototype state machine now covers real transport-open + Noise handshake to `:authenticating`
 - `lib/baileys_ex/connection/supervisor.ex`
 - `lib/baileys_ex/connection/event_emitter.ex` — full event catalog (GAP-07), buffering support with auto-flush (GAP-22)
 - `lib/baileys_ex/connection/store.ex`
 - `test/baileys_ex/connection/config_test.exs`
 - `test/baileys_ex/connection/frame_test.exs`
 - `test/baileys_ex/connection/socket_test.exs`
+- `test/baileys_ex/connection/transport/mint_web_socket_test.exs`
+- `test_helpers/connection/noise_server.exs`
 - `test/baileys_ex/connection/event_emitter_test.exs`
 - `test/baileys_ex/connection/store_test.exs`

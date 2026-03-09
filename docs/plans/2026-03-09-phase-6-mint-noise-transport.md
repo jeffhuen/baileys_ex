@@ -15,7 +15,7 @@
 **Files:**
 - Modify: `test/baileys_ex/connection/socket_test.exs`
 - Create: `test/baileys_ex/connection/transport/mint_web_socket_test.exs`
-- Create: `test/support/connection/noise_server.ex`
+- Create: `test_helpers/connection/noise_server.exs`
 - Modify: `test/test_helper.exs`
 
 **Step 1: Write the failing socket tests**
@@ -39,7 +39,7 @@ Cover:
 **Step 3: Add reusable Noise server helpers**
 
 Move or recreate the deterministic server-hello builder logic used in
-`test/baileys_ex/protocol/noise_test.exs` into `test/support/connection/noise_server.ex`
+`test/baileys_ex/protocol/noise_test.exs` into `test_helpers/connection/noise_server.exs`
 so the socket tests can exercise the real handshake without duplicating crypto logic.
 
 **Step 4: Run the targeted tests to verify RED**
@@ -195,7 +195,7 @@ Expected: all pass.
 git add docs/plans/2026-03-09-phase-6-mint-noise-transport-design.md \
   docs/plans/2026-03-09-phase-6-mint-noise-transport.md \
   test/test_helper.exs \
-  test/support/connection/noise_server.ex \
+  test_helpers/connection/noise_server.exs \
   test/baileys_ex/connection/socket_test.exs \
   test/baileys_ex/connection/transport/mint_web_socket_test.exs \
   lib/baileys_ex/connection/config.ex \

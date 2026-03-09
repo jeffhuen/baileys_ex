@@ -11,6 +11,7 @@ defmodule BaileysEx.Connection.Socket do
 
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.Transport
+  alias BaileysEx.Protocol.Noise
 
   @type state ::
           :disconnected
@@ -31,6 +32,9 @@ defmodule BaileysEx.Connection.Socket do
   @type t :: %__MODULE__{
           config: Config.t(),
           auth_state: term(),
+          client_payload: binary() | nil,
+          noise_opts: keyword(),
+          noise: Noise.t() | nil,
           transport_module: module(),
           transport_options: term(),
           transport_state: term() | nil,
@@ -44,10 +48,13 @@ defmodule BaileysEx.Connection.Socket do
   defstruct [
     :config,
     :auth_state,
+    :client_payload,
+    :noise,
     :transport_module,
     :transport_options,
     :transport_state,
     :last_error,
+    noise_opts: [],
     buffer: <<>>,
     retry_count: 0,
     epoch: 0
@@ -92,6 +99,8 @@ defmodule BaileysEx.Connection.Socket do
     data = %__MODULE__{
       config: Keyword.get(opts, :config, Config.new()),
       auth_state: Keyword.get(opts, :auth_state),
+      client_payload: Keyword.get(opts, :client_payload),
+      noise_opts: Keyword.get(opts, :noise_opts, []),
       transport_module: transport_module,
       transport_options: transport_options
     }
@@ -111,19 +120,23 @@ defmodule BaileysEx.Connection.Socket do
   def connecting(:internal, :establish_transport, data) do
     case data.transport_module.connect(data.config, data.transport_options) do
       {:ok, transport_state} ->
-        {:next_state, :noise_handshake,
-         %{data | transport_state: transport_state, last_error: nil}}
+        {:keep_state, %{data | transport_state: transport_state, last_error: nil}}
 
       {:error, reason} ->
-        {:next_state, :disconnected,
-         %{data | transport_state: nil, retry_count: data.retry_count + 1, last_error: reason}}
+        connection_failure(data, reason)
     end
   end
+
+  def connecting(:info, message, data),
+    do: handle_transport_message(:connecting, message, data)
 
   def connecting({:call, from}, request, data), do: handle_call(:connecting, from, request, data)
   def connecting(_event_type, _event, data), do: {:keep_state, data}
 
   def noise_handshake(:enter, _old_state, data), do: {:keep_state, data}
+
+  def noise_handshake(:info, message, data),
+    do: handle_transport_message(:noise_handshake, message, data)
 
   def noise_handshake({:call, from}, request, data),
     do: handle_call(:noise_handshake, from, request, data)
@@ -132,16 +145,23 @@ defmodule BaileysEx.Connection.Socket do
 
   def authenticating(:enter, _old_state, data), do: {:keep_state, data}
 
+  def authenticating(:info, message, data),
+    do: handle_transport_message(:authenticating, message, data)
+
   def authenticating({:call, from}, request, data),
     do: handle_call(:authenticating, from, request, data)
 
   def authenticating(_event_type, _event, data), do: {:keep_state, data}
 
   def connected(:enter, _old_state, data), do: {:keep_state, data}
+  def connected(:info, message, data), do: handle_transport_message(:connected, message, data)
   def connected({:call, from}, request, data), do: handle_call(:connected, from, request, data)
   def connected(_event_type, _event, data), do: {:keep_state, data}
 
   def reconnecting(:enter, _old_state, data), do: {:keep_state, data}
+
+  def reconnecting(:info, message, data),
+    do: handle_transport_message(:reconnecting, message, data)
 
   def reconnecting({:call, from}, request, data),
     do: handle_call(:reconnecting, from, request, data)
@@ -172,9 +192,12 @@ defmodule BaileysEx.Connection.Socket do
 
   defp handle_call(:connected, from, {:send_payload, payload}, data) do
     reply =
-      case data.transport_module.send(data.transport_state, payload) do
-        :ok -> :ok
-        {:error, reason} -> {:error, reason}
+      case data.transport_module.send_binary(data.transport_state, payload) do
+        {:ok, _transport_state} ->
+          :ok
+
+        {:error, _transport_state, reason} ->
+          {:error, reason}
       end
 
     {:keep_state, data, [{:reply, from, reply}]}
@@ -201,5 +224,127 @@ defmodule BaileysEx.Connection.Socket do
          transport_state: transport_state
        }) do
     transport_module.disconnect(transport_state)
+  end
+
+  defp handle_transport_message(
+         _current_state,
+         _message,
+         %__MODULE__{transport_state: nil} = data
+       ) do
+    {:keep_state, data}
+  end
+
+  defp handle_transport_message(current_state, message, data) do
+    case data.transport_module.handle_info(data.transport_state, message) do
+      {:ok, transport_state, events} ->
+        data = %{data | transport_state: transport_state}
+
+        case apply_transport_events(current_state, events, data) do
+          {:ok, ^current_state, data} -> {:keep_state, data}
+          {:ok, next_state, data} -> {:next_state, next_state, data}
+          {:error, reason, data} -> connection_failure(data, reason)
+        end
+
+      {:error, transport_state, reason} ->
+        connection_failure(%{data | transport_state: transport_state}, reason)
+
+      :unknown ->
+        {:keep_state, data}
+    end
+  end
+
+  defp apply_transport_events(current_state, events, data) do
+    Enum.reduce_while(events, {:ok, current_state, data}, fn event, {:ok, state, data} ->
+      case apply_transport_event(state, event, data) do
+        {:ok, next_state, data} -> {:cont, {:ok, next_state, data}}
+        {:error, reason, data} -> {:halt, {:error, reason, data}}
+      end
+    end)
+  end
+
+  defp apply_transport_event(:connecting, :connected, data) do
+    case start_noise_handshake(data) do
+      {:ok, data} -> {:ok, :noise_handshake, data}
+      {:error, reason, data} -> {:error, reason, data}
+    end
+  end
+
+  defp apply_transport_event(:noise_handshake, {:binary, server_hello}, data) do
+    case finish_noise_handshake(data, server_hello) do
+      {:ok, data} -> {:ok, :authenticating, data}
+      {:error, reason, data} -> {:error, reason, data}
+    end
+  end
+
+  defp apply_transport_event(_current_state, {:closed, reason}, data), do: {:error, reason, data}
+  defp apply_transport_event(_current_state, {:error, reason}, data), do: {:error, reason, data}
+  defp apply_transport_event(current_state, _event, data), do: {:ok, current_state, data}
+
+  defp start_noise_handshake(data) do
+    routing_info = get_in(data.auth_state, [:creds, :routing_info])
+    noise_opts = Keyword.put_new(data.noise_opts, :routing_info, routing_info)
+
+    with {:ok, noise} <- Noise.new(noise_opts),
+         {:ok, {noise, client_hello}} <- Noise.client_hello(noise),
+         {:ok, data} <- send_transport_binary(%{data | noise: noise}, client_hello) do
+      {:ok, data}
+    else
+      {:error, reason, data} -> {:error, reason, data}
+      {:error, reason} -> {:error, reason, data}
+    end
+  end
+
+  defp finish_noise_handshake(%__MODULE__{noise: nil}, _server_hello),
+    do: {:error, :noise_not_initialized}
+
+  defp finish_noise_handshake(data, server_hello) do
+    with {:ok, noise_key_pair} <- fetch_noise_key_pair(data.auth_state),
+         {:ok, client_payload} <- fetch_client_payload(data.client_payload),
+         {:ok, noise} <- Noise.process_server_hello(data.noise, server_hello, noise_key_pair),
+         {:ok, {noise, client_finish}} <- Noise.client_finish(noise, client_payload),
+         {:ok, data} <- send_transport_binary(%{data | noise: noise}, client_finish) do
+      {:ok, data}
+    else
+      {:error, reason, data} -> {:error, reason, data}
+      {:error, reason} -> {:error, reason, data}
+    end
+  end
+
+  defp send_transport_binary(data, payload) do
+    case data.transport_module.send_binary(data.transport_state, payload) do
+      {:ok, transport_state} ->
+        {:ok, %{data | transport_state: transport_state}}
+
+      {:error, transport_state, reason} ->
+        {:error, reason, %{data | transport_state: transport_state}}
+    end
+  end
+
+  defp fetch_noise_key_pair(%{noise_key: %{public: public, private: private} = key_pair})
+       when is_binary(public) and is_binary(private),
+       do: {:ok, key_pair}
+
+  defp fetch_noise_key_pair(%{
+         creds: %{noise_key: %{public: public, private: private} = key_pair}
+       })
+       when is_binary(public) and is_binary(private),
+       do: {:ok, key_pair}
+
+  defp fetch_noise_key_pair(_auth_state), do: {:error, :noise_key_not_configured}
+
+  defp fetch_client_payload(payload) when is_binary(payload), do: {:ok, payload}
+  defp fetch_client_payload(_payload), do: {:error, :client_payload_not_configured}
+
+  defp connection_failure(data, reason) do
+    disconnect_transport(data)
+
+    {:next_state, :disconnected,
+     %{
+       data
+       | transport_state: nil,
+         noise: nil,
+         retry_count: data.retry_count + 1,
+         last_error: reason
+     }}
   end
 end

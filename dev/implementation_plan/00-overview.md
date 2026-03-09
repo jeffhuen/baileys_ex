@@ -126,6 +126,9 @@ lib/baileys_ex/protocol/
 lib/baileys_ex/connection/
 ├── frame.ex          # Pure 3-byte length-prefixed frame codec
 ├── transport.ex      # Transport behaviour seam for the socket runtime
+├── transport/
+│   ├── mint_adapter.ex    # Narrow adapter over Mint for deterministic tests
+│   └── mint_web_socket.ex # Real Mint-backed WebSocket transport
 ├── config.ex         # Connection configuration struct
 ├── supervisor.ex     # Per-connection :rest_for_one supervisor
 ├── socket.ex         # :gen_statem — WebSocket + Noise transport

@@ -1,42 +1,40 @@
 defmodule BaileysEx.Signal.Identity do
   @moduledoc """
-  In-memory Signal identity store with TOFU and change detection semantics.
+  Store-backed Signal identity helpers with TOFU and change detection semantics.
 
-  Identity keys are stored by canonical Signal address string. Raw 32-byte public
-  keys are normalized to the Signal-prefixed 33-byte form before comparison.
+  Identity keys are stored by canonical Signal address string in the
+  `:"identity-key"` family. Raw 32-byte public keys are normalized to the
+  Signal-prefixed 33-byte form before comparison and persistence.
   """
 
   alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Curve
+  alias BaileysEx.Signal.Store
 
   @type save_result :: :new | :unchanged | :changed
-
-  @type t :: %__MODULE__{
-          entries: %{optional(String.t()) => binary()}
-        }
-
   @type error :: :invalid_identity_key
 
-  defstruct entries: %{}
-
-  @spec new() :: t()
-  def new, do: %__MODULE__{}
-
-  @spec load(t(), Address.t()) :: {:ok, binary() | nil}
-  def load(%__MODULE__{} = identity_store, %Address{} = address) do
-    {:ok, Map.get(identity_store.entries, Address.to_string(address))}
+  @spec load(Store.t(), Address.t()) :: {:ok, binary() | nil}
+  def load(%Store{} = store, %Address{} = address) do
+    address_key = Address.to_string(address)
+    {:ok, Map.get(Store.get(store, :"identity-key", [address_key]), address_key)}
   end
 
-  @spec save(t(), Address.t(), binary()) :: {:ok, t(), save_result()} | {:error, error()}
-  def save(%__MODULE__{} = identity_store, %Address{} = address, identity_key)
-      when is_binary(identity_key) do
-    with {:ok, identity_key} <- normalize_identity_key(identity_key) do
+  @spec save(Store.t(), Address.t(), binary()) :: {:ok, save_result()} | {:error, error()}
+  def save(%Store{} = store, %Address{} = address, identity_key) when is_binary(identity_key) do
+    with {:ok, normalized_identity_key} <- normalize_identity_key(identity_key) do
       address_key = Address.to_string(address)
-      persist_identity(identity_store, address_key, identity_key)
+
+      result =
+        Store.transaction(store, "identity-key:#{address_key}", fn ->
+          persist_identity(store, address_key, normalized_identity_key)
+        end)
+
+      {:ok, result}
     end
   end
 
-  def save(%__MODULE__{}, %Address{}, _identity_key), do: {:error, :invalid_identity_key}
+  def save(%Store{}, %Address{}, _identity_key), do: {:error, :invalid_identity_key}
 
   defp normalize_identity_key(identity_key) do
     case Curve.generate_signal_pub_key(identity_key) do
@@ -45,20 +43,18 @@ defmodule BaileysEx.Signal.Identity do
     end
   end
 
-  defp persist_identity(identity_store, address_key, identity_key) do
-    case Map.fetch(identity_store.entries, address_key) do
-      :error ->
-        {:ok, put_identity(identity_store, address_key, identity_key), :new}
+  defp persist_identity(store, address_key, identity_key) do
+    case Store.get(store, :"identity-key", [address_key]) do
+      %{^address_key => ^identity_key} ->
+        :unchanged
 
-      {:ok, ^identity_key} ->
-        {:ok, identity_store, :unchanged}
+      %{^address_key => _existing_identity_key} ->
+        :ok = Store.set(store, %{:"identity-key" => %{address_key => identity_key}})
+        :changed
 
-      {:ok, _existing_identity_key} ->
-        {:ok, put_identity(identity_store, address_key, identity_key), :changed}
+      %{} ->
+        :ok = Store.set(store, %{:"identity-key" => %{address_key => identity_key}})
+        :new
     end
-  end
-
-  defp put_identity(identity_store, address_key, identity_key) do
-    %{identity_store | entries: Map.put(identity_store.entries, address_key, identity_key)}
   end
 end

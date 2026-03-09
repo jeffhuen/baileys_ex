@@ -6,6 +6,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
   alias BaileysEx.Signal.Group.SessionBuilder, as: GroupSessionBuilder
   alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.Group.SenderKeyRecord
+  alias BaileysEx.Signal.Store
 
   defmodule FakeAdapter do
     @behaviour Repository.Adapter
@@ -79,11 +80,6 @@ defmodule BaileysEx.Signal.RepositoryTest do
         end)
 
       {:ok, new_state}
-    end
-
-    @impl true
-    def get_device_list(state, user) do
-      {:ok, state, get_in(state, [:device_lists, user])}
     end
 
     @impl true
@@ -163,6 +159,11 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
   end
 
+  defp new_repo(opts \\ []) do
+    {:ok, store} = Store.start_link()
+    Repository.new(Keyword.merge([adapter: FakeAdapter, store: store], opts))
+  end
+
   describe "jid_to_signal_protocol_address/1" do
     test "translates WhatsApp JIDs to Baileys-compatible signal addresses" do
       assert {:ok, "5511999887766.0"} =
@@ -197,7 +198,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
   describe "repository delegation" do
     test "injects sessions, validates them, encrypts, decrypts, and deletes them" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       session = %{
         registration_id: 42,
@@ -252,14 +253,14 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "returns a structured missing-session response" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:ok, %{exists: false, reason: :no_session}} =
                Repository.validate_session(repo, "5511999887766@s.whatsapp.net")
     end
 
     test "stores LID mappings and resolves device-specific LIDs through the repository" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:ok, repo} =
                Repository.store_lid_pn_mappings(repo, [
@@ -274,7 +275,8 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "trusts first use and loads identity keys through the repository" do
-      repo = Repository.new(adapter: FakeAdapter)
+      {:ok, store} = Store.start_link()
+      repo = new_repo(store: store)
       identity_key = :crypto.strong_rand_bytes(32)
 
       assert {:ok, expected_identity_key} =
@@ -291,9 +293,11 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "clears the canonical session when a trusted identity changes" do
+      {:ok, store} = Store.start_link()
+
       repo =
-        Repository.new(
-          adapter: FakeAdapter,
+        new_repo(
+          store: store,
           adapter_state: %{
             "12345_1.0" => %{open?: true, session: %{id: 0}, history: []}
           }
@@ -331,14 +335,16 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "migrates all open device sessions from PN to LID addresses" do
+      {:ok, store} = Store.start_link()
+      assert :ok = Store.set(store, %{:"device-list" => %{"5511999887766" => ["0", "2", "3"]}})
+
       repo =
-        Repository.new(
-          adapter: FakeAdapter,
+        new_repo(
+          store: store,
           adapter_state: %{
             "5511999887766.0" => %{open?: true, session: %{id: 0}, history: []},
             "5511999887766.2" => %{open?: true, session: %{id: 2}, history: []},
-            "5511999887766.3" => %{open?: false, session: %{id: 3}, history: []},
-            device_lists: %{"5511999887766" => ["0", "2", "3"]}
+            "5511999887766.3" => %{open?: false, session: %{id: 3}, history: []}
           }
         )
 
@@ -359,12 +365,14 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "includes the source device even when it is missing from the stored device list" do
+      {:ok, store} = Store.start_link()
+      assert :ok = Store.set(store, %{:"device-list" => %{"5511999887766" => ["0", "2"]}})
+
       repo =
-        Repository.new(
-          adapter: FakeAdapter,
+        new_repo(
+          store: store,
           adapter_state: %{
-            "5511999887766.4" => %{open?: true, session: %{id: 4}, history: []},
-            device_lists: %{"5511999887766" => ["0", "2"]}
+            "5511999887766.4" => %{open?: true, session: %{id: 4}, history: []}
           }
         )
 
@@ -380,12 +388,14 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "preserves hosted LID targets for hosted companion sessions" do
+      {:ok, store} = Store.start_link()
+      assert :ok = Store.set(store, %{:"device-list" => %{"5511999887766" => ["99"]}})
+
       repo =
-        Repository.new(
-          adapter: FakeAdapter,
+        new_repo(
+          store: store,
           adapter_state: %{
-            "5511999887766_128.99" => %{open?: true, session: %{id: 99}, history: []},
-            device_lists: %{"5511999887766" => ["99"]}
+            "5511999887766_128.99" => %{open?: true, session: %{id: 99}, history: []}
           }
         )
 
@@ -401,8 +411,8 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "encrypts group messages, processes sender key distribution, and decrypts them" do
-      sender_repo = Repository.new(adapter: FakeAdapter)
-      recipient_repo = Repository.new(adapter: FakeAdapter)
+      sender_repo = new_repo()
+      recipient_repo = new_repo()
 
       assert {:ok, next_sender_repo,
               %{ciphertext: ciphertext, sender_key_distribution_message: distribution_message}} =
@@ -434,7 +444,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
   describe "error paths" do
     test "inject_e2e_session rejects malformed session data" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :invalid_session} =
                Repository.inject_e2e_session(repo, %{jid: "user@s.whatsapp.net", session: %{}})
@@ -456,7 +466,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "inject_e2e_session rejects session with wrong-size public keys" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :invalid_session} =
                Repository.inject_e2e_session(repo, %{
@@ -475,7 +485,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "inject_e2e_session rejects invalid JIDs" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :invalid_signal_address} =
                Repository.inject_e2e_session(repo, %{
@@ -494,19 +504,19 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "inject_e2e_session rejects non-map second argument" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
       assert {:error, :invalid_session} = Repository.inject_e2e_session(repo, "not a map")
     end
 
     test "encrypt_message rejects non-binary data" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :invalid_session} =
                Repository.encrypt_message(repo, %{jid: "u@s.whatsapp.net", data: 123})
     end
 
     test "encrypt_message propagates adapter no_session error" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :no_session} =
                Repository.encrypt_message(repo, %{
@@ -516,7 +526,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "decrypt_message rejects invalid type" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :invalid_ciphertext} =
                Repository.decrypt_message(repo, %{
@@ -527,7 +537,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "decrypt_message propagates adapter no_session error" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :no_session} =
                Repository.decrypt_message(repo, %{
@@ -538,19 +548,19 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "delete_session rejects invalid JIDs in the list" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :invalid_signal_address} =
                Repository.delete_session(repo, ["valid@s.whatsapp.net", "invalid@g.us"])
     end
 
     test "delete_session rejects non-list argument" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
       assert {:error, :invalid_signal_address} = Repository.delete_session(repo, "not a list")
     end
 
     test "validate_session rejects invalid JIDs" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :invalid_signal_address} =
                Repository.validate_session(repo, "user@g.us")
@@ -565,7 +575,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "save_identity rejects invalid JIDs and invalid identity keys" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:error, :invalid_signal_address} =
                Repository.save_identity(repo, %{
@@ -581,7 +591,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "migrate_session returns zero work for unsupported direction changes" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
 
       assert {:ok, ^repo, %{migrated: 0, skipped: 0, total: 0}} =
                Repository.migrate_session(repo, "12345@lid", "5511999887766@s.whatsapp.net")
@@ -589,8 +599,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
     test "migrate_session returns zero work when the device list is unavailable" do
       repo =
-        Repository.new(
-          adapter: FakeAdapter,
+        new_repo(
           adapter_state: %{
             "5511999887766.0" => %{open?: true, session: %{id: 0}, history: []}
           }
@@ -601,7 +610,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "decrypt_group_message propagates missing sender key state" do
-      repo = Repository.new(adapter: FakeAdapter)
+      repo = new_repo()
       sender_record = SenderKeyRecord.new()
 
       assert {:ok, sender_record, _distribution_message} =

@@ -12,6 +12,7 @@ defmodule BaileysEx.Signal.Repository do
   alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.Identity
   alias BaileysEx.Signal.LIDMappingStore
+  alias BaileysEx.Signal.Store
 
   @typedoc "Injected peer session bundle used to bootstrap an outgoing session."
   @type e2e_session :: %{
@@ -59,8 +60,8 @@ defmodule BaileysEx.Signal.Repository do
   @type t :: %__MODULE__{
           adapter: module(),
           adapter_state: term(),
-          identity_store: Identity.t(),
-          lid_mapping: LIDMappingStore.t()
+          pn_to_lid_lookup: LIDMappingStore.lookup_fun() | nil,
+          store: Store.t()
         }
 
   defmodule Adapter do
@@ -86,9 +87,6 @@ defmodule BaileysEx.Signal.Repository do
     @callback delete_sessions(term(), [Address.t()]) ::
                 {:ok, term()} | {:error, term()}
 
-    @callback get_device_list(term(), String.t()) ::
-                {:ok, term(), [String.t()] | nil} | {:error, term()}
-
     @callback migrate_sessions(term(), [Repository.migration_operation()]) ::
                 {:ok, term(), Repository.migration_result()} | {:error, term()}
 
@@ -110,8 +108,8 @@ defmodule BaileysEx.Signal.Repository do
   defstruct [
     :adapter,
     adapter_state: %{},
-    identity_store: Identity.new(),
-    lid_mapping: LIDMappingStore.new()
+    pn_to_lid_lookup: nil,
+    store: nil
   ]
 
   @spec new(keyword()) :: t()
@@ -119,8 +117,8 @@ defmodule BaileysEx.Signal.Repository do
     %__MODULE__{
       adapter: Keyword.fetch!(opts, :adapter),
       adapter_state: Keyword.get(opts, :adapter_state, %{}),
-      identity_store: Keyword.get(opts, :identity_store, Identity.new()),
-      lid_mapping: Keyword.get(opts, :lid_mapping, LIDMappingStore.new())
+      pn_to_lid_lookup: Keyword.get(opts, :pn_to_lid_lookup),
+      store: Keyword.fetch!(opts, :store)
     }
   end
 
@@ -193,8 +191,8 @@ defmodule BaileysEx.Signal.Repository do
   @spec load_identity_key(t(), String.t()) ::
           {:ok, t(), binary() | nil} | {:error, adapter_error()}
   def load_identity_key(%__MODULE__{} = repository, jid) when is_binary(jid) do
-    with {:ok, repository, address} <- resolve_identity_address(repository, jid),
-         {:ok, identity_key} <- Identity.load(repository.identity_store, address) do
+    with {:ok, address} <- resolve_identity_address(repository, jid),
+         {:ok, identity_key} <- Identity.load(repository.store, address) do
       {:ok, repository, identity_key}
     end
   end
@@ -205,9 +203,8 @@ defmodule BaileysEx.Signal.Repository do
           {:ok, t(), boolean()} | {:error, adapter_error()}
   def save_identity(%__MODULE__{} = repository, %{jid: jid, identity_key: identity_key})
       when is_binary(jid) and is_binary(identity_key) do
-    with {:ok, repository, address} <- resolve_identity_address(repository, jid),
-         {:ok, identity_store, save_result} <-
-           Identity.save(repository.identity_store, address, identity_key),
+    with {:ok, address} <- resolve_identity_address(repository, jid),
+         {:ok, save_result} <- Identity.save(repository.store, address, identity_key),
          {:ok, adapter_state} <-
            maybe_invalidate_session_on_identity_change(
              repository.adapter,
@@ -217,8 +214,7 @@ defmodule BaileysEx.Signal.Repository do
            ) do
       changed? = save_result in [:new, :changed]
 
-      {:ok, %{repository | identity_store: identity_store, adapter_state: adapter_state},
-       changed?}
+      {:ok, %{repository | adapter_state: adapter_state}, changed?}
     end
   end
 
@@ -305,23 +301,28 @@ defmodule BaileysEx.Signal.Repository do
   @spec store_lid_pn_mappings(t(), [LIDMappingStore.mapping()]) ::
           {:ok, t()} | {:error, LIDMappingStore.error()}
   def store_lid_pn_mappings(%__MODULE__{} = repository, mappings) do
-    with {:ok, lid_mapping} <-
-           LIDMappingStore.store_lid_pn_mappings(repository.lid_mapping, mappings) do
-      {:ok, %{repository | lid_mapping: lid_mapping}}
+    case LIDMappingStore.store_lid_pn_mappings(repository.store, mappings) do
+      :ok -> {:ok, repository}
+      {:error, _reason} = error -> error
     end
   end
 
   @spec get_lid_for_pn(t(), String.t()) :: {:ok, t(), String.t() | nil}
   def get_lid_for_pn(%__MODULE__{} = repository, pn) do
-    with {:ok, lid_mapping, lid} <- LIDMappingStore.get_lid_for_pn(repository.lid_mapping, pn) do
-      {:ok, %{repository | lid_mapping: lid_mapping}, lid}
+    with {:ok, lid} <-
+           LIDMappingStore.get_lid_for_pn(
+             repository.store,
+             pn,
+             lookup: repository.pn_to_lid_lookup
+           ) do
+      {:ok, repository, lid}
     end
   end
 
   @spec get_pn_for_lid(t(), String.t()) :: {:ok, t(), String.t() | nil}
   def get_pn_for_lid(%__MODULE__{} = repository, lid) do
-    with {:ok, lid_mapping, pn} <- LIDMappingStore.get_pn_for_lid(repository.lid_mapping, lid) do
-      {:ok, %{repository | lid_mapping: lid_mapping}, pn}
+    with {:ok, pn} <- LIDMappingStore.get_pn_for_lid(repository.store, lid) do
+      {:ok, repository, pn}
     end
   end
 
@@ -330,12 +331,11 @@ defmodule BaileysEx.Signal.Repository do
   def migrate_session(%__MODULE__{} = repository, from_jid, to_jid)
       when is_binary(from_jid) and is_binary(to_jid) do
     with {:ok, user, lid_user, lid_server, source_device} <- normalize_migration(from_jid, to_jid),
-         {:ok, adapter_state, device_list} <-
-           repository.adapter.get_device_list(repository.adapter_state, user),
+         device_list <- load_device_list(repository.store, user),
          {:ok, operations} <-
            build_migration_operations(user, lid_user, lid_server, device_list, source_device),
          {:ok, adapter_state, result} <-
-           repository.adapter.migrate_sessions(adapter_state, operations) do
+           repository.adapter.migrate_sessions(repository.adapter_state, operations) do
       {:ok, %{repository | adapter_state: adapter_state}, result}
     else
       error -> normalize_migration_error(repository, error)
@@ -370,21 +370,19 @@ defmodule BaileysEx.Signal.Repository do
 
   defp resolve_identity_address(%__MODULE__{} = repository, jid) do
     with {:ok, address} <- Address.from_jid(jid),
-         {:ok, lid_mapping, lid_jid} <-
-           LIDMappingStore.get_lid_for_pn(repository.lid_mapping, jid) do
-      repository
-      |> Map.put(:lid_mapping, lid_mapping)
-      |> resolve_identity_mapping(address, lid_jid)
+         {:ok, lid_jid} <-
+           LIDMappingStore.get_lid_for_pn(
+             repository.store,
+             jid,
+             lookup: repository.pn_to_lid_lookup
+           ) do
+      resolve_identity_mapping(address, lid_jid)
     end
   end
 
-  defp resolve_identity_mapping(repository, address, nil), do: {:ok, repository, address}
+  defp resolve_identity_mapping(address, nil), do: {:ok, address}
 
-  defp resolve_identity_mapping(repository, _address, mapped_lid_jid) do
-    with {:ok, mapped_address} <- Address.from_jid(mapped_lid_jid) do
-      {:ok, repository, mapped_address}
-    end
-  end
+  defp resolve_identity_mapping(_address, mapped_lid_jid), do: Address.from_jid(mapped_lid_jid)
 
   defp maybe_invalidate_session_on_identity_change(_adapter, adapter_state, _address, :new),
     do: {:ok, adapter_state}
@@ -459,6 +457,13 @@ defmodule BaileysEx.Signal.Repository do
 
       _ ->
         :error
+    end
+  end
+
+  defp load_device_list(%Store{} = store, user) do
+    case Store.get(store, :"device-list", [user]) do
+      %{^user => devices} -> devices
+      %{} -> nil
     end
   end
 

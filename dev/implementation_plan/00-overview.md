@@ -28,6 +28,9 @@ to a generic raw XX engine.
    They don't need their own processes.
 6. **Behaviours for extensibility** — Credential persistence, event handling, and store
    backends use behaviours so users can swap implementations.
+7. **Runtime Signal store boundary** — Phase 5's Signal store is a process-backed
+   runtime contract (`get/set/transaction`) with ETS-backed reads. Phase 7 owns
+   durable persistence implementations that satisfy that contract.
 
 ## Supervision Tree
 

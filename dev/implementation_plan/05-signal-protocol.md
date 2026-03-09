@@ -160,7 +160,7 @@ Explicit non-goal for 5.5:
 
 ### 5.6 Signal store contract
 
-Planned scope:
+Completed:
 - durable logical key families:
   - `session`
   - `pre-key`
@@ -174,6 +174,29 @@ Planned scope:
   - `identity-key`
 - process-owned/runtime-backed behavior that can safely support coalesced lookups
   and transactional persistence
+- `BaileysEx.Signal.Store`
+  - low-level `get/3`, `set/2`, `transaction/3`, `clear/1`, and
+    `is_in_transaction?/1` boundary matching the Baileys `keys` contract shape
+- `BaileysEx.Signal.Store.Memory`
+  - in-memory runtime implementation with ETS-backed reads, owner-process
+    serialized writes, and per-key transaction locks
+- store-backed `BaileysEx.Signal.Identity`
+  - canonical `:"identity-key"` storage via the shared runtime store
+- store-backed `BaileysEx.Signal.LIDMappingStore`
+  - canonical `:"lid-mapping"` storage via the shared runtime store
+  - coalesced miss behavior through the transaction boundary instead of
+    immutable-struct-local state
+- repository integration:
+  - `Repository` now depends on an explicit Signal store handle
+  - identity and PN<->LID operations no longer thread mutable mapping/identity
+    structs through repository returns
+  - device-list reads for PN->LID session migration come from the Signal store,
+    not adapter-local state
+
+Explicit non-goal for 5.6:
+- file, ETS-backed durable persistence, or database-backed persistence selection
+  is not being forced into Phase 5. The runtime contract is now stable; Phase 7
+  owns auth persistence implementations that satisfy it.
 
 ### 5.7 Cross-validation
 
@@ -204,6 +227,8 @@ Implemented:
 - `lib/baileys_ex/signal/address.ex`
 - `lib/baileys_ex/signal/repository.ex`
 - `lib/baileys_ex/signal/lid_mapping_store.ex`
+- `lib/baileys_ex/signal/store.ex`
+- `lib/baileys_ex/signal/store/memory.ex`
 - `lib/baileys_ex/signal/group/sender_key_name.ex`
 - `lib/baileys_ex/signal/group/sender_chain_key.ex`
 - `lib/baileys_ex/signal/group/sender_message_key.ex`
@@ -220,6 +245,4 @@ Implemented:
 - `test/baileys_ex/signal/lid_mapping_store_test.exs`
 - `test/baileys_ex/signal/group_test.exs`
 - `test/baileys_ex/signal/identity_test.exs`
-
-Planned:
-- `lib/baileys_ex/signal/store.ex`
+- `test/baileys_ex/signal/store_test.exs`

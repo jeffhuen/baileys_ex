@@ -200,7 +200,7 @@ remains an open hardening task until verified with dedicated native tooling.
 - [x] 5.3 LID mapping store + session migration
 - [x] 5.4 Sender-key group crypto + distribution processing
 - [x] 5.5 Signal identity handling (TOFU + invalidation)
-- [ ] 5.6 Store contract for sessions, pre-keys, sender-keys, mappings, identities
+- [x] 5.6 Store contract for sessions, pre-keys, sender-keys, mappings, identities
 - [ ] 5.7 Cross-validation tests against Baileys-compatible data
 
 ### Acceptance Criteria
@@ -210,7 +210,7 @@ remains an open hardening task until verified with dedicated native tooling.
 - [x] LID mapping storage mirrors Baileys' forward/reverse key convention for persistent stores
 - [x] TOFU identity storage detects key changes and invalidates stale sessions
 - [ ] Sender-key encrypt/decrypt and distribution interoperate with Baileys
-- [ ] Signal store contract covers sessions, pre-keys, sender-key-memory, LID mappings, device lists, tc tokens, and identity keys
+- [x] Signal store contract covers sessions, pre-keys, sender-key-memory, LID mappings, device lists, tc tokens, and identity keys
 - [ ] Cross-validation uses Baileys-compatible ciphertext/session data
 - [x] Native boundary is no broader than necessary for correctness, interop, and performance
 
@@ -232,12 +232,12 @@ remains an open hardening task until verified with dedicated native tooling.
 | `lib/baileys_ex/signal/group/session_builder.ex` | ✅ |
 | `lib/baileys_ex/signal/group/cipher.ex` | ✅ |
 | `lib/baileys_ex/signal/identity.ex` | ✅ |
-| `lib/baileys_ex/signal/store.ex` | ⬜ |
-| `lib/baileys_ex/signal/prekey.ex` | ⬜ |
-| `lib/baileys_ex/signal/device.ex` | ⬜ |
+| `lib/baileys_ex/signal/store.ex` | ✅ |
+| `lib/baileys_ex/signal/store/memory.ex` | ✅ |
 | `lib/baileys_ex/native/xeddsa.ex` | ✅ |
 | `test/baileys_ex/signal/curve_test.exs` | ✅ |
 | `test/baileys_ex/signal/address_test.exs` | ✅ |
+| `test/baileys_ex/signal/store_test.exs` | ✅ |
 | `test/baileys_ex/signal/repository_test.exs` | ✅ |
 | `test/baileys_ex/signal/lid_mapping_store_test.exs` | ✅ |
 | `test/baileys_ex/signal/group_test.exs` | ✅ |

@@ -2,8 +2,9 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   @moduledoc """
   In-memory PN<->LID mapping store aligned with Baileys' LID lookup rules.
 
-  The store keeps user-level mappings and derives device-specific JIDs during
-  lookup so the repository can preserve per-device Signal addressing.
+  The store keeps user-level mappings using the same forward/reverse key shape
+  Baileys persists (`pn_user` and `lid_user_reverse`) and derives device-specific
+  JIDs during lookup so the repository can preserve per-device Signal addressing.
   """
 
   alias BaileysEx.Protocol.JID
@@ -12,14 +13,13 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   @type lookup_fun :: ([String.t()] -> [mapping()] | nil)
 
   @type t :: %__MODULE__{
-          pn_to_lid: %{optional(String.t()) => String.t()},
-          lid_to_pn: %{optional(String.t()) => String.t()},
+          entries: %{optional(String.t()) => String.t()},
           pn_to_lid_lookup: lookup_fun() | nil
         }
 
   @type error :: :invalid_mapping
 
-  defstruct pn_to_lid: %{}, lid_to_pn: %{}, pn_to_lid_lookup: nil
+  defstruct entries: %{}, pn_to_lid_lookup: nil
 
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -44,7 +44,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   @spec get_lid_for_pn(t(), String.t()) :: {:ok, t(), String.t() | nil}
   def get_lid_for_pn(%__MODULE__{} = store, pn) when is_binary(pn) do
     with {:ok, store, mappings} <- get_lids_for_pns(store, [pn]) do
-      {:ok, store, List.first(mappings || []) |> mapping_value(:lid)}
+      {:ok, store, first_mapping_value(mappings, :lid)}
     end
   end
 
@@ -65,7 +65,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   @spec get_pn_for_lid(t(), String.t()) :: {:ok, t(), String.t() | nil}
   def get_pn_for_lid(%__MODULE__{} = store, lid) when is_binary(lid) do
     with {:ok, store, mappings} <- get_pns_for_lids(store, [lid]) do
-      {:ok, store, List.first(mappings || []) |> mapping_value(:pn)}
+      {:ok, store, first_mapping_value(mappings, :pn)}
     end
   end
 
@@ -120,7 +120,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   end
 
   defp resolve_cached_pn(store, resolved, pending, pn, parsed) do
-    case Map.fetch(store.pn_to_lid, parsed.user) do
+    case fetch_lid_user(store, parsed.user) do
       {:ok, lid_user} ->
         mapping = %{pn: pn, lid: build_lid(parsed, lid_user)}
         {store, Map.put(resolved, pn, mapping), pending}
@@ -138,14 +138,14 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   end
 
   defp merge_reverse_mapping(store, resolved, lid, parsed) do
-    case Map.fetch(store.lid_to_pn, parsed.user) do
+    case fetch_pn_user(store, parsed.user) do
       {:ok, pn_user} -> Map.put(resolved, lid, %{lid: lid, pn: build_pn(parsed, pn_user)})
       :error -> resolved
     end
   end
 
   defp merge_fetched_mapping(store, resolved, parsed) do
-    case Map.fetch(store.pn_to_lid, parsed.user) do
+    case fetch_lid_user(store, parsed.user) do
       {:ok, lid_user} ->
         Map.put(resolved, parsed.original, %{
           pn: parsed.original,
@@ -183,10 +183,17 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   defp put_mapping(%__MODULE__{} = store, pn_user, lid_user) do
     %__MODULE__{
       store
-      | pn_to_lid: Map.put(store.pn_to_lid, pn_user, lid_user),
-        lid_to_pn: Map.put(store.lid_to_pn, lid_user, pn_user)
+      | entries:
+          store.entries
+          |> Map.put(forward_key(pn_user), lid_user)
+          |> Map.put(reverse_key(lid_user), pn_user)
     }
   end
+
+  defp fetch_lid_user(store, pn_user), do: Map.fetch(store.entries, forward_key(pn_user))
+  defp fetch_pn_user(store, lid_user), do: Map.fetch(store.entries, reverse_key(lid_user))
+  defp forward_key(pn_user), do: pn_user
+  defp reverse_key(lid_user), do: "#{lid_user}_reverse"
 
   defp parse_pn(jid) do
     case JID.parse(jid) do
@@ -231,6 +238,6 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   defp values_or_nil(values) when map_size(values) == 0, do: nil
   defp values_or_nil(values), do: Map.values(values)
 
-  defp mapping_value(nil, _key), do: nil
-  defp mapping_value(mapping, key), do: Map.fetch!(mapping, key)
+  defp first_mapping_value(nil, _key), do: nil
+  defp first_mapping_value([mapping | _], key), do: Map.fetch!(mapping, key)
 end

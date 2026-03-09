@@ -39,8 +39,8 @@ Current implemented surface:
   - public Elixir-facing repository boundary for inject/validate/encrypt/decrypt,
     delete, PN<->LID mapping helpers, and session migration
 - `BaileysEx.Signal.LIDMappingStore`
-  - repository-resident PN<->LID mapping store with reverse lookup and optional
-    lookup-hook backfill
+  - repository-resident PN<->LID mapping store with reverse lookup, explicit
+    Baileys-style forward/reverse key entries, and optional lookup-hook backfill
 - `BaileysEx.Signal.Group.*`
   - pure Elixir sender-key state, distribution, and group cipher modules aligned
     to Baileys' group-session-builder/group-cipher flow
@@ -101,6 +101,8 @@ Completed:
   - device list is required before bulk migration
   - the source device is included if the stored device list is stale
   - hosted companion sessions preserve `@hosted.lid`
+  - stored user mappings follow Baileys' forward/reverse key convention
+    (`pn_user` and `lid_user_reverse`)
   - reverse PN lookup stays local-store-driven; it is not treated as a server
     discovery API
 

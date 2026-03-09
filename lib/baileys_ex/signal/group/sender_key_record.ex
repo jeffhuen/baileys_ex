@@ -49,11 +49,7 @@ defmodule BaileysEx.Signal.Group.SenderKeyRecord do
 
   @spec put_state(t(), SenderKeyState.t()) :: t()
   def put_state(%__MODULE__{sender_key_states: states} = record, %SenderKeyState{} = state) do
-    updated_states =
-      case Enum.split_with(states, &(&1.sender_key_id == state.sender_key_id)) do
-        {[], remaining} -> remaining ++ [state]
-        {_matched, remaining} -> remaining ++ [state]
-      end
+    updated_states = Enum.reject(states, &(&1.sender_key_id == state.sender_key_id)) ++ [state]
 
     %{record | sender_key_states: Enum.take(updated_states, -@max_states)}
   end

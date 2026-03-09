@@ -207,6 +207,7 @@ remains an open hardening task until verified with dedicated native tooling.
 
 - [ ] Repository behavior matches Baileys `src/Signal/libsignal.ts` for 1:1 flows
 - [x] PN sessions migrate to LID sessions without losing device separation
+- [x] LID mapping storage mirrors Baileys' forward/reverse key convention for persistent stores
 - [ ] TOFU identity storage detects key changes and invalidates stale sessions
 - [ ] Sender-key encrypt/decrypt and distribution interoperate with Baileys
 - [ ] Signal store contract covers sessions, pre-keys, sender-key-memory, LID mappings, device lists, tc tokens, and identity keys

@@ -19,6 +19,18 @@ defmodule BaileysEx.Signal.LIDMappingStoreTest do
                LIDMappingStore.get_lid_for_pn(store, "5511999887766:2@s.whatsapp.net")
     end
 
+    test "preserves Baileys-style forward and reverse entry keys" do
+      store = LIDMappingStore.new()
+
+      assert {:ok, store} =
+               LIDMappingStore.store_lid_pn_mappings(store, [
+                 %{lid: "12345@lid", pn: "5511999887766@s.whatsapp.net"}
+               ])
+
+      assert {:ok, entries} = Map.fetch(store, :entries)
+      assert %{"5511999887766" => "12345", "12345_reverse" => "5511999887766"} = entries
+    end
+
     test "maps a standard LID with device 99 back to a standard PN with the same device" do
       store = LIDMappingStore.new()
 

@@ -9,6 +9,7 @@ defmodule BaileysEx.Signal.Repository do
 
   alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Curve
+  alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.LIDMappingStore
 
   @typedoc "Injected peer session bundle used to bootstrap an outgoing session."
@@ -88,14 +89,14 @@ defmodule BaileysEx.Signal.Repository do
     @callback migrate_sessions(term(), [Repository.migration_operation()]) ::
                 {:ok, term(), Repository.migration_result()} | {:error, term()}
 
-    @callback encrypt_group_message(term(), term(), binary()) ::
+    @callback encrypt_group_message(term(), SenderKeyName.t(), binary()) ::
                 {:ok, term(), %{ciphertext: binary(), sender_key_distribution_message: binary()}}
                 | {:error, term()}
 
-    @callback process_sender_key_distribution_message(term(), term(), binary()) ::
+    @callback process_sender_key_distribution_message(term(), SenderKeyName.t(), binary()) ::
                 {:ok, term()} | {:error, term()}
 
-    @callback decrypt_group_message(term(), term(), binary()) ::
+    @callback decrypt_group_message(term(), SenderKeyName.t(), binary()) ::
                 {:ok, term(), binary()} | {:error, term()}
 
     @spec session_key(Address.t()) :: String.t()
@@ -287,14 +288,7 @@ defmodule BaileysEx.Signal.Repository do
            repository.adapter.migrate_sessions(adapter_state, operations) do
       {:ok, %{repository | adapter_state: adapter_state}, result}
     else
-      :unsupported_direction ->
-        {:ok, repository, %{migrated: 0, skipped: 0, total: 0}}
-
-      {:error, :invalid_signal_address} = error ->
-        error
-
-      {:error, _reason} = error ->
-        error
+      error -> normalize_migration_error(repository, error)
     end
   end
 
@@ -361,6 +355,12 @@ defmodule BaileysEx.Signal.Repository do
         :unsupported_direction
     end
   end
+
+  defp normalize_migration_error(repository, :unsupported_direction) do
+    {:ok, repository, %{migrated: 0, skipped: 0, total: 0}}
+  end
+
+  defp normalize_migration_error(_repository, {:error, _reason} = error), do: error
 
   defp parse_pn_source(jid) do
     case BaileysEx.Protocol.JID.parse(jid) do

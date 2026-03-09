@@ -124,11 +124,13 @@ lib/baileys_ex/protocol/
 
 ```
 lib/baileys_ex/connection/
+├── frame.ex          # Pure 3-byte length-prefixed frame codec
+├── transport.ex      # Transport behaviour seam for the socket runtime
+├── config.ex         # Connection configuration struct
 ├── supervisor.ex     # Per-connection :rest_for_one supervisor
 ├── socket.ex         # :gen_statem — WebSocket + Noise transport
 ├── store.ex          # GenServer + ETS — Signal sessions, credentials
-├── event_emitter.ex  # GenServer — subscriber registry, event dispatch
-└── config.ex         # Connection configuration struct
+└── event_emitter.ex  # GenServer — subscriber registry, event dispatch
 ```
 
 ### Layer 4: Feature Modules (plain functions, no processes)

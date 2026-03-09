@@ -8,6 +8,13 @@ machine, keep-alive, reconnection, per-connection supervision tree.
 
 ---
 
+> **Current snapshot:** Phase 6 has started. The repo now has `Connection.Config`,
+> a pure `Connection.Frame` codec for WhatsApp's 3-byte length prefix, a minimal
+> `Connection.Transport` behavior, and an injected-transport `Connection.Socket`
+> `:gen_statem` skeleton. The accepted slice stops at transport startup/state
+> transitions; full Mint/WebSocket integration, Noise handshake orchestration,
+> keep-alive, reconnection, supervision, and event buffering remain open Phase 6 work.
+
 ## Design Decisions
 
 **`:gen_statem` directly, not GenServer.**
@@ -41,6 +48,12 @@ behavior.
 WhatsApp frames have a 3-byte length prefix (big-endian) followed by the payload.
 Pre-noise: payload is raw. Post-noise: payload is Noise-encrypted.
 
+**Build the connection layer in slices, not one jump.**
+The first accepted slice is deliberately narrower than the eventual phase:
+config defaults, frame encoding/decoding, and the socket's state contract with an
+injected transport seam. That keeps the `:gen_statem` shape stable before the real
+Mint/WebSocket and Noise runtime is layered in.
+
 ---
 
 ## Tasks
@@ -53,23 +66,25 @@ File: `lib/baileys_ex/connection/config.ex`
 defmodule BaileysEx.Connection.Config do
   @type t :: %__MODULE__{
     ws_url: String.t(),
-    keep_alive_interval: pos_integer(),
-    retry_delay: pos_integer(),
+    keep_alive_interval_ms: pos_integer(),
+    retry_delay_ms: pos_integer(),
     max_retries: non_neg_integer(),
-    connect_timeout: pos_integer(),
+    connect_timeout_ms: pos_integer(),
     browser: {String.t(), String.t(), String.t()},
     print_qr_in_terminal: boolean()
   }
 
   defstruct [
     ws_url: "wss://web.whatsapp.com/ws/chat",
-    keep_alive_interval: 25_000,
-    retry_delay: 2_000,
+    keep_alive_interval_ms: 25_000,
+    retry_delay_ms: 2_000,
     max_retries: 5,
-    connect_timeout: 20_000,
-    browser: {"BaileysEx", "Chrome", "1.0"},
+    connect_timeout_ms: 20_000,
+    browser: {"BaileysEx", "Chrome", "0.1.0"},
     print_qr_in_terminal: false
   ]
+
+  def new(opts \\ []), do: struct(__MODULE__, opts)
 
   # Web version selection should remain configurable so later phases can track
   # Baileys' fetchWAWebVersion/coexistence behavior instead of freezing a stale
@@ -115,15 +130,14 @@ defmodule BaileysEx.Connection.Socket do
 
   defstruct [
     :config,
-    :conn,           # Mint.HTTP connection
-    :websocket,      # Mint.WebSocket
-    :noise_state,    # ResourceArc from Noise NIF
-    :transport,      # ResourceArc for Noise transport (post-handshake)
     :auth_state,     # Auth credentials
-    :ref,            # Mint request ref
+    :transport_module,
+    :transport_options,
+    :transport_state,
     :buffer,         # Incomplete frame buffer
+    :last_error,
     retry_count: 0,
-    epoch: 0         # Message tag counter
+    epoch: 0
   ]
 
   # --- Lifecycle ---
@@ -134,9 +148,16 @@ defmodule BaileysEx.Connection.Socket do
 
   @impl true
   def init(opts) do
-    data = %__MODULE__{config: opts.config, auth_state: opts.auth_state}
-    actions = [{:next_event, :internal, :connect}]
-    {:ok, :disconnected, data, actions}
+    {transport_module, transport_options} = Keyword.get(opts, :transport, {Transport.Noop, %{}})
+
+    data = %__MODULE__{
+      config: Keyword.get(opts, :config, Config.new()),
+      auth_state: Keyword.get(opts, :auth_state),
+      transport_module: transport_module,
+      transport_options: transport_options
+    }
+
+    {:ok, :disconnected, data}
   end
 
   def callback_mode, do: [:state_functions, :state_enter]
@@ -149,13 +170,12 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   def disconnected(:internal, :connect, data) do
-    case establish_websocket(data.config) do
-      {:ok, conn, websocket, ref} ->
-        data = %{data | conn: conn, websocket: websocket, ref: ref}
-        {:next_state, :noise_handshake, data,
-         [{:next_event, :internal, :start_handshake}]}
+    case data.transport_module.connect(data.config, data.transport_options) do
+      {:ok, transport_state} ->
+        {:next_state, :noise_handshake, %{data | transport_state: transport_state, last_error: nil}}
       {:error, reason} ->
-        {:keep_state, data, [{:state_timeout, data.config.retry_delay, :retry}]}
+        {:next_state, :disconnected,
+         %{data | transport_state: nil, retry_count: data.retry_count + 1, last_error: reason}}
     end
   end
 
@@ -394,27 +414,34 @@ do not spawn detached ad-hoc tasks for the transition logic itself.
 
 ### 6.3 Frame handling
 
-Within the socket module, handle WebSocket frame reassembly:
+File: `lib/baileys_ex/connection/frame.ex`
+
+The pure frame codec is accepted separately from the socket runtime so length-prefix
+handling can be tested without a transport process:
 
 ```elixir
-defp process_frames(data, frames) do
-  Enum.reduce(frames, {data, []}, fn
-    {:binary, raw_frame}, {data, nodes} ->
-      case reassemble_frame(data.buffer, raw_frame) do
-        {:complete, frame, rest} ->
-          {:ok, {noise_state, decrypted_frames}} = Protocol.Noise.decode_frames(data.noise_state, frame)
+defmodule BaileysEx.Connection.Frame do
+  @max_payload_size 16_777_215
 
-          new_nodes =
-            Enum.map(decrypted_frames, fn decrypted ->
-              {:ok, node} = BinaryNode.decode(decrypted)
-              node
-            end)
+  def encode(payload) when is_binary(payload) do
+    payload_size = byte_size(payload)
 
-          {%{data | noise_state: noise_state, buffer: rest}, Enum.reverse(new_nodes) ++ nodes}
-        {:incomplete, buffer} ->
-          {%{data | buffer: buffer}, nodes}
-      end
-  end)
+    if payload_size <= @max_payload_size do
+      {:ok, <<payload_size::unsigned-big-integer-size(24), payload::binary>>}
+    else
+      {:error, :frame_too_large}
+    end
+  end
+
+  def decode_stream(buffer) when is_binary(buffer), do: decode_stream(buffer, [])
+
+  defp decode_stream(<<payload_size::unsigned-big-integer-size(24), rest::binary>>, frames)
+       when byte_size(rest) >= payload_size do
+    <<payload::binary-size(payload_size), tail::binary>> = rest
+    decode_stream(tail, [payload | frames])
+  end
+
+  defp decode_stream(buffer, frames), do: {Enum.reverse(frames), buffer}
 end
 ```
 
@@ -597,7 +624,7 @@ end
 - [ ] Supervisor :rest_for_one restarts children correctly
 - [ ] Event emitter dispatches to subscribers
 - [ ] Store reads are concurrent via ETS
-- [ ] Every received node with an "id" attribute gets an automatic ACK (GAP-03)
+- [ ] ACK/NACK behavior matches current Baileys/WhatsApp Web parity rules and does not blanket-send successful ACKs (GAP-03)
 - [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
 - [ ] EventEmitter supports all 25+ event types (GAP-07)
 - [ ] Event buffering accumulates events and flushes on demand (GAP-22)
@@ -611,11 +638,15 @@ end
 
 ## Files Created/Modified
 
-- `lib/baileys_ex/connection/config.ex` — includes browser/platform identification (GAP-27)
-- `lib/baileys_ex/connection/socket.ex` — includes automatic ACK (GAP-03), logout (GAP-18), dirty bit handling (GAP-24)
+- `lib/baileys_ex/connection/config.ex` — accepted in the current slice; includes browser/platform identification (GAP-27)
+- `lib/baileys_ex/connection/frame.ex` — accepted in the current slice; pure 3-byte frame codec
+- `lib/baileys_ex/connection/transport.ex` — accepted in the current slice; injected transport seam for early socket tests
+- `lib/baileys_ex/connection/socket.ex` — prototype state machine skeleton; full Noise/WebSocket/auth behavior remains open
 - `lib/baileys_ex/connection/supervisor.ex`
 - `lib/baileys_ex/connection/event_emitter.ex` — full event catalog (GAP-07), buffering support with auto-flush (GAP-22)
 - `lib/baileys_ex/connection/store.ex`
+- `test/baileys_ex/connection/config_test.exs`
+- `test/baileys_ex/connection/frame_test.exs`
 - `test/baileys_ex/connection/socket_test.exs`
 - `test/baileys_ex/connection/event_emitter_test.exs`
 - `test/baileys_ex/connection/store_test.exs`

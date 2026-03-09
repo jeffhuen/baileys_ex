@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-08
+> Last updated: 2026-03-09
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -17,7 +17,7 @@
 | 3 | Protocol Layer | 10 | COMPLETE | 1 | 6 |
 | 4 | Noise NIF | 6 | IN PROGRESS | 1 | 6 |
 | 5 | Signal Protocol | 8 | COMPLETE | 1, 2 | 7, 8 |
-| 6 | Connection | 7 | NOT STARTED | 3, 4 | 7, 8 |
+| 6 | Connection | 7 | IN PROGRESS | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | NOT STARTED | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | NOT STARTED | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | NOT STARTED | 2, 8 | 12 |
@@ -254,13 +254,20 @@ falsely marked as implemented here.
 
 ## Phase 6: Connection
 
-**Status:** NOT STARTED · **Depends on:** Phases 3, 4 · **Blocks:** 7, 8
+**Status:** IN PROGRESS · **Depends on:** Phases 3, 4 · **Blocks:** 7, 8
+
+> **Current snapshot:** the first accepted Phase 6 slice is in-tree: `Connection.Config`,
+> `Connection.Frame`, `Connection.Transport`, and a minimal injected-transport
+> `Connection.Socket` `:gen_statem`. This slice proves the config defaults, platform
+> mapping, 3-byte frame codec, and initial socket state contract. Full Mint/WebSocket
+> integration, Noise/auth flow, keep-alive, reconnection, supervision, event buffering,
+> and the connection store are still open.
 
 ### Tasks
 
-- [ ] 6.1 Connection config (browser/platform — GAP-27)
+- [x] 6.1 Connection config (browser/platform — GAP-27)
 - [ ] 6.2 Connection socket (`:gen_statem`)
-- [ ] 6.3 Frame handling (3-byte length prefix)
+- [x] 6.3 Frame handling (3-byte length prefix)
 - [ ] 6.4 Per-connection supervisor (`:rest_for_one`)
 - [ ] 6.5 Event emitter (25+ types — GAP-07, buffering — GAP-22)
 - [ ] 6.6 Store (GenServer + ETS)
@@ -270,13 +277,13 @@ falsely marked as implemented here.
 
 - [ ] State machine transitions through all states correctly
 - [ ] Noise handshake integrates with WebSocket transport
-- [ ] Frame encoding/decoding with length prefix works
+- [x] Frame encoding/decoding with length prefix works
 - [ ] Keep-alive prevents timeout disconnection
 - [ ] Reconnection works after unexpected disconnect
 - [ ] Supervisor `:rest_for_one` restarts children correctly
 - [ ] Event emitter dispatches to subscribers
 - [ ] Store reads are concurrent via ETS
-- [ ] Every received node with "id" attr gets automatic ACK (GAP-03)
+- [ ] ACK/NACK behavior matches current Baileys/WhatsApp Web parity rules and does not blanket-send successful ACKs (GAP-03)
 - [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
 - [ ] EventEmitter supports all 25+ event types (GAP-07)
 - [ ] EventEmitter covers Utils-driven events: messaging_history_set, messages_reaction, group_participants_update, group_join_request, group_member_tag_update, lid_mapping_update, settings_update, chats_lock
@@ -284,7 +291,7 @@ falsely marked as implemented here.
 - [ ] Buffer auto-flushes after 30 seconds (GAP-22)
 - [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
 - [ ] `account_sync` dirty handling persists `lastAccountSyncTimestamp`; group/community dirty refresh reuses correct clean bucket (GAP-24)
-- [ ] Platform type correctly mapped for device registration (GAP-27)
+- [x] Platform type correctly mapped for device registration (GAP-27)
 - [ ] Unified session sent on connection open (GAP-33)
 - [ ] Init queries (props, blocklist, privacy) fetched in parallel and cache `lastPropHash` deltas (GAP-34)
 - [ ] Conditional chat updates held during sync (GAP-48)
@@ -294,12 +301,16 @@ falsely marked as implemented here.
 
 | File | Status |
 |------|--------|
-| `lib/baileys_ex/connection/config.ex` | ⬜ |
-| `lib/baileys_ex/connection/socket.ex` | ⬜ |
+| `lib/baileys_ex/connection/config.ex` | ✅ |
+| `lib/baileys_ex/connection/frame.ex` | ✅ |
+| `lib/baileys_ex/connection/transport.ex` | ✅ |
+| `lib/baileys_ex/connection/socket.ex` | 🟡 |
 | `lib/baileys_ex/connection/supervisor.ex` | ⬜ |
 | `lib/baileys_ex/connection/event_emitter.ex` | ⬜ |
 | `lib/baileys_ex/connection/store.ex` | ⬜ |
-| `test/baileys_ex/connection/socket_test.exs` | ⬜ |
+| `test/baileys_ex/connection/config_test.exs` | ✅ |
+| `test/baileys_ex/connection/frame_test.exs` | ✅ |
+| `test/baileys_ex/connection/socket_test.exs` | 🟡 |
 | `test/baileys_ex/connection/event_emitter_test.exs` | ⬜ |
 | `test/baileys_ex/connection/store_test.exs` | ⬜ |
 

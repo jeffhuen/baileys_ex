@@ -6,10 +6,10 @@ In-progress Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) 
 - **Crypto** is complete for the current Phase 2 scope
 - **Protocol layer and Noise transport foundations** are implemented in-tree for the current scope
 - **Signal Phase 5 is complete for the current scope**: repository/address boundary, Local Identifier (LID) mapping, session migration, sender-key group crypto, TOFU identity handling, the runtime store contract, fixture-backed Baileys cross-validation, and narrow verification helpers
-- **Connection Phase 6 is in progress**: config defaults, the 3-byte frame codec, a real Mint-backed WebSocket transport, and the socket's real Noise handshake path to `:authenticating` now exist; auth, messaging, media, and feature layers are still planned work
+- **Connection Phase 6 is in progress**: config defaults, the 3-byte frame codec, a real Mint-backed WebSocket transport, and the socket's real Noise handshake path to `:authenticating` now exist; the remaining rc.9 parity work is the post-handshake `connection.update` contract, keep-alive/logout/offline handlers, buffered event flow, and initial sync choreography
 - Targets Elixir 1.19+ / OTP 28
 
-> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, Phase 5 is complete for its adapter-driven scope, and Phase 6 is in progress with the connection config, frame codec, Mint transport boundary, and real Noise handshake progression to `:authenticating` in-tree. Broad WAProto message/auth code generation and a concrete 1:1 session engine remain intentionally deferred to the later phases that consume them. See `dev/implementation_plan/PROGRESS.md`.
+> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, Phase 5 is complete for its adapter-driven scope, and Phase 6 is in progress with the connection config, frame codec, Mint transport boundary, and real Noise handshake progression to `:authenticating` in-tree. The remaining Phase 6 work is Baileys 7.0.0-rc.9-compatible post-handshake socket behavior and buffered connection event flow, while broad WAProto message/auth code generation remains deferred to the later phases that consume it. See `dev/implementation_plan/PROGRESS.md`.
 
 ## Target Architecture
 

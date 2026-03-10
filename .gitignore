@@ -36,3 +36,6 @@ baileys_ex-*.tar
 
 # macOS
 .DS_Store
+
+# Local git worktrees
+.worktrees/

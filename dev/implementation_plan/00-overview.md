@@ -41,15 +41,16 @@ BaileysEx.Application (Supervisor)
 │   └── Per-connection Supervisor (:rest_for_one)
 │       ├── BaileysEx.Connection.Socket     (:gen_statem)
 │       │   - Owns WebSocket + Noise transport state
-│       │   - States: disconnected → handshaking → authenticating → connected
-│       │   - Handles keep-alive, reconnection
+│       │   - States: disconnected → connecting → noise_handshake → authenticating → connected
+│       │   - Mirrors Baileys `makeSocket`: query/send runtime, keep-alive, logout,
+│       │     unified_session, and transport-level offline/routing callbacks
 │       ├── BaileysEx.Connection.Store       (GenServer + ETS)
 │       │   - Signal session state, auth credentials
 │       │   - ETS :read_concurrency for lookups
 │       │   - GenServer serializes writes + persistence
 │       ├── BaileysEx.Connection.EventEmitter (GenServer)
-│       │   - Subscriber registry, event dispatch
-│       │   - Buffers events during offline message processing
+│       │   - Subscriber registry, batched event dispatch, buffer/flush/process API
+│       │   - Mirrors Baileys `makeEventBuffer` semantics during offline processing
 │       └── Task.Supervisor (BaileysEx.Connection.TaskSupervisor)
 │           - Concurrent ops: device discovery, media upload/download
 │           - async_nolink for fault isolation
@@ -63,6 +64,12 @@ Child ordering matters:
 2. **Store** — if it crashes, EventEmitter restarts (may have stale refs)
 3. **EventEmitter** — if it crashes, only it restarts
 4. **TaskSupervisor** — independent, but ordered last
+
+Reconnect policy belongs to the per-connection runtime wrapper around the socket,
+not to invented raw-socket semantics. Baileys rc.9 recreates the socket in
+consumer code based on `connection.update(connection: 'close')`; the Elixir port
+may internalize that in supervision, but the socket contract must still match the
+reference behavior first.
 
 ## Module Architecture
 

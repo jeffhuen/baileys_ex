@@ -260,39 +260,44 @@ falsely marked as implemented here.
 > `Connection.Config`, `Connection.Frame`, the evented `Connection.Transport`
 > boundary, `Connection.Transport.MintWebSocket`, and a `Connection.Socket`
 > `:gen_statem` that performs the real Noise handshake up to `:authenticating`.
-> Keep-alive, reconnect policy, per-connection supervision, event buffering,
-> and the connection store are still open.
+> The remaining rc.9 parity work is the post-handshake `makeSocket` contract
+> (`connection.update`, keep-alive, logout, unified session, offline/routing
+> handlers), the `makeEventBuffer`/`makeChatsSocket` buffering and sync-state
+> contract, the connection store, and the supervised reconnect wrapper around
+> those primitives.
 
 ### Tasks
 
 - [x] 6.1 Connection config (browser/platform — GAP-27)
-- [ ] 6.2 Connection socket (`:gen_statem`)
+- [ ] 6.2 Connection socket (`:gen_statem`, `makeSocket` parity)
 - [x] 6.3 Frame handling (3-byte length prefix)
-- [ ] 6.4 Per-connection supervisor (`:rest_for_one`)
-- [ ] 6.5 Event emitter (25+ types — GAP-07, buffering — GAP-22)
-- [ ] 6.6 Store (GenServer + ETS)
-- [ ] 6.7 Tests
+- [ ] 6.4 Per-connection supervisor / reconnect wrapper (`:rest_for_one`)
+- [ ] 6.5 Event emitter + buffered event contract (25+ types — GAP-07, buffering — GAP-22)
+- [ ] 6.6 Store (GenServer + ETS, creds/runtime metadata, LID mappings)
+- [ ] 6.7 Tests and parity verification
 
 ### Acceptance Criteria
 
 - [ ] State machine transitions through all states correctly
 - [x] Noise handshake integrates with WebSocket transport up to `:authenticating`
 - [x] Frame encoding/decoding with length prefix works
-- [ ] Keep-alive prevents timeout disconnection
-- [ ] Reconnection works after unexpected disconnect
+- [ ] `connection.update` mirrors rc.9 field sequencing (`connecting`, `open`, `close`, `qr`, `isNewLogin`, `receivedPendingNotifications`, `isOnline`, `lastDisconnect`)
+- [ ] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
+- [ ] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
+- [ ] Reconnect works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
 - [ ] Supervisor `:rest_for_one` restarts children correctly
-- [ ] Event emitter dispatches to subscribers
+- [ ] Event emitter dispatches to subscribers and supports batched `process` handling
 - [ ] Store reads are concurrent via ETS
 - [ ] ACK/NACK behavior matches current Baileys/WhatsApp Web parity rules and does not blanket-send successful ACKs (GAP-03)
 - [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
 - [ ] EventEmitter supports all 25+ event types (GAP-07)
 - [ ] EventEmitter covers Utils-driven events: messaging_history_set, messages_reaction, group_participants_update, group_join_request, group_member_tag_update, lid_mapping_update, settings_update, chats_lock
-- [ ] Event buffering accumulates events, flushes on demand (GAP-22)
+- [ ] Event buffering accumulates events, flushes on demand, and preserves conditional chat updates (GAP-22, GAP-48)
 - [ ] Buffer auto-flushes after 30 seconds (GAP-22)
 - [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
 - [ ] `account_sync` dirty handling persists `lastAccountSyncTimestamp`; group/community dirty refresh reuses correct clean bucket (GAP-24)
 - [x] Platform type correctly mapped for device registration (GAP-27)
-- [ ] Unified session sent on connection open (GAP-33)
+- [ ] Unified session sent on connection open and on presence available (GAP-33)
 - [ ] Init queries (props, blocklist, privacy) fetched in parallel and cache `lastPropHash` deltas (GAP-34)
 - [ ] Conditional chat updates held during sync (GAP-48)
 - [ ] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)

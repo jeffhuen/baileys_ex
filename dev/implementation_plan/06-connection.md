@@ -457,31 +457,34 @@ states to `:gen_statem`.
 
 ### 6.2a Current accepted runtime boundary
 
-The current in-tree socket runtime now covers this post-handshake subset of
-`dev/reference/Baileys-master/src/Socket/socket.ts`:
+The current in-tree socket/runtime now covers this implemented rc.9 connection
+surface from `dev/reference/Baileys-master/src/Socket/socket.ts` and
+`src/Socket/chats.ts`:
 
 - open the real Mint-backed WebSocket transport and complete the Noise handshake
 - send the raw client-finish handshake payload, then switch to Noise transport frames
 - transition to `:connected` on `success`
-- emit `connection.update` with `connecting`, `open`, `close`, and `received_pending_notifications`
+- handle `pair-device` QR generation and `pair-success` ADV verification/signing
+- emit `connection.update` with `connecting`, `open`, `close`, `qr`, `isNewLogin`,
+  `receivedPendingNotifications`, `isOnline`, and `lastDisconnect`
 - send `sendPassiveIq('active')` and `sendUnifiedSession()` on connection open
-- expose `sendPresenceUpdate('available' | 'unavailable')`-equivalent sending, including `isOnline` updates and `unified_session` resend on `available`
+- expose `sendPresenceUpdate('available' | 'unavailable')`-equivalent sending, including
+  `isOnline` updates and `unified_session` resend on `available`
 - run keep-alive via `iq xmlns='w:p' type='get'` with `<ping/>`
 - implement `logout()` as `remove-companion-device` on `xmlns='md'`, then close
 - handle `CB:ib,,offline_preview` by requesting `offline_batch`
 - handle `CB:ib,,offline` by emitting `receivedPendingNotifications: true`
 - handle `CB:ib,,edge_routing` by persisting updated routing info
+- run init queries (`fetchProps`, `fetchBlocklist`, `fetchPrivacySettings`) on open
+- handle dirty-bit refreshes for `account_sync`, `groups`, and `communities`
+- coordinate the runtime sync states `connecting -> awaiting_initial_sync -> syncing -> online`
 
-The remaining raw-socket parity work is:
+Downstream work remains, but it is no longer Phase 6 work:
 
-- QR and pairing-success handling, which still depend on Phase 7 auth semantics
-- richer `connection.update` fields such as `qr` and `isNewLogin`
-- close-reason mapping that fully mirrors Baileys disconnect reasons
-
-The remaining wrapper/runtime work above the raw socket is:
-
-- the rest of the `connecting -> awaiting_initial_sync -> syncing -> online` choreography
-- history-sync-triggered transition handling and app-state resync coordination
+- Phase 7: auth state struct, durable credential persistence, phone pairing code flow,
+  login/registration node builders, pre-key upload, transactional key-store semantics
+- Phase 8+: message receive/send pipeline, per-message ACK/NACK rules, app-state resync
+  side effects driven by decrypted history/app-state messages
 
 ### 6.3 Frame handling
 

@@ -256,13 +256,14 @@ falsely marked as implemented here.
 
 **Status:** COMPLETE · **Depends on:** Phases 3, 4 · **Blocks:** 7, 8
 
-> **Current snapshot:** the repo now has the first post-handshake Phase 6
-> runtime slice in-tree. `Connection.Socket` reaches `:connected` once the
+> **Current snapshot:** the Phase 6 runtime is now in-tree and complete for its
+> current scope. `Connection.Socket` reaches `:connected` once the
 > auth-success seam is satisfied, emits `connection_update` `:connecting` /
-> `:open` / `:close` transitions, sends `passive/active` plus
-> `unified_session` on open and presence-available, runs `w:p` keep-alive
-> pings, handles `offline_preview`, `offline`, and `edge_routing`, and
-> supports explicit logout plus rc.9 `pair-device` / `pair-success` pairing.
+> `:open` / `:close` / `:qr` / `:is_new_login` transitions, sends
+> `passive/active` plus `unified_session` on open and presence-available, runs
+> `w:p` keep-alive pings, handles `offline_preview`, `offline`, and
+> `edge_routing`, and supports explicit logout plus rc.9 `pair-device` /
+> `pair-success` pairing.
 > `Connection.EventEmitter` now covers `process/2`, internal runtime taps,
 > the rc.9 bufferable event set, `create_buffered_function/2`, flush/auto-flush,
 > mixed `messages_upsert` boundaries, and conditional `chats_update`

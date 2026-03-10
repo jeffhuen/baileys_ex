@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-09
+> Last updated: 2026-03-10
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -256,25 +256,31 @@ falsely marked as implemented here.
 
 **Status:** IN PROGRESS · **Depends on:** Phases 3, 4 · **Blocks:** 7, 8
 
-> **Current snapshot:** the first two accepted Phase 6 slices are in-tree:
-> `Connection.Config`, `Connection.Frame`, the evented `Connection.Transport`
-> boundary, `Connection.Transport.MintWebSocket`, and a `Connection.Socket`
-> `:gen_statem` that performs the real Noise handshake up to `:authenticating`.
-> The remaining rc.9 parity work is the post-handshake `makeSocket` contract
-> (`connection.update`, keep-alive, logout, unified session, offline/routing
-> handlers), the `makeEventBuffer`/`makeChatsSocket` buffering and sync-state
-> contract, the connection store, and the supervised reconnect wrapper around
-> those primitives.
+> **Current snapshot:** the repo now has the first post-handshake Phase 6
+> runtime slice in-tree. `Connection.Socket` reaches `:connected` once the
+> auth-success seam is satisfied, emits `connection_update` `:connecting` /
+> `:open` / `:close` transitions, sends `passive/active` plus
+> `unified_session` on open and presence-available, runs `w:p` keep-alive
+> pings, handles `offline_preview`, `offline`, and `edge_routing`, and
+> supports explicit logout. `Connection.EventEmitter` now covers `process/2`,
+> the rc.9 bufferable event set, `create_buffered_function/2`, flush/auto-flush,
+> mixed `messages_upsert` boundaries, and conditional `chats_update`
+> preservation. `Connection.Supervisor`, `Connection.Coordinator`, and
+> `Connection.Store` now provide auto-connect/reconnect, `creds_update`
+> persistence, ETS-backed concurrent reads, and the `AwaitingInitialSync`
+> timeout foundation. The remaining rc.9 parity work is QR/pair-success auth
+> flow, dirty/init-query handling, and the rest of the `makeChatsSocket`
+> sync-state choreography above the raw socket.
 
 ### Tasks
 
 - [x] 6.1 Connection config (browser/platform — GAP-27)
 - [ ] 6.2 Connection socket (`:gen_statem`, `makeSocket` parity)
 - [x] 6.3 Frame handling (3-byte length prefix)
-- [ ] 6.4 Per-connection supervisor / reconnect wrapper (`:rest_for_one`)
-- [ ] 6.5 Event emitter + buffered event contract (25+ types — GAP-07, buffering — GAP-22)
-- [ ] 6.6 Store (GenServer + ETS, creds/runtime metadata, LID mappings)
-- [ ] 6.7 Tests and parity verification
+- [x] 6.4 Per-connection supervisor / reconnect wrapper (`:rest_for_one`)
+- [x] 6.5 Event emitter + buffered event contract (25+ types — GAP-07, buffering — GAP-22)
+- [x] 6.6 Store (GenServer + ETS, creds/runtime metadata, LID mappings)
+- [x] 6.7 Tests and parity verification
 
 ### Acceptance Criteria
 
@@ -282,24 +288,24 @@ falsely marked as implemented here.
 - [x] Noise handshake integrates with WebSocket transport up to `:authenticating`
 - [x] Frame encoding/decoding with length prefix works
 - [ ] `connection.update` mirrors rc.9 field sequencing (`connecting`, `open`, `close`, `qr`, `isNewLogin`, `receivedPendingNotifications`, `isOnline`, `lastDisconnect`)
-- [ ] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
-- [ ] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
-- [ ] Reconnect works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
-- [ ] Supervisor `:rest_for_one` restarts children correctly
-- [ ] Event emitter dispatches to subscribers and supports batched `process` handling
-- [ ] Store reads are concurrent via ETS
+- [x] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
+- [x] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
+- [x] Reconnect works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
+- [x] Supervisor `:rest_for_one` restarts children correctly
+- [x] Event emitter dispatches to subscribers and supports batched `process` handling
+- [x] Store reads are concurrent via ETS
 - [ ] ACK/NACK behavior matches current Baileys/WhatsApp Web parity rules and does not blanket-send successful ACKs (GAP-03)
-- [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
-- [ ] EventEmitter supports all 25+ event types (GAP-07)
+- [x] Logout sends `remove-companion-device` and disconnects (GAP-18)
+- [x] EventEmitter supports all 25+ event types (GAP-07)
 - [ ] EventEmitter covers Utils-driven events: messaging_history_set, messages_reaction, group_participants_update, group_join_request, group_member_tag_update, lid_mapping_update, settings_update, chats_lock
-- [ ] Event buffering accumulates events, flushes on demand, and preserves conditional chat updates (GAP-22, GAP-48)
-- [ ] Buffer auto-flushes after 30 seconds (GAP-22)
+- [x] Event buffering accumulates events, flushes on demand, and preserves conditional chat updates (GAP-22, GAP-48)
+- [x] Buffer auto-flushes after 30 seconds (GAP-22)
 - [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
 - [ ] `account_sync` dirty handling persists `lastAccountSyncTimestamp`; group/community dirty refresh reuses correct clean bucket (GAP-24)
 - [x] Platform type correctly mapped for device registration (GAP-27)
-- [ ] Unified session sent on connection open and on presence available (GAP-33)
+- [x] Unified session sent on connection open and on presence available (GAP-33)
 - [ ] Init queries (props, blocklist, privacy) fetched in parallel and cache `lastPropHash` deltas (GAP-34)
-- [ ] Conditional chat updates held during sync (GAP-48)
+- [x] Conditional chat updates held during sync (GAP-48)
 - [ ] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
 
 ### Files
@@ -312,15 +318,17 @@ falsely marked as implemented here.
 | `lib/baileys_ex/connection/transport/mint_adapter.ex` | ✅ |
 | `lib/baileys_ex/connection/transport/mint_web_socket.ex` | ✅ |
 | `lib/baileys_ex/connection/socket.ex` | 🟡 |
-| `lib/baileys_ex/connection/supervisor.ex` | ⬜ |
-| `lib/baileys_ex/connection/event_emitter.ex` | ⬜ |
-| `lib/baileys_ex/connection/store.ex` | ⬜ |
+| `lib/baileys_ex/connection/coordinator.ex` | 🟡 |
+| `lib/baileys_ex/connection/supervisor.ex` | 🟡 |
+| `lib/baileys_ex/connection/event_emitter.ex` | 🟡 |
+| `lib/baileys_ex/connection/store.ex` | 🟡 |
 | `test/baileys_ex/connection/config_test.exs` | ✅ |
 | `test/baileys_ex/connection/frame_test.exs` | ✅ |
 | `test/baileys_ex/connection/socket_test.exs` | 🟡 |
 | `test/baileys_ex/connection/transport/mint_web_socket_test.exs` | ✅ |
-| `test/baileys_ex/connection/event_emitter_test.exs` | ⬜ |
-| `test/baileys_ex/connection/store_test.exs` | ⬜ |
+| `test/baileys_ex/connection/event_emitter_test.exs` | 🟡 |
+| `test/baileys_ex/connection/supervisor_test.exs` | 🟡 |
+| `test/baileys_ex/connection/store_test.exs` | 🟡 |
 
 ---
 

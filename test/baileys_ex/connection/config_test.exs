@@ -11,6 +11,7 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.retry_delay_ms == 2_000
     assert config.max_retries == 5
     assert config.connect_timeout_ms == 20_000
+    assert config.initial_sync_timeout_ms == 20_000
     assert config.browser == {"BaileysEx", "Chrome", "0.1.0"}
     assert config.print_qr_in_terminal == false
   end
@@ -20,11 +21,13 @@ defmodule BaileysEx.Connection.ConfigTest do
       Config.new(
         ws_url: "wss://example.test/ws",
         keep_alive_interval_ms: 5_000,
+        initial_sync_timeout_ms: 10_000,
         browser: {"BaileysEx", "Firefox", "1.2.3"}
       )
 
     assert config.ws_url == "wss://example.test/ws"
     assert config.keep_alive_interval_ms == 5_000
+    assert config.initial_sync_timeout_ms == 10_000
     assert config.browser == {"BaileysEx", "Firefox", "1.2.3"}
   end
 

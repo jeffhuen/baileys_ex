@@ -19,6 +19,7 @@ defmodule BaileysEx.Connection.Config do
   @type t :: %__MODULE__{
           ws_url: String.t(),
           keep_alive_interval_ms: pos_integer(),
+          initial_sync_timeout_ms: pos_integer(),
           retry_delay_ms: pos_integer(),
           max_retries: non_neg_integer(),
           connect_timeout_ms: pos_integer(),
@@ -40,6 +41,7 @@ defmodule BaileysEx.Connection.Config do
 
   defstruct ws_url: "wss://web.whatsapp.com/ws/chat",
             keep_alive_interval_ms: 25_000,
+            initial_sync_timeout_ms: 20_000,
             retry_delay_ms: 2_000,
             max_retries: 5,
             connect_timeout_ms: 20_000,

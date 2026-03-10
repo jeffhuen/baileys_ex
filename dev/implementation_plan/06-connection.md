@@ -9,15 +9,22 @@ reference behavior while fitting OTP.
 
 ---
 
-> **Current snapshot:** Phase 6 now has two accepted slices in-tree. The repo has
-> `Connection.Config`, a pure `Connection.Frame` codec, an evented `Connection.Transport`
-> boundary, a real `Connection.Transport.MintWebSocket` implementation, and a
-> `Connection.Socket` `:gen_statem` that performs the real Baileys-style Noise handshake
-> up to `:authenticating`. The remaining Phase 6 work is to port the rc.9
-> post-handshake behavior from `socket.ts`, `event-buffer.ts`, and `chats.ts`
-> accurately: `connection.update`, keep-alive/logout/unified-session, offline and
-> routing callbacks, buffered event flow, initial sync choreography, the store,
-> and the supervised reconnect wrapper around those contracts.
+> **Current snapshot:** Phase 6 now has the first post-handshake runtime slice
+> in-tree. The repo has `Connection.Config`, a pure `Connection.Frame` codec,
+> an evented `Connection.Transport` boundary, a real
+> `Connection.Transport.MintWebSocket` implementation, a `Connection.Socket`
+> `:gen_statem` that performs the real Baileys-style Noise handshake and then
+> drives the first rc.9 `makeSocket` callbacks (`connection.update`
+> connecting/open/close, `passive/active`, `unified_session`, keep-alive,
+> `offline_preview`, `offline`, `edge_routing`, `logout/1`, and
+> `send_presence_update/2` for available/unavailable presence), plus
+> `Connection.EventEmitter`, `Connection.Store`, `Connection.Supervisor`, and
+> `Connection.Coordinator` foundations for auto-connect/reconnect,
+> `creds_update` persistence, ETS-backed reads, and the first
+> `AwaitingInitialSync` timeout behavior from `chats.ts`. The remaining Phase 6
+> work is the rest of the rc.9 connection/runtime contract above that
+> foundation: QR/pair-success auth flow, dirty/init-query handling, and the
+> rest of the `chats.ts` sync-state choreography.
 
 ## Design Decisions
 
@@ -448,36 +455,32 @@ states to `:gen_statem`.
 
 ### 6.2a Current accepted runtime boundary
 
-The current accepted connection runtime stops at the boundary where the socket has:
-
-- opened the real Mint-backed WebSocket transport
-- initialized `Protocol.Noise`
-- sent client hello
-- processed server hello
-- sent client finish
-- transitioned to `:authenticating`
-
-This is intentionally short of a full "open" connection, because Phase 7 still owns
-registration/login payload generation and the post-handshake auth response flow.
-The temporary seam is an injected already-encoded client payload binary used only to
-exercise the real transport + Noise choreography before auth is implemented.
-
-### 6.2b Remaining `makeSocket` parity after the accepted handshake slice
-
-The next socket work should mirror the rc.9 behavior in
+The current in-tree socket runtime now covers this post-handshake subset of
 `dev/reference/Baileys-master/src/Socket/socket.ts`:
 
-- emit `connection.update` with `connecting`, `open`, and `close` transitions
-- track `lastDisconnect` reasons compatible with current Baileys close handling
-- send `sendUnifiedSession()` on connection open and when presence becomes available
+- open the real Mint-backed WebSocket transport and complete the Noise handshake
+- send the raw client-finish handshake payload, then switch to Noise transport frames
+- transition to `:connected` on `success`
+- emit `connection.update` with `connecting`, `open`, `close`, and `received_pending_notifications`
+- send `sendPassiveIq('active')` and `sendUnifiedSession()` on connection open
+- expose `sendPresenceUpdate('available' | 'unavailable')`-equivalent sending, including `isOnline` updates and `unified_session` resend on `available`
 - run keep-alive via `iq xmlns='w:p' type='get'` with `<ping/>`
 - implement `logout()` as `remove-companion-device` on `xmlns='md'`, then close
 - handle `CB:ib,,offline_preview` by requesting `offline_batch`
-- handle `CB:ib,,offline` by flushing the initial buffer and emitting `receivedPendingNotifications: true`
+- handle `CB:ib,,offline` by emitting `receivedPendingNotifications: true`
 - handle `CB:ib,,edge_routing` by persisting updated routing info
 
-QR and pairing-success handling remain part of the same `makeSocket` contract, but
-their concrete payload/auth semantics still depend on Phase 7.
+The remaining raw-socket parity work is:
+
+- QR and pairing-success handling, which still depend on Phase 7 auth semantics
+- richer `connection.update` fields such as `qr` and `isNewLogin`
+- close-reason mapping that fully mirrors Baileys disconnect reasons
+
+The remaining wrapper/runtime work above the raw socket is:
+
+- init queries (`fetchProps`, `fetchBlocklist`, `fetchPrivacySettings`)
+- dirty-bit handling (`account_sync`, groups/community dirty refresh)
+- the rest of the `connecting -> awaiting_initial_sync -> syncing -> online` choreography
 
 ### 6.3 Frame handling
 
@@ -539,10 +542,12 @@ defmodule BaileysEx.Connection.Supervisor do
 end
 ```
 
-This supervisor owns OTP-specific reconnect behavior around the parity socket.
-It should observe `connection.update(connection: :close, last_disconnect: ...)`
-and recreate the raw socket unless the disconnect reason is equivalent to
-Baileys `DisconnectReason.loggedOut`.
+This supervisor now owns OTP-specific auto-connect/reconnect around the parity
+socket through a wrapper coordinator process. It observes
+`connection.update(connection: :close, last_disconnect: ...)`, reconnects on
+unexpected close reasons, persists `creds.update` into the runtime store, and
+starts the `AwaitingInitialSync` buffer timeout on
+`receivedPendingNotifications: true`.
 
 ### 6.5 Event emitter (`makeEventBuffer` parity, GAP-07, GAP-22)
 
@@ -700,19 +705,19 @@ end
 - [ ] Frame encoding/decoding with length prefix works
 - [ ] `connection.update` mirrors rc.9 field sequencing (`connecting`, `open`, `close`, `qr`, `isNewLogin`, `receivedPendingNotifications`, `isOnline`, `lastDisconnect`)
 - [ ] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
-- [ ] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
-- [ ] Reconnection works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
-- [ ] Supervisor :rest_for_one restarts children correctly
-- [ ] Event emitter dispatches to subscribers and supports batched `process` handling
-- [ ] Store reads are concurrent via ETS
+- [x] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
+- [x] Reconnection works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
+- [x] Supervisor :rest_for_one restarts children correctly
+- [x] Event emitter dispatches to subscribers and supports batched `process` handling
+- [x] Store reads are concurrent via ETS
 - [ ] ACK/NACK behavior matches current Baileys/WhatsApp Web parity rules and does not blanket-send successful ACKs (GAP-03)
-- [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
-- [ ] EventEmitter supports all 25+ event types (GAP-07)
-- [ ] Event buffering accumulates events and flushes on demand (GAP-22)
-- [ ] Buffer auto-flushes after 30 seconds (GAP-22)
+- [x] Logout sends `remove-companion-device` and disconnects (GAP-18)
+- [x] EventEmitter supports all 25+ event types (GAP-07)
+- [x] Event buffering accumulates events and flushes on demand (GAP-22)
+- [x] Buffer auto-flushes after 30 seconds (GAP-22)
 - [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
 - [ ] Platform type correctly mapped for device registration (GAP-27)
-- [ ] Unified session sent on connection open and presence available (GAP-33)
+- [x] Unified session sent on connection open and presence available (GAP-33)
 - [ ] Init queries (props, blocklist, privacy) fetched in parallel on connection open (GAP-34)
 - [ ] Conditional chat updates held during sync, evaluated on flush (GAP-48)
 - [ ] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
@@ -724,14 +729,16 @@ end
 - `lib/baileys_ex/connection/transport.ex` — accepted in the current slice; evented transport seam for the socket runtime
 - `lib/baileys_ex/connection/transport/mint_adapter.ex` — accepted in the current slice; narrow Mint adapter for deterministic tests
 - `lib/baileys_ex/connection/transport/mint_web_socket.ex` — accepted in the current slice; real Mint-backed WebSocket transport
-- `lib/baileys_ex/connection/socket.ex` — prototype state machine now covers real transport-open + Noise handshake to `:authenticating`
-- `lib/baileys_ex/connection/supervisor.ex`
-- `lib/baileys_ex/connection/event_emitter.ex` — full event catalog (GAP-07), buffering support with auto-flush (GAP-22)
-- `lib/baileys_ex/connection/store.ex`
+- `lib/baileys_ex/connection/socket.ex` — prototype state machine now covers post-handshake `makeSocket` foundations through `:connected`
+- `lib/baileys_ex/connection/coordinator.ex` — wrapper runtime for auto-connect/reconnect, `creds_update` persistence, and initial sync timeout buffering
+- `lib/baileys_ex/connection/supervisor.ex` — prototype `:rest_for_one` wrapper foundation with coordinator wiring
+- `lib/baileys_ex/connection/event_emitter.ex` — prototype `makeEventBuffer` foundation with the rc.9 bufferable catalog and nested buffered-function support
+- `lib/baileys_ex/connection/store.ex` — prototype runtime store foundation with ETS-backed concurrent reads and serialized writes
 - `test/baileys_ex/connection/config_test.exs`
 - `test/baileys_ex/connection/frame_test.exs`
 - `test/baileys_ex/connection/socket_test.exs`
 - `test/baileys_ex/connection/transport/mint_web_socket_test.exs`
 - `test_helpers/connection/noise_server.exs`
 - `test/baileys_ex/connection/event_emitter_test.exs`
+- `test/baileys_ex/connection/supervisor_test.exs`
 - `test/baileys_ex/connection/store_test.exs`

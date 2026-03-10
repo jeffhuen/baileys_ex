@@ -26,21 +26,26 @@ defmodule BaileysEx.Connection.Supervisor do
   @impl true
   def init(opts) do
     instance_id = Keyword.get(opts, :name, make_ref())
+    socket_module = Keyword.get(opts, :socket_module, Socket)
     coordinator_name = {:global, {__MODULE__, instance_id, Coordinator}}
     emitter_name = {:global, {__MODULE__, instance_id, EventEmitter}}
     store_name = {:global, {__MODULE__, instance_id, Store}}
+    task_supervisor_name = {:global, {__MODULE__, instance_id, Task.Supervisor}}
 
     socket_opts =
       opts
-      |> Keyword.drop([:name])
+      |> Keyword.drop([:name, :socket_module])
       |> Keyword.put_new(:event_emitter, emitter_name)
 
     children = [
-      Elixir.Supervisor.child_spec({Socket, socket_opts}, id: Socket),
+      Elixir.Supervisor.child_spec({socket_module, socket_opts}, id: socket_module),
       Elixir.Supervisor.child_spec({Store, [name: store_name, auth_state: opts[:auth_state]]},
         id: Store
       ),
       Elixir.Supervisor.child_spec({EventEmitter, [name: emitter_name]}, id: EventEmitter),
+      Elixir.Supervisor.child_spec({Task.Supervisor, name: task_supervisor_name},
+        id: Task.Supervisor
+      ),
       Elixir.Supervisor.child_spec(
         {Coordinator,
          [
@@ -48,7 +53,9 @@ defmodule BaileysEx.Connection.Supervisor do
            config: Keyword.get(opts, :config),
            supervisor: self(),
            event_emitter: emitter_name,
-           store: store_name
+           store: store_name,
+           socket_module: socket_module,
+           task_supervisor: task_supervisor_name
          ]},
         id: Coordinator
       )

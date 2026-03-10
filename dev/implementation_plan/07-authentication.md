@@ -6,6 +6,13 @@ upload flow.
 **Depends on:** Phase 5 (Signal / libsignal native layer), Phase 6 (Connection)
 **Blocks:** Phase 8 (Messaging)
 
+> **Phase 6 note:** the connection-coupled rc.9 QR helpers and `pair-success`
+> verification/signing path now live in `Connection.Socket` plus
+> `Auth.QR` / `Auth.Pairing`, because Baileys performs that work at the
+> socket boundary. Phase 7 still owns the remaining auth surface: the auth
+> state struct, persistence backends, phone pairing code flow, and pre-key
+> upload / key-store transaction work.
+
 ---
 
 ## Design Decisions

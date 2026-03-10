@@ -19,10 +19,13 @@ defmodule BaileysEx.Connection.Config do
   @type t :: %__MODULE__{
           ws_url: String.t(),
           keep_alive_interval_ms: pos_integer(),
+          default_query_timeout_ms: pos_integer(),
           initial_sync_timeout_ms: pos_integer(),
           retry_delay_ms: pos_integer(),
           max_retries: non_neg_integer(),
           connect_timeout_ms: pos_integer(),
+          fire_init_queries: boolean(),
+          mark_online_on_connect: boolean(),
           browser: browser(),
           print_qr_in_terminal: boolean()
         }
@@ -41,10 +44,13 @@ defmodule BaileysEx.Connection.Config do
 
   defstruct ws_url: "wss://web.whatsapp.com/ws/chat",
             keep_alive_interval_ms: 25_000,
+            default_query_timeout_ms: 60_000,
             initial_sync_timeout_ms: 20_000,
             retry_delay_ms: 2_000,
             max_retries: 5,
             connect_timeout_ms: 20_000,
+            fire_init_queries: true,
+            mark_online_on_connect: true,
             browser: {"BaileysEx", "Chrome", "0.1.0"},
             print_qr_in_terminal: false
 

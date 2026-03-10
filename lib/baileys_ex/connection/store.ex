@@ -18,9 +18,13 @@ defmodule BaileysEx.Connection.Store do
 
   @type key ::
           :auth_state
+          | :blocklist
           | :connection_name
           | :creds
+          | :last_prop_hash
           | :last_account_sync_timestamp
+          | :privacy_settings
+          | :props
           | atom()
 
   @spec wrap(GenServer.server()) :: Ref.t()

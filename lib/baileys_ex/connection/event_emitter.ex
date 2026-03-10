@@ -24,6 +24,7 @@ defmodule BaileysEx.Connection.EventEmitter do
     @moduledoc false
 
     defstruct subscribers: %{},
+              taps: %{},
               buffer_timeout_ms: 30_000,
               buffer_timer: nil,
               flush_pending_timer: nil,
@@ -44,6 +45,7 @@ defmodule BaileysEx.Connection.EventEmitter do
           | :contacts_update
           | :contacts_upsert
           | :creds_update
+          | :dirty_update
           | :group_join_request
           | :group_member_tag_update
           | :group_participants_update
@@ -81,6 +83,12 @@ defmodule BaileysEx.Connection.EventEmitter do
   def process(server, handler) when is_function(handler, 1) do
     ref = GenServer.call(server, {:process, handler})
     fn -> GenServer.cast(server, {:unsubscribe, ref}) end
+  end
+
+  @spec tap(GenServer.server(), (map() -> term())) :: (-> :ok)
+  def tap(server, handler) when is_function(handler, 1) do
+    ref = GenServer.call(server, {:tap, handler})
+    fn -> GenServer.cast(server, {:unsubscribe_tap, ref}) end
   end
 
   @spec emit(GenServer.server(), event(), term()) :: :ok
@@ -122,8 +130,14 @@ defmodule BaileysEx.Connection.EventEmitter do
     {:reply, ref, %{state | subscribers: Map.put(state.subscribers, ref, handler)}}
   end
 
+  def handle_call({:tap, handler}, _from, %State{} = state) do
+    ref = make_ref()
+    {:reply, ref, %{state | taps: Map.put(state.taps, ref, handler)}}
+  end
+
   def handle_call({:emit, event, data}, _from, %State{} = state) do
     {state, deliveries} = emit_event(state, event, data)
+    dispatch(state.taps, [%{event => data}])
     dispatch(state.subscribers, deliveries)
     {:reply, :ok, state}
   end
@@ -167,6 +181,10 @@ defmodule BaileysEx.Connection.EventEmitter do
   @impl true
   def handle_cast({:unsubscribe, ref}, %State{} = state) do
     {:noreply, %{state | subscribers: Map.delete(state.subscribers, ref)}}
+  end
+
+  def handle_cast({:unsubscribe_tap, ref}, %State{} = state) do
+    {:noreply, %{state | taps: Map.delete(state.taps, ref)}}
   end
 
   @impl true

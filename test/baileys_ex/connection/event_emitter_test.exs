@@ -68,6 +68,35 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     assert_receive {:processed_events, %{presence_update: %{id: "chat-1", presences: %{}}}}
   end
 
+  test "tap/2 observes bufferable events immediately while process subscribers stay buffered" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+    _untap = EventEmitter.tap(emitter, &send(test_pid, {:tapped_events, &1}))
+
+    assert :ok = EventEmitter.buffer(emitter)
+
+    assert :ok =
+             EventEmitter.emit(emitter, :messaging_history_set, %{
+               chats: [],
+               contacts: [],
+               messages: [],
+               sync_type: :recent
+             })
+
+    assert_receive {:tapped_events,
+                    %{
+                      messaging_history_set: %{
+                        chats: [],
+                        contacts: [],
+                        messages: [],
+                        sync_type: :recent
+                      }
+                    }}
+
+    refute_received {:processed_events, %{messaging_history_set: _history}}
+  end
+
   test "groups_update is treated as a bufferable event" do
     test_pid = self()
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
@@ -161,5 +190,27 @@ defmodule BaileysEx.Connection.EventEmitterTest do
 
     assert_receive {:processed_events, %{groups_update: [%{id: "group-1", subject: "Phase 6"}]}},
                    200
+  end
+
+  test "utils-driven connection events dispatch through process subscribers" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    events = [
+      {:messaging_history_set, %{chats: [], contacts: [], messages: [], sync_type: :recent}},
+      {:messages_reaction, [%{key: %{id: "message-1"}, reaction: %{text: "👍"}}]},
+      {:group_participants_update, %{id: "group-1", participants: ["1@s.whatsapp.net"]}},
+      {:group_join_request, %{id: "group-1", participants: ["2@s.whatsapp.net"]}},
+      {:group_member_tag_update, %{id: "group-1", member_tag: %{label: "vip"}}},
+      {:lid_mapping_update, %{lid: "123@lid", pn: "15551234567@s.whatsapp.net"}},
+      {:settings_update, %{privacy: %{"last" => "contacts"}}},
+      {:chats_lock, %{id: "chat-1", locked: true}}
+    ]
+
+    Enum.each(events, fn {event, payload} ->
+      assert :ok = EventEmitter.emit(emitter, event, payload)
+      assert_receive {:processed_events, %{^event => ^payload}}
+    end)
   end
 end

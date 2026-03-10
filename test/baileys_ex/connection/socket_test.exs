@@ -5,13 +5,18 @@ defmodule BaileysEx.Connection.SocketTest do
 
   alias BaileysEx.BinaryNode
   alias BaileysEx.Crypto
+  alias BaileysEx.Auth.QR
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Noise
+  alias BaileysEx.Protocol.Proto.ADVDeviceIdentity
+  alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
+  alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentityHMAC
   alias BaileysEx.Protocol.Proto.HandshakeMessage
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientHello
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.TestSupport.Connection.NoiseServer
 
   defmodule ScriptedTransport do
@@ -173,6 +178,60 @@ defmodule BaileysEx.Connection.SocketTest do
         last_error: :invalid_server_hello
       }
     end)
+  end
+
+  test "socket transitions through disconnected, connecting, noise_handshake, authenticating, connected, and disconnected" do
+    client_payload = "client-payload"
+    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
+    root_key_pair = Crypto.generate_key_pair(:x25519)
+    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
+    server_static_key_pair = Crypto.generate_key_pair(:x25519)
+    trusted_cert = %{serial: 0, public_key: root_key_pair.public}
+
+    assert {:ok, pid} =
+             Socket.start_link(
+               config: Config.new(keep_alive_interval_ms: 5_000),
+               auth_state: %{noise_key: client_noise_key_pair, creds: %{routing_info: nil}},
+               client_payload: client_payload,
+               noise_opts: [trusted_cert: trusted_cert],
+               transport: {ScriptedTransport, %{test_pid: self()}}
+             )
+
+    assert :disconnected == Socket.state(pid)
+
+    assert :ok = Socket.connect(pid)
+    assert_eventually(fn -> Socket.state(pid) == :connecting end)
+
+    Kernel.send(pid, {:scripted_transport, :connected})
+    assert_receive {:transport_sent, client_hello}
+    assert_eventually(fn -> Socket.state(pid) == :noise_handshake end)
+
+    assert {:ok, server_hello, server_state} =
+             NoiseServer.build_server_hello(client_hello,
+               root_key_pair: root_key_pair,
+               intermediate_key_pair: intermediate_key_pair,
+               server_static_key_pair: server_static_key_pair,
+               issuer_serial: trusted_cert.serial
+             )
+
+    Kernel.send(pid, {:scripted_transport, {:binary, server_hello}})
+    assert_receive {:transport_sent, client_finish}
+
+    assert {:ok, %{transport: server_transport}} =
+             NoiseServer.process_client_finish(server_state, client_finish)
+
+    assert_eventually(fn -> Socket.state(pid) == :authenticating end)
+
+    success_node = %BinaryNode{tag: "success", attrs: %{"t" => "1_710_000_000"}}
+    {_server_transport, success_frame} = server_transport_frame(server_transport, success_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, success_frame}})
+
+    assert_receive {:transport_sent, _passive_iq_frame}
+    assert_receive {:transport_sent, _unified_session_frame}
+    assert_eventually(fn -> Socket.state(pid) == :connected end)
+
+    assert :ok = Socket.disconnect(pid)
+    assert :disconnected == Socket.state(pid)
   end
 
   test "connect/1 returns to disconnected and records the error on transport failure" do
@@ -380,6 +439,41 @@ defmodule BaileysEx.Connection.SocketTest do
     assert_receive {:processed_events, %{creds_update: %{routing_info: ^routing_info}}}
   end
 
+  test "socket does not blanket-ack inbound nodes outside the explicit pairing parity cases" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000)
+      )
+
+    dirty_node =
+      %BinaryNode{
+        tag: "ib",
+        attrs: %{},
+        content: [
+          %BinaryNode{
+            tag: "dirty",
+            attrs: %{"type" => "account_sync", "timestamp" => "1710000000"},
+            content: nil
+          }
+        ]
+      }
+
+    {_, frame} = server_transport_frame(server_transport, dirty_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, frame}})
+
+    assert_receive {:processed_events,
+                    %{dirty_update: %{type: "account_sync", timestamp: 1_710_000_000}}}
+
+    refute_receive {:transport_sent, _unexpected_ack}, 50
+  end
+
   test "logout/1 sends remove-companion-device and transitions the socket to disconnected" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
@@ -508,6 +602,189 @@ defmodule BaileysEx.Connection.SocketTest do
     refute_received {:transport_sent, _unified_session_frame}
   end
 
+  test "query/3 sends an iq and resolves with the matching response node" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000)
+      )
+
+    query_task =
+      Task.async(fn ->
+        Socket.query(pid, %BinaryNode{
+          tag: "iq",
+          attrs: %{"xmlns" => "w", "type" => "get", "to" => "s.whatsapp.net"},
+          content: [
+            %BinaryNode{tag: "props", attrs: %{"protocol" => "2", "hash" => ""}, content: nil}
+          ]
+        })
+      end)
+
+    assert_receive {:transport_sent, query_frame}
+
+    {server_transport, query_node} = decode_client_transport_frame(server_transport, query_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"xmlns" => "w", "type" => "get", "to" => "s.whatsapp.net", "id" => query_id}
+           } = query_node
+
+    response_node =
+      %BinaryNode{
+        tag: "iq",
+        attrs: %{"id" => query_id, "type" => "result", "from" => "s.whatsapp.net"},
+        content: [
+          %BinaryNode{
+            tag: "props",
+            attrs: %{"hash" => "next-hash"},
+            content: [
+              %BinaryNode{
+                tag: "prop",
+                attrs: %{"name" => "web:voip", "value" => "1"},
+                content: nil
+              }
+            ]
+          }
+        ]
+      }
+
+    {_, response_frame} = server_transport_frame(server_transport, response_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, response_frame}})
+
+    assert {:ok, ^response_node} = Task.await(query_task)
+  end
+
+  test "query/3 returns timeout when no matching response arrives" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, _server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000)
+      )
+
+    assert {:error, :timeout} =
+             Socket.query(
+               pid,
+               %BinaryNode{
+                 tag: "iq",
+                 attrs: %{"xmlns" => "privacy", "type" => "get", "to" => "s.whatsapp.net"},
+                 content: [%BinaryNode{tag: "privacy", attrs: %{}, content: nil}]
+               },
+               25
+             )
+  end
+
+  test "pair-device acknowledges the stanza and emits a QR update" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    auth_state = pairing_auth_state()
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        auth_state: auth_state
+      )
+
+    pair_device_node = pair_device_stanza("pair-device-1", ["ref-1", "ref-2"])
+    {server_transport, frame} = server_transport_frame(server_transport, pair_device_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, frame}})
+
+    assert_receive {:transport_sent, ack_frame}
+    {_server_transport, ack_node} = decode_client_transport_frame(server_transport, ack_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"id" => "pair-device-1", "to" => "s.whatsapp.net", "type" => "result"}
+           } = ack_node
+
+    assert_receive {:processed_events, %{connection_update: %{qr: qr_payload}}}
+
+    assert qr_payload == QR.generate("ref-1", auth_state)
+
+    refute_receive {:processed_events, %{connection_update: %{qr: _next_qr}}}, 50
+  end
+
+  test "pair-success updates creds, emits is_new_login, and replies with pair-device-sign" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    auth_state = pairing_auth_state()
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        auth_state: auth_state
+      )
+
+    {
+      pair_success_node,
+      expected_lid,
+      expected_jid,
+      expected_platform,
+      expected_key_index
+    } = pair_success_stanza("pair-success-1", auth_state)
+
+    {server_transport, frame} = server_transport_frame(server_transport, pair_success_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      creds_update: %{
+                        me: %{id: ^expected_jid, lid: ^expected_lid},
+                        platform: ^expected_platform
+                      }
+                    }}
+
+    assert_receive {:processed_events, %{connection_update: %{is_new_login: true, qr: nil}}}
+
+    assert_receive {:transport_sent, reply_frame}
+    {server_transport, reply_node} = decode_client_transport_frame(server_transport, reply_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"id" => "pair-success-1", "to" => "s.whatsapp.net", "type" => "result"}
+           } = reply_node
+
+    assert %BinaryNode{tag: "pair-device-sign"} =
+             pair_device_sign_node =
+             BinaryNodeUtil.child(reply_node, "pair-device-sign")
+
+    assert %BinaryNode{
+             tag: "device-identity",
+             attrs: %{"key-index" => ^expected_key_index}
+           } = BinaryNodeUtil.child(pair_device_sign_node, "device-identity")
+
+    assert_receive {:transport_sent, unified_session_frame}
+
+    {_, unified_session_node} =
+      decode_client_transport_frame(server_transport, unified_session_frame)
+
+    assert %BinaryNode{tag: "ib"} = unified_session_node
+
+    assert %BinaryNode{tag: "unified_session"} =
+             BinaryNodeUtil.child(unified_session_node, "unified_session")
+  end
+
   defp start_connected_socket(opts) do
     {:ok, pid, server_transport} = start_authenticated_socket(opts)
 
@@ -629,6 +906,99 @@ defmodule BaileysEx.Connection.SocketTest do
       true ->
         frame
     end
+  end
+
+  defp pair_device_stanza(id, refs) when is_binary(id) and is_list(refs) do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => id, "to" => "s.whatsapp.net", "type" => "set"},
+      content: [
+        %BinaryNode{
+          tag: "pair-device",
+          attrs: %{},
+          content: Enum.map(refs, &%BinaryNode{tag: "ref", attrs: %{}, content: &1})
+        }
+      ]
+    }
+  end
+
+  defp pair_success_stanza(id, auth_state) do
+    expected_lid = "12345678901234@lid"
+    expected_jid = "15551234567@s.whatsapp.net"
+    expected_platform = "Chrome"
+    expected_key_index = "7"
+    account_signature_key = Crypto.generate_key_pair(:x25519)
+
+    device_identity =
+      %ADVDeviceIdentity{
+        raw_id: 1,
+        timestamp: 1_710_000_000,
+        key_index: String.to_integer(expected_key_index),
+        device_type: 0
+      }
+
+    device_details = ADVDeviceIdentity.encode(device_identity)
+
+    {:ok, account_signature} =
+      Curve.sign(
+        account_signature_key.private,
+        <<6, 0, device_details::binary, auth_state.signed_identity_key.public::binary>>
+      )
+
+    account =
+      %ADVSignedDeviceIdentity{
+        details: device_details,
+        account_signature_key: account_signature_key.public,
+        account_signature: account_signature,
+        device_signature: nil
+      }
+
+    account_details = ADVSignedDeviceIdentity.encode(account)
+
+    device_identity_hmac =
+      %ADVSignedDeviceIdentityHMAC{
+        details: account_details,
+        hmac: Crypto.hmac_sha256(auth_state.adv_secret_key, account_details),
+        account_type: nil
+      }
+      |> ADVSignedDeviceIdentityHMAC.encode()
+
+    stanza =
+      %BinaryNode{
+        tag: "iq",
+        attrs: %{"id" => id, "to" => "s.whatsapp.net", "type" => "result"},
+        content: [
+          %BinaryNode{
+            tag: "pair-success",
+            attrs: %{},
+            content: [
+              %BinaryNode{
+                tag: "device-identity",
+                attrs: %{},
+                content: {:binary, device_identity_hmac}
+              },
+              %BinaryNode{tag: "platform", attrs: %{"name" => expected_platform}, content: nil},
+              %BinaryNode{
+                tag: "device",
+                attrs: %{"jid" => expected_jid, "lid" => expected_lid},
+                content: nil
+              }
+            ]
+          }
+        ]
+      }
+
+    {stanza, expected_lid, expected_jid, expected_platform, expected_key_index}
+  end
+
+  defp pairing_auth_state do
+    %{
+      noise_key: Crypto.generate_key_pair(:x25519),
+      signed_identity_key: Crypto.generate_key_pair(:x25519),
+      adv_secret_key: Crypto.random_bytes(32),
+      signal_identities: [],
+      creds: %{routing_info: nil}
+    }
   end
 
   defp assert_eventually(fun, attempts \\ 20)

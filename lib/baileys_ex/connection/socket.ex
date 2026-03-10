@@ -10,6 +10,8 @@ defmodule BaileysEx.Connection.Socket do
   @behaviour :gen_statem
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Auth.Pairing
+  alias BaileysEx.Auth.QR
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Transport
@@ -24,7 +26,6 @@ defmodule BaileysEx.Connection.Socket do
           | :noise_handshake
           | :authenticating
           | :connected
-          | :reconnecting
 
   @type snapshot :: %{
           state: state(),
@@ -52,7 +53,12 @@ defmodule BaileysEx.Connection.Socket do
           epoch: non_neg_integer(),
           last_error: term(),
           keep_alive_timer: reference() | nil,
-          last_date_recv_at: integer() | nil
+          qr_timer: reference() | nil,
+          last_date_recv_at: integer() | nil,
+          qr_refs: [binary()],
+          next_qr_timeout_ms: pos_integer(),
+          pending_queries: %{optional(binary()) => {pid(), reference(), reference()}},
+          server_time_offset_ms: integer()
         }
 
   @enforce_keys [:config, :auth_state, :transport_module, :transport_options]
@@ -67,10 +73,15 @@ defmodule BaileysEx.Connection.Socket do
     :transport_state,
     :last_error,
     :keep_alive_timer,
+    :qr_timer,
     :last_date_recv_at,
     noise_opts: [],
     transport_connected?: false,
     buffer: <<>>,
+    qr_refs: [],
+    next_qr_timeout_ms: 20_000,
+    pending_queries: %{},
+    server_time_offset_ms: 0,
     retry_count: 0,
     epoch: 0
   ]
@@ -107,6 +118,28 @@ defmodule BaileysEx.Connection.Socket do
 
   @spec logout(GenServer.server()) :: :ok | {:error, :not_connected}
   def logout(server), do: :gen_statem.call(server, :logout)
+
+  @spec send_node(GenServer.server(), BinaryNode.t()) :: :ok | {:error, :not_connected | term()}
+  def send_node(server, %BinaryNode{} = node), do: :gen_statem.call(server, {:send_node, node})
+
+  @spec query(GenServer.server(), BinaryNode.t(), timeout()) ::
+          {:ok, BinaryNode.t()} | {:error, :not_connected | :timeout | term()}
+  def query(server, %BinaryNode{} = node, timeout \\ 60_000)
+      when is_integer(timeout) and timeout > 0 do
+    ref = make_ref()
+
+    case :gen_statem.call(server, {:query, node, {self(), ref}, timeout}, timeout + 1_000) do
+      :ok ->
+        receive do
+          {__MODULE__, ^ref, result} -> result
+        after
+          timeout + 100 -> {:error, :timeout}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
 
   @spec send_presence_update(GenServer.server(), presence_type()) ::
           :ok | {:error, :not_connected | term()}
@@ -181,6 +214,8 @@ defmodule BaileysEx.Connection.Socket do
 
   def authenticating(:enter, _old_state, data), do: {:keep_state, data}
 
+  def authenticating(:info, :qr_refresh, data), do: refresh_pairing_qr(data)
+
   def authenticating(:info, message, data),
     do: handle_transport_message(:authenticating, message, data)
 
@@ -193,20 +228,13 @@ defmodule BaileysEx.Connection.Socket do
     {:keep_state, schedule_keep_alive(data)}
   end
 
+  def connected(:info, {:query_timeout, query_id}, data),
+    do: {:keep_state, expire_query(data, query_id)}
+
   def connected(:info, :keep_alive, data), do: send_keep_alive(data)
   def connected(:info, message, data), do: handle_transport_message(:connected, message, data)
   def connected({:call, from}, request, data), do: handle_call(:connected, from, request, data)
   def connected(_event_type, _event, data), do: {:keep_state, data}
-
-  def reconnecting(:enter, _old_state, data), do: {:keep_state, data}
-
-  def reconnecting(:info, message, data),
-    do: handle_transport_message(:reconnecting, message, data)
-
-  def reconnecting({:call, from}, request, data),
-    do: handle_call(:reconnecting, from, request, data)
-
-  def reconnecting(_event_type, _event, data), do: {:keep_state, data}
 
   defp handle_call(current_state, from, :state, data) do
     {:keep_state, data, [{:reply, from, current_state}]}
@@ -256,6 +284,30 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  defp handle_call(:connected, from, {:send_node, %BinaryNode{} = node}, data) do
+    case send_node_internal(data, node) do
+      {:ok, data} ->
+        {:keep_state, data, [{:reply, from, :ok}]}
+
+      {:error, reason, data} ->
+        {:keep_state, data, [{:reply, from, {:error, reason}}]}
+    end
+  end
+
+  defp handle_call(:connected, from, {:query, %BinaryNode{} = node, reply_to, timeout}, data)
+       when is_integer(timeout) and timeout > 0 do
+    {node, query_id} = ensure_query_id(node, data.pending_queries)
+
+    case send_node_internal(data, node) do
+      {:ok, data} ->
+        data = register_pending_query(data, query_id, reply_to, timeout)
+        {:keep_state, data, [{:reply, from, :ok}]}
+
+      {:error, reason, data} ->
+        {:keep_state, data, [{:reply, from, {:error, reason}}]}
+    end
+  end
+
   defp handle_call(:connected, from, {:send_presence_update, type}, data)
        when type in [:available, :unavailable] do
     case send_presence_update_node(data, type) do
@@ -268,6 +320,14 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp handle_call(_current_state, from, {:send_payload, _payload}, data) do
+    {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
+  end
+
+  defp handle_call(_current_state, from, {:send_node, %BinaryNode{}}, data) do
+    {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
+  end
+
+  defp handle_call(_current_state, from, {:query, %BinaryNode{}, _reply_to, _timeout}, data) do
     {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
   end
 
@@ -356,7 +416,7 @@ defmodule BaileysEx.Connection.Socket do
          {:binary, payload},
          %__MODULE__{noise: %Noise{} = noise} = data
        )
-       when current_state in [:authenticating, :connected, :reconnecting] do
+       when current_state in [:authenticating, :connected] do
     case Noise.decode_frames(noise, payload) do
       {:ok, {noise, frames}} ->
         data = %{data | noise: noise, last_date_recv_at: System.monotonic_time(:millisecond)}
@@ -424,7 +484,11 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp apply_binary_node(:authenticating, %BinaryNode{tag: "success", attrs: attrs}, data) do
-    data = maybe_update_lid(data, attrs["lid"])
+    data =
+      data
+      |> clear_pairing_qr()
+      |> maybe_update_server_time_offset(attrs["t"])
+      |> maybe_update_lid(attrs["lid"])
 
     case send_passive_iq(data, :active) do
       {:ok, data} ->
@@ -444,6 +508,23 @@ defmodule BaileysEx.Connection.Socket do
     apply_ib_node(current_state, node, data)
   end
 
+  defp apply_binary_node(:authenticating, %BinaryNode{tag: "iq"} = node, data) do
+    cond do
+      BinaryNodeUtil.child(node, "pair-device") ->
+        handle_pair_device(node, data)
+
+      BinaryNodeUtil.child(node, "pair-success") ->
+        handle_pair_success(node, data)
+
+      true ->
+        {:ok, :authenticating, maybe_resolve_query(data, node)}
+    end
+  end
+
+  defp apply_binary_node(current_state, %BinaryNode{tag: "iq"} = node, data) do
+    {:ok, current_state, maybe_resolve_query(data, node)}
+  end
+
   defp apply_binary_node(current_state, _node, data), do: {:ok, current_state, data}
 
   defp apply_ib_node(current_state, node, data) do
@@ -460,6 +541,10 @@ defmodule BaileysEx.Connection.Socket do
 
       edge_routing = BinaryNodeUtil.child(node, "edge_routing") ->
         data = maybe_update_routing_info(data, edge_routing)
+        {:ok, current_state, data}
+
+      dirty_node = BinaryNodeUtil.child(node, "dirty") ->
+        emit_event(data, :dirty_update, parse_dirty_update(dirty_node))
         {:ok, current_state, data}
 
       true ->
@@ -504,7 +589,7 @@ defmodule BaileysEx.Connection.Socket do
   defp logout_connection(%__MODULE__{} = data) do
     case get_in(data.auth_state, [:creds, :me, :id]) do
       jid when is_binary(jid) ->
-        case send_node(data, logout_node(jid)) do
+        case send_node_internal(data, logout_node(jid)) do
           {:ok, data} ->
             data = close_connection(data, :logged_out, increment_retry?: false)
             {:ok, data}
@@ -532,16 +617,113 @@ defmodule BaileysEx.Connection.Socket do
 
     disconnect_transport(data)
 
-    %{
-      data
-      | transport_state: nil,
-        transport_connected?: false,
-        noise: nil,
-        retry_count: data.retry_count + if(increment_retry?, do: 1, else: 0),
-        last_error: reason,
-        last_date_recv_at: nil
-    }
+    data
+    |> fail_pending_queries({:error, reason})
+    |> clear_pairing_qr()
+    |> then(fn data ->
+      %{
+        data
+        | transport_state: nil,
+          transport_connected?: false,
+          noise: nil,
+          retry_count: data.retry_count + if(increment_retry?, do: 1, else: 0),
+          last_error: reason,
+          last_date_recv_at: nil
+      }
+    end)
     |> cancel_keep_alive_timer()
+  end
+
+  defp handle_pair_device(%BinaryNode{attrs: attrs} = node, %__MODULE__{} = data) do
+    with {:ok, data} <- send_node_internal(data, iq_result_node(attrs["id"])),
+         {:ok, data} <- start_pairing_qr(data, node) do
+      {:ok, :authenticating, data}
+    else
+      {:error, reason, data} -> {:error, reason, data}
+      {:error, reason} -> {:error, reason, data}
+    end
+  end
+
+  defp handle_pair_success(%BinaryNode{} = node, %__MODULE__{} = data) do
+    data = data |> clear_pairing_qr() |> maybe_update_server_time_offset(node.attrs["t"])
+
+    with {:ok, %{reply: reply, creds_update: creds_update}} <-
+           Pairing.configure_successful_pairing(node, data.auth_state),
+         {:ok, data} <-
+           send_pair_success_reply(
+             data,
+             reply,
+             creds_update
+           ) do
+      {:ok, :authenticating, data}
+    else
+      {:error, reason, data} -> {:error, reason, data}
+      {:error, reason} -> {:error, reason, data}
+    end
+  end
+
+  defp send_pair_success_reply(%__MODULE__{} = data, %BinaryNode{} = reply, creds_update) do
+    auth_state_update = %{
+      creds: %{me: Map.get(creds_update, :me)},
+      account: Map.get(creds_update, :account),
+      platform: Map.get(creds_update, :platform),
+      signal_identities: Map.get(creds_update, :signal_identities)
+    }
+
+    data = %{data | auth_state: update_auth_state(data.auth_state, auth_state_update)}
+    emit_event(data, :creds_update, creds_update)
+    emit_event(data, :connection_update, %{is_new_login: true, qr: nil})
+
+    with {:ok, data} <- send_node_internal(data, reply) do
+      send_unified_session(data)
+    end
+  end
+
+  defp start_pairing_qr(%__MODULE__{} = data, %BinaryNode{} = node) do
+    refs =
+      node
+      |> BinaryNodeUtil.child("pair-device")
+      |> BinaryNodeUtil.children("ref")
+      |> Enum.map(&extract_binary_content/1)
+      |> Enum.filter(&is_binary/1)
+
+    case refs do
+      [] ->
+        {:error, :missing_pairing_refs}
+
+      [ref | remaining_refs] ->
+        data =
+          data
+          |> clear_pairing_qr()
+          |> Map.put(:qr_refs, remaining_refs)
+          |> Map.put(:next_qr_timeout_ms, 20_000)
+
+        emit_event(data, :connection_update, %{qr: QR.generate(ref, data.auth_state)})
+
+        {:ok, schedule_pairing_qr(data, 60_000)}
+    end
+  end
+
+  defp refresh_pairing_qr(%__MODULE__{qr_refs: [ref | remaining_refs]} = data) do
+    data = %{data | qr_timer: nil, qr_refs: remaining_refs}
+    emit_event(data, :connection_update, %{qr: QR.generate(ref, data.auth_state)})
+    {:keep_state, schedule_pairing_qr(data, data.next_qr_timeout_ms)}
+  end
+
+  defp refresh_pairing_qr(%__MODULE__{qr_refs: []} = data) do
+    connection_failure(%{data | qr_timer: nil}, :qr_refs_exhausted)
+  end
+
+  defp schedule_pairing_qr(%__MODULE__{} = data, timeout_ms)
+       when is_integer(timeout_ms) and timeout_ms > 0 do
+    %{data | qr_timer: Process.send_after(self(), :qr_refresh, timeout_ms)}
+  end
+
+  defp clear_pairing_qr(%__MODULE__{qr_timer: nil} = data), do: %{data | qr_refs: []}
+
+  defp clear_pairing_qr(%__MODULE__{qr_timer: qr_timer} = data) do
+    Process.cancel_timer(qr_timer)
+    %{data | qr_timer: nil, qr_refs: []}
   end
 
   defp send_transport_binary(%__MODULE__{noise: %Noise{} = noise} = data, payload)
@@ -593,19 +775,19 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp send_keep_alive_ping(data) do
-    send_node(data, keep_alive_node())
+    send_node_internal(data, keep_alive_node())
   end
 
   defp send_passive_iq(data, tag) when tag in [:active, :passive] do
-    send_node(data, passive_iq_node(tag))
+    send_node_internal(data, passive_iq_node(tag))
   end
 
   defp send_unified_session(data) do
-    send_node(data, unified_session_node())
+    send_node_internal(data, unified_session_node(data))
   end
 
   defp send_offline_batch(data) do
-    send_node(data, offline_batch_node())
+    send_node_internal(data, offline_batch_node())
   end
 
   defp send_presence_update_node(%__MODULE__{} = data, type)
@@ -617,7 +799,7 @@ defmodule BaileysEx.Connection.Socket do
       emit_event(data, :connection_update, %{is_online: type == :available})
 
       with {:ok, data} <- maybe_send_presence_unified_session(data, type),
-           do: send_node(data, presence_node(name, type))
+           do: send_node_internal(data, presence_node(name, type))
     else
       {:ok, data}
     end
@@ -626,10 +808,66 @@ defmodule BaileysEx.Connection.Socket do
   defp maybe_send_presence_unified_session(data, :available), do: send_unified_session(data)
   defp maybe_send_presence_unified_session(data, :unavailable), do: {:ok, data}
 
-  defp send_node(data, %BinaryNode{} = node) do
+  defp send_node_internal(data, %BinaryNode{} = node) do
     node
     |> BinaryNodeUtil.encode()
     |> then(&send_transport_binary(data, &1))
+  end
+
+  defp register_pending_query(%__MODULE__{} = data, query_id, {reply_pid, reply_ref}, timeout)
+       when is_binary(query_id) and is_pid(reply_pid) and is_reference(reply_ref) do
+    timer = Process.send_after(self(), {:query_timeout, query_id}, timeout)
+
+    %{
+      data
+      | pending_queries: Map.put(data.pending_queries, query_id, {reply_pid, reply_ref, timer})
+    }
+  end
+
+  defp expire_query(%__MODULE__{} = data, query_id) when is_binary(query_id) do
+    case Map.pop(data.pending_queries, query_id) do
+      {{reply_pid, reply_ref, _timer}, pending_queries} ->
+        send_query_result(reply_pid, reply_ref, {:error, :timeout})
+        %{data | pending_queries: pending_queries}
+
+      {nil, _pending_queries} ->
+        data
+    end
+  end
+
+  defp maybe_resolve_query(%__MODULE__{} = data, %BinaryNode{attrs: %{"id" => query_id}} = node) do
+    case Map.pop(data.pending_queries, query_id) do
+      {{reply_pid, reply_ref, timer}, pending_queries} ->
+        Process.cancel_timer(timer)
+        send_query_result(reply_pid, reply_ref, query_result(node))
+        %{data | pending_queries: pending_queries}
+
+      {nil, _pending_queries} ->
+        data
+    end
+  end
+
+  defp maybe_resolve_query(%__MODULE__{} = data, _node), do: data
+
+  defp query_result(%BinaryNode{} = node) do
+    case BinaryNodeUtil.assert_error_free(node) do
+      :ok -> {:ok, node}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fail_pending_queries(%__MODULE__{} = data, result) do
+    Enum.each(data.pending_queries, fn {_query_id, {reply_pid, reply_ref, timer}} ->
+      Process.cancel_timer(timer)
+      send_query_result(reply_pid, reply_ref, result)
+    end)
+
+    %{data | pending_queries: %{}}
+  end
+
+  defp send_query_result(reply_pid, reply_ref, result) do
+    Kernel.send(reply_pid, {__MODULE__, reply_ref, result})
+    :ok
   end
 
   defp emit_event(%__MODULE__{event_emitter: nil}, _event, _payload), do: :ok
@@ -686,12 +924,62 @@ defmodule BaileysEx.Connection.Socket do
     end)
   end
 
-  defp unified_session_node do
+  defp maybe_update_server_time_offset(%__MODULE__{} = data, nil), do: data
+
+  defp maybe_update_server_time_offset(%__MODULE__{} = data, server_timestamp) do
+    case Integer.parse(server_timestamp) do
+      {parsed, ""} when parsed > 0 ->
+        %{data | server_time_offset_ms: parsed * 1_000 - System.os_time(:millisecond)}
+
+      _ ->
+        data
+    end
+  end
+
+  defp ensure_query_id(%BinaryNode{} = node, pending_queries) do
+    existing_id = node.attrs["id"]
+
+    query_id =
+      if is_binary(existing_id) and existing_id != "" and
+           not Map.has_key?(pending_queries, existing_id) do
+        existing_id
+      else
+        generate_message_tag()
+      end
+
+    {%{node | attrs: Map.put(node.attrs, "id", query_id)}, query_id}
+  end
+
+  defp parse_dirty_update(%BinaryNode{attrs: attrs}) do
+    %{type: attrs["type"], timestamp: parse_optional_integer(attrs["timestamp"])}
+  end
+
+  defp parse_optional_integer(nil), do: nil
+
+  defp parse_optional_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} -> parsed
+      _ -> nil
+    end
+  end
+
+  defp unified_session_node(data) do
+    session_id =
+      data.server_time_offset_ms
+      |> unified_session_id()
+      |> Integer.to_string()
+
     %BinaryNode{
       tag: "ib",
       attrs: %{},
-      content: [%BinaryNode{tag: "unified_session", attrs: %{}, content: nil}]
+      content: [%BinaryNode{tag: "unified_session", attrs: %{"id" => session_id}, content: nil}]
     }
+  end
+
+  defp unified_session_id(server_time_offset_ms) do
+    three_days_ms = 3 * 24 * 60 * 60 * 1_000
+    week_ms = 7 * 24 * 60 * 60 * 1_000
+    rem(System.os_time(:millisecond) + server_time_offset_ms + three_days_ms, week_ms)
   end
 
   defp keep_alive_node do
@@ -751,6 +1039,14 @@ defmodule BaileysEx.Connection.Socket do
           content: nil
         }
       ]
+    }
+  end
+
+  defp iq_result_node(message_id) when is_binary(message_id) do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"to" => @s_whatsapp_net, "type" => "result", "id" => message_id},
+      content: nil
     }
   end
 

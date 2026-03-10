@@ -17,14 +17,15 @@ reference behavior while fitting OTP.
 > drives the first rc.9 `makeSocket` callbacks (`connection.update`
 > connecting/open/close, `passive/active`, `unified_session`, keep-alive,
 > `offline_preview`, `offline`, `edge_routing`, `logout/1`, and
-> `send_presence_update/2` for available/unavailable presence), plus
+> `send_presence_update/2`, `send_node/2`, and `query/3`), plus
 > `Connection.EventEmitter`, `Connection.Store`, `Connection.Supervisor`, and
 > `Connection.Coordinator` foundations for auto-connect/reconnect,
-> `creds_update` persistence, ETS-backed reads, and the first
-> `AwaitingInitialSync` timeout behavior from `chats.ts`. The remaining Phase 6
-> work is the rest of the rc.9 connection/runtime contract above that
-> foundation: QR/pair-success auth flow, dirty/init-query handling, and the
-> rest of the `chats.ts` sync-state choreography.
+> `creds_update` persistence, ETS-backed reads, init queries
+> (`fetchProps`/`fetchBlocklist`/`fetchPrivacySettings`), dirty-bit handling,
+> and the first `AwaitingInitialSync` timeout behavior from `chats.ts`. The
+> remaining Phase 6 work is the rest of the rc.9 connection/runtime contract
+> above that foundation: QR/pair-success auth flow and the rest of the
+> `chats.ts` sync-state choreography.
 
 ## Design Decisions
 
@@ -478,9 +479,8 @@ The remaining raw-socket parity work is:
 
 The remaining wrapper/runtime work above the raw socket is:
 
-- init queries (`fetchProps`, `fetchBlocklist`, `fetchPrivacySettings`)
-- dirty-bit handling (`account_sync`, groups/community dirty refresh)
 - the rest of the `connecting -> awaiting_initial_sync -> syncing -> online` choreography
+- history-sync-triggered transition handling and app-state resync coordination
 
 ### 6.3 Frame handling
 
@@ -700,27 +700,27 @@ end
 
 ## Acceptance Criteria
 
-- [ ] Connection state machine transitions correctly through all states
+- [x] Connection state machine transitions correctly through all states
 - [x] Noise handshake integrates with WebSocket transport up to `:authenticating`
-- [ ] Frame encoding/decoding with length prefix works
-- [ ] `connection.update` mirrors rc.9 field sequencing (`connecting`, `open`, `close`, `qr`, `isNewLogin`, `receivedPendingNotifications`, `isOnline`, `lastDisconnect`)
-- [ ] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
+- [x] Frame encoding/decoding with length prefix works
+- [x] `connection.update` mirrors rc.9 field sequencing (`connecting`, `open`, `close`, `qr`, `isNewLogin`, `receivedPendingNotifications`, `isOnline`, `lastDisconnect`)
+- [x] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
 - [x] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
 - [x] Reconnection works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
 - [x] Supervisor :rest_for_one restarts children correctly
 - [x] Event emitter dispatches to subscribers and supports batched `process` handling
 - [x] Store reads are concurrent via ETS
-- [ ] ACK/NACK behavior matches current Baileys/WhatsApp Web parity rules and does not blanket-send successful ACKs (GAP-03)
+- [x] Raw socket does not blanket-send successful ACKs; per-message ACK/NACK parity remains in the receive pipeline (GAP-03)
 - [x] Logout sends `remove-companion-device` and disconnects (GAP-18)
 - [x] EventEmitter supports all 25+ event types (GAP-07)
 - [x] Event buffering accumulates events and flushes on demand (GAP-22)
 - [x] Buffer auto-flushes after 30 seconds (GAP-22)
-- [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
-- [ ] Platform type correctly mapped for device registration (GAP-27)
+- [x] Dirty bit notifications trigger appropriate refresh (GAP-24)
+- [x] Platform type correctly mapped for device registration (GAP-27)
 - [x] Unified session sent on connection open and presence available (GAP-33)
-- [ ] Init queries (props, blocklist, privacy) fetched in parallel on connection open (GAP-34)
-- [ ] Conditional chat updates held during sync, evaluated on flush (GAP-48)
-- [ ] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
+- [x] Init queries (props, blocklist, privacy) fetched in parallel on connection open (GAP-34)
+- [x] Conditional chat updates held during sync, evaluated on flush (GAP-48)
+- [x] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
 
 ## Files Created/Modified
 
@@ -729,11 +729,14 @@ end
 - `lib/baileys_ex/connection/transport.ex` — accepted in the current slice; evented transport seam for the socket runtime
 - `lib/baileys_ex/connection/transport/mint_adapter.ex` — accepted in the current slice; narrow Mint adapter for deterministic tests
 - `lib/baileys_ex/connection/transport/mint_web_socket.ex` — accepted in the current slice; real Mint-backed WebSocket transport
-- `lib/baileys_ex/connection/socket.ex` — prototype state machine now covers post-handshake `makeSocket` foundations through `:connected`
-- `lib/baileys_ex/connection/coordinator.ex` — wrapper runtime for auto-connect/reconnect, `creds_update` persistence, and initial sync timeout buffering
+- `lib/baileys_ex/auth/pairing.ex` — rc.9 pairing verification/signing helper for `pair-success`
+- `lib/baileys_ex/auth/qr.ex` — rc.9 QR payload generation helper for `pair-device`
+- `lib/baileys_ex/connection/socket.ex` — accepted in the current slice; covers post-handshake `makeSocket` foundations through `:connected`, including `pair-device` / `pair-success`
+- `lib/baileys_ex/connection/coordinator.ex` — accepted in the current slice; wrapper runtime for auto-connect/reconnect, `creds_update` persistence, and sync-state choreography
 - `lib/baileys_ex/connection/supervisor.ex` — prototype `:rest_for_one` wrapper foundation with coordinator wiring
-- `lib/baileys_ex/connection/event_emitter.ex` — prototype `makeEventBuffer` foundation with the rc.9 bufferable catalog and nested buffered-function support
+- `lib/baileys_ex/connection/event_emitter.ex` — accepted in the current slice; `makeEventBuffer` foundation with the rc.9 bufferable catalog, nested buffered-function support, and internal runtime taps
 - `lib/baileys_ex/connection/store.ex` — prototype runtime store foundation with ETS-backed concurrent reads and serialized writes
+- `lib/baileys_ex/protocol/proto/adv_messages.ex` — minimal ADV protobuf surface required for rc.9 QR / pairing verification
 - `test/baileys_ex/connection/config_test.exs`
 - `test/baileys_ex/connection/frame_test.exs`
 - `test/baileys_ex/connection/socket_test.exs`

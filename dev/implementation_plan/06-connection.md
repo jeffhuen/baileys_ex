@@ -9,23 +9,23 @@ reference behavior while fitting OTP.
 
 ---
 
-> **Current snapshot:** Phase 6 now has the first post-handshake runtime slice
-> in-tree. The repo has `Connection.Config`, a pure `Connection.Frame` codec,
-> an evented `Connection.Transport` boundary, a real
+> **Current snapshot:** Phase 6 is complete for its current scope on
+> `phase-06-connection`. The repo has `Connection.Config`, a pure
+> `Connection.Frame` codec, an evented `Connection.Transport` boundary, a real
 > `Connection.Transport.MintWebSocket` implementation, a `Connection.Socket`
 > `:gen_statem` that performs the real Baileys-style Noise handshake and then
-> drives the first rc.9 `makeSocket` callbacks (`connection.update`
-> connecting/open/close, `passive/active`, `unified_session`, keep-alive,
-> `offline_preview`, `offline`, `edge_routing`, `logout/1`, and
-> `send_presence_update/2`, `send_node/2`, and `query/3`), plus
+> drives the rc.9 `makeSocket` callbacks (`connection.update`
+> connecting/open/close/qr/isNewLogin/receivedPendingNotifications/isOnline,
+> `passive/active`, `unified_session`, keep-alive, `offline_preview`,
+> `offline`, `edge_routing`, `logout/1`, `send_presence_update/2`,
+> `send_node/2`, `query/3`, and `pair-device` / `pair-success`), plus
 > `Connection.EventEmitter`, `Connection.Store`, `Connection.Supervisor`, and
-> `Connection.Coordinator` foundations for auto-connect/reconnect,
+> `Connection.Coordinator` runtime support for auto-connect/reconnect,
 > `creds_update` persistence, ETS-backed reads, init queries
 > (`fetchProps`/`fetchBlocklist`/`fetchPrivacySettings`), dirty-bit handling,
-> and the first `AwaitingInitialSync` timeout behavior from `chats.ts`. The
-> remaining Phase 6 work is the rest of the rc.9 connection/runtime contract
-> above that foundation: QR/pair-success auth flow and the rest of the
-> `chats.ts` sync-state choreography.
+> and the `connecting -> awaiting_initial_sync -> syncing -> online`
+> choreography from `chats.ts`. Remaining auth persistence, phone pairing-code,
+> and pre-key upload work now belongs to Phase 7+ rather than Phase 6.
 
 ## Design Decisions
 
@@ -79,10 +79,11 @@ WhatsApp frames have a 3-byte length prefix (big-endian) followed by the payload
 Pre-noise: payload is raw. Post-noise: payload is Noise-encrypted.
 
 **Build the connection layer in slices, not one jump.**
-The first accepted slice established config defaults, frame encoding/decoding, and
-the socket's state contract with an injected transport seam. The second slice adds
-the real Mint transport and the real Noise handshake up to `:authenticating`
-without prematurely pulling in Phase 7 auth validation or the later supervisor/store work.
+The accepted slices here ended up being:
+1. config defaults, frame encoding/decoding, and the socket state contract
+2. the real Mint transport and the Noise handshake up to `:authenticating`
+3. the rc.9 post-handshake runtime, pairing hooks, reconnect/store/event
+   runtime, and sync-state choreography above the raw socket
 
 ---
 
@@ -733,9 +734,9 @@ end
 - `lib/baileys_ex/auth/qr.ex` — rc.9 QR payload generation helper for `pair-device`
 - `lib/baileys_ex/connection/socket.ex` — accepted in the current slice; covers post-handshake `makeSocket` foundations through `:connected`, including `pair-device` / `pair-success`
 - `lib/baileys_ex/connection/coordinator.ex` — accepted in the current slice; wrapper runtime for auto-connect/reconnect, `creds_update` persistence, and sync-state choreography
-- `lib/baileys_ex/connection/supervisor.ex` — prototype `:rest_for_one` wrapper foundation with coordinator wiring
+- `lib/baileys_ex/connection/supervisor.ex` — accepted in the current slice; `:rest_for_one` wrapper with socket/store/emitter/task/coordinator wiring
 - `lib/baileys_ex/connection/event_emitter.ex` — accepted in the current slice; `makeEventBuffer` foundation with the rc.9 bufferable catalog, nested buffered-function support, and internal runtime taps
-- `lib/baileys_ex/connection/store.ex` — prototype runtime store foundation with ETS-backed concurrent reads and serialized writes
+- `lib/baileys_ex/connection/store.ex` — accepted in the current slice; runtime store with ETS-backed concurrent reads and serialized writes
 - `lib/baileys_ex/protocol/proto/adv_messages.ex` — minimal ADV protobuf surface required for rc.9 QR / pairing verification
 - `test/baileys_ex/connection/config_test.exs`
 - `test/baileys_ex/connection/frame_test.exs`

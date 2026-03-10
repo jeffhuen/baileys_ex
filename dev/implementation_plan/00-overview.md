@@ -50,6 +50,7 @@ BaileysEx.Application (Supervisor)
 │       │   - GenServer serializes writes + persistence
 │       ├── BaileysEx.Connection.EventEmitter (GenServer)
 │       │   - Subscriber registry, batched event dispatch, buffer/flush/process API
+│       │   - Internal tap path for runtime coordination without breaking buffered app delivery
 │       │   - Mirrors Baileys `makeEventBuffer` semantics during offline processing
 │       └── Task.Supervisor (BaileysEx.Connection.TaskSupervisor)
 │           - Concurrent ops: device discovery, media upload/download
@@ -149,7 +150,8 @@ lib/baileys_ex/connection/
 lib/baileys_ex/
 ├── auth/
 │   ├── state.ex          # Auth credentials struct
-│   ├── qr.ex             # QR code pairing flow
+│   ├── pairing.ex        # Pair-success ADV verification/signing helper used by the socket
+│   ├── qr.ex             # QR payload helper shared by socket pairing and Phase 7 auth flow
 │   ├── phone.ex          # Phone number pairing flow
 │   └── persistence.ex    # Behaviour for credential storage backends
 ├── signal/                # Phase 5 area — curve/address/repository first, deeper session logic later

@@ -356,13 +356,13 @@ end
 - [ ] New auth state generates valid crypto keys
 - [ ] File persistence saves and loads credentials correctly
 - [ ] File persistence serializes binaries safely and guards per-file writes with a mutex
-- [ ] QR code data format matches WhatsApp expectations
+- [x] QR code data format matches WhatsApp expectations
 - [ ] Phone pairing key derivation matches Baileys output
 - [ ] Pre-key upload constructs correct binary nodes
 - [ ] Custom persistence backend can be swapped via behaviour
 - [ ] Login node constructed correctly for returning users
 - [ ] Registration node includes device props, history sync config, platform type
-- [ ] Pair-success HMAC and ADV signature verification passes
+- [x] Pair-success HMAC and ADV signature verification passes
 - [ ] Pre-key upload triggered automatically when server count is low
 - [ ] Signed pre-key rotation works correctly
 - [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
@@ -375,6 +375,7 @@ end
 - `lib/baileys_ex/auth/state.ex`
 - `lib/baileys_ex/auth/persistence.ex`
 - `lib/baileys_ex/auth/file_persistence.ex`
+- `lib/baileys_ex/auth/pairing.ex`
 - `lib/baileys_ex/auth/qr.ex`
 - `lib/baileys_ex/auth/phone.ex`
 - `lib/baileys_ex/signal/prekey.ex` (extend)

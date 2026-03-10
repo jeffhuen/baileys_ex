@@ -28,7 +28,12 @@ The branch name tells you which phase you are on. Cross-check it against the fir
 - Do not skip or reorder tasks in PROGRESS.md. Work sequentially within a phase.
 - Every task must pass all delivery gates before committing.
 - If a task's phase file is not yet written, stop and report — do not invent scope.
-- **Cross-reference with Baileys source** in `dev/reference/Baileys-master/` for implementation details not covered in the plan.
+- **Baileys 7.00rc9 is the spec.** `dev/reference/Baileys-master/` is the authoritative
+  reference for all wire behaviour, protocol semantics, message formats, handshake flows,
+  and feature scope. When unsure what to implement or how something should behave, **read
+  the Baileys source — do not ask, do not deliberate, do not design from scratch.** Port
+  the behaviour faithfully, implement idiomatically in Elixir. The goal is a drop-in
+  replacement for Elixir apps currently using Baileys (Node.js) as a sidecar.
 - **Sequential by default; parallel only when safe.** See § Task Dispatch Modes below.
 
 ---
@@ -124,8 +129,9 @@ Every task must pass these gates before committing.
 - `@spec` on all public functions
 - Guides updated if a user-facing API changes (Phase 12+)
 
-**Gate 8 — Reference and acceptance parity:**
-- Cross-check against `dev/reference/Baileys-master/` for the touched behavior.
+**Gate 8 — Baileys behaviour parity:**
+- Cross-check against `dev/reference/Baileys-master/` (7.00rc9) for the touched behaviour.
+  Our implementation must produce the same wire behaviour as Baileys for the same inputs.
 - Update the active phase file / PROGRESS tracker if the implemented scope or status changed.
 
 **Gate 9 — Task completion housekeeping:**
@@ -263,8 +269,16 @@ Each file (`01-foundation.md` through `12-polish.md`) is a self-contained phase.
    its dependencies are complete.
 4. **Check acceptance criteria** at the end of each phase — all must pass before
    moving on.
-5. **Cross-reference with Baileys source** in `dev/reference/Baileys-master/` for
-   implementation details not covered in the plan.
+5. **Baileys is the spec** — `dev/reference/Baileys-master/` (7.00rc9) is the
+   authoritative reference. Read it first, don't guess or ask.
+
+### First Step for Every Task
+
+Before writing any code for a task, open the corresponding Baileys source file(s)
+listed in the phase header, list every exported function, and verify each has a home
+in the plan. The plan is the skeleton — the Baileys source is the spec for filling
+in the details. If you find an exported function not covered by the plan, add it to
+the appropriate task before proceeding.
 
 ### Parallel-Safe Phase Pairs
 

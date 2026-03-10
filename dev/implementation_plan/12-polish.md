@@ -121,6 +121,20 @@ Simple bot that echoes received messages — demonstrates the full API.
 - Steps: compile, format check, credo, dialyzer, test
 - Rust compilation cached via `actions/cache`
 
+### 12.7 WAM analytics parity
+
+**Baileys reference:** `src/WAM/` — 100+ analytics event definitions, `sendWAMBuffer()`
+
+WAM (WhatsApp Analytics/Metrics) is WhatsApp's internal telemetry system. Baileys
+includes event encoding and `sendWAMBuffer()` in the socket layer (already stubbed
+in Phase 6). The event definitions in `src/WAM/constants.ts` describe 100+ metric
+types with field schemas.
+
+For full Baileys parity, implement the binary encoding from `src/WAM/encode.ts`
+and wire it to the existing `sendWAMBuffer` stub. If the library exposes a user
+opt-out, that must be an explicit configuration deviation from Baileys-compatible
+default behavior, not an undocumented omission.
+
 ---
 
 ## Acceptance Criteria
@@ -131,6 +145,7 @@ Simple bot that echoes received messages — demonstrates the full API.
 - [ ] Example bot runs successfully
 - [ ] `mix hex.build` succeeds
 - [ ] CI passes all checks
+- [ ] WAM buffer encoding matches Baileys for the supported event set, with any opt-out documented as an explicit deviation
 
 ## Files Created/Modified
 

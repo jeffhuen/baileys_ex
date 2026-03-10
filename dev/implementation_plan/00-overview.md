@@ -2,12 +2,23 @@
 
 ## Vision
 
-Full-featured Elixir port of Baileys (WhatsApp Web API). The current architectural
-direction is to keep connection management, state machines, concurrency, and business
-logic in Elixir, while exposing battle-tested native crypto or narrowly-scoped Signal
-helpers only where they are actually required. The WhatsApp-specific Noise handler
-should mirror the Baileys reference in Elixir rather than delegating the whole handshake
-to a generic raw XX engine.
+**Behaviour-accurate Elixir port of Baileys 7.00rc9** (WhatsApp Web API). The goal is a
+**drop-in replacement** for Elixir apps currently using Baileys (Node.js) as a sidecar.
+Same wire behaviour, same protocol semantics, idiomatic Elixir implementation.
+
+Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
+all wire behaviour, protocol semantics, message formats, handshake flows, and feature
+scope. The *what* comes from Baileys; the *how* is SOTA Elixir.
+
+The current architectural direction is to keep connection management, state machines,
+concurrency, and business logic in Elixir, while exposing battle-tested native crypto
+or narrowly-scoped Signal helpers only where they are actually required. The
+WhatsApp-specific Noise handler mirrors the Baileys reference in Elixir rather than
+delegating the whole handshake to a generic raw XX engine.
+
+**Baileys source inventory:** ~90 files, ~570+ functions, ~300+ types across 8
+directories (Socket, Signal, Utils, Types, WABinary, WAProto, WAUSync, WAM, Defaults).
+WAM (WhatsApp Analytics/Metrics) is optional — see Phase 12.7.
 
 ## Core Principles
 

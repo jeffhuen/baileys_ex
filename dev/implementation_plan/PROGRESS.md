@@ -17,13 +17,13 @@
 | 3 | Protocol Layer | 10 | COMPLETE | 1 | 6 |
 | 4 | Noise NIF | 6 | IN PROGRESS | 1 | 6 |
 | 5 | Signal Protocol | 8 | COMPLETE | 1, 2 | 7, 8 |
-| 6 | Connection | 7 | IN PROGRESS | 3, 4 | 7, 8 |
+| 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | NOT STARTED | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | NOT STARTED | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | NOT STARTED | 2, 8 | 12 |
-| 10 | Features | 14 | NOT STARTED | 8 | 11 |
+| 10 | Features | 17 | NOT STARTED | 8 | 11 |
 | 11 | Advanced Features | 5 | NOT STARTED | 10 | 12 |
-| 12 | Polish | 6 | NOT STARTED | All | — |
+| 12 | Polish | 7 | NOT STARTED | All | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -551,7 +551,10 @@ falsely marked as implemented here.
 - [ ] 10.3a Trusted Contact Tokens (GAP-23)
 - [ ] 10.3b Bot Directory (GAP-37)
 - [ ] 10.4 Privacy settings (8 categories + block list + disappearing)
-- [ ] 10.5 App state sync (Syncd protocol, patches)
+- [ ] 10.5a App state sync — key expansion + snapshot decode
+- [ ] 10.5b App state sync — patch encode/decode + MAC verification
+- [ ] 10.5c App state sync — ChatMutationMap + process patches → emit events
+- [ ] 10.5d App state sync — full resync + push patch flow
 - [ ] 10.6 LTHash utility
 - [ ] 10.7 Profile management (picture, name, status, business)
 - [ ] 10.8 Label management (CRUD, associations)
@@ -670,6 +673,7 @@ falsely marked as implemented here.
 - [ ] 12.4 Example application (echo bot)
 - [ ] 12.5 Hex.pm preparation (`mix hex.build`)
 - [ ] 12.6 CI setup (GitHub Actions)
+- [ ] 12.7 WAM analytics encoding (optional/deferred)
 
 ### Acceptance Criteria
 
@@ -697,8 +701,8 @@ falsely marked as implemented here.
 | Metric | Count |
 |--------|-------|
 | Phases | 12 |
-| Tasks | 97 |
-| Acceptance Criteria | 146 |
+| Tasks | 101 |
+| Acceptance Criteria | 148 |
 | Source Files | ~80 |
 | Test Files | ~30 |
 | GAP items resolved | 48/48 |

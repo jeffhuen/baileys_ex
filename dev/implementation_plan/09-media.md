@@ -3,8 +3,12 @@
 **Goal:** Media encryption/decryption, upload to WhatsApp CDN, streaming download,
 integration with message builder.
 
-**Depends on:** Phase 2 (Crypto NIF), Phase 8 (Messaging)
+**Depends on:** Phase 2 (Crypto), Phase 8 (Messaging)
 **Parallel with:** Phase 10 (Features)
+
+**Baileys reference:**
+- `src/Utils/messages-media.ts` — `getMediaKeys`, `encryptedStream`, `downloadContentFromMessage`, `downloadEncryptedContent`, `getRawMediaUploadData`, `getWAUploadToServer`, `encryptMediaRetryRequest`, `decryptMediaRetryData`, `getAudioDuration`, `getAudioWaveform`, `extractImageThumb`, `generateThumbnail`, `generateProfilePicture`, `hkdfInfoKey`
+- `src/Defaults/index.ts` — `MEDIA_PATH_MAP` (10 media type → CDN path mappings), `MEDIA_HKDF_KEY_MAPPING` (19 media type → HKDF info string mappings)
 
 ---
 
@@ -14,10 +18,11 @@ integration with message builder.
 Use `Stream` and `Req` streaming for upload/download. Encrypt/decrypt in chunks.
 This matches Baileys' approach and handles large media (videos, documents).
 
-**Crypto pipeline in a single NIF call for performance.**
-Media encryption involves HKDF expand → AES-CBC encrypt → HMAC. For large files,
-doing this per-chunk across the NIF boundary is wasteful. Provide a streaming NIF
-that processes chunks without returning to Elixir between steps.
+**Single-pass streaming in Elixir/OTP first.**
+Media encryption still involves HKDF expand → AES-CBC encrypt → HMAC, but the
+current architecture should keep that streaming pipeline in Elixir/`:crypto`
+unless profiling proves a native boundary is necessary. The goal is one pass
+over the data, not a gratuitous media-specific NIF.
 
 **`Req` for HTTP.**
 Modern, composable HTTP client built on Mint/Finch. Supports streaming requests
@@ -149,7 +154,7 @@ defmodule BaileysEx.Media.Upload do
 
   defp request_upload_url(conn, media_type, file_size) do
     node = build_media_upload_node(media_type, file_size)
-    Connection.Socket.send_node_and_wait(conn, node)
+    Connection.Socket.query(conn, node)
   end
 end
 ```

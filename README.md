@@ -2,14 +2,7 @@
 
 In-progress Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) — a WhatsApp Web API library.
 
-- **Foundation phase** is complete
-- **Crypto** is complete for the current Phase 2 scope
-- **Protocol layer and Noise transport foundations** are implemented in-tree for the current scope
-- **Signal Phase 5 is complete for the current scope**: repository/address boundary, Local Identifier (LID) mapping, session migration, sender-key group crypto, TOFU identity handling, the runtime store contract, fixture-backed Baileys cross-validation, and narrow verification helpers
-- **Connection Phase 6 is complete for its current scope**: config defaults, the 3-byte frame codec, the Mint-backed WebSocket transport, the rc.9-style socket state machine, QR / `pair-device` / `pair-success` auth-coupled socket flow, `connection.update` sequencing, keep-alive/logout/offline/presence/send-node/query foundations, the reconnecting wrapper, the ETS-backed runtime store, init queries, dirty-bit handling, and the `connecting -> awaiting_initial_sync -> syncing -> online` runtime choreography are now in-tree
 - Targets Elixir 1.19+ / OTP 28
-
-> **Status:** Phases 1-6 are complete for their current scope. The next remaining work starts in Phase 7 auth persistence / pre-key upload and Phase 8's wider receive pipeline, where the rest of the Baileys 7.0.0-rc.9 message/runtime contract lives. See `dev/implementation_plan/PROGRESS.md`.
 
 ## Target Architecture
 
@@ -78,6 +71,8 @@ mix deps.get
 mix compile
 mix test
 ```
+
+Implementation planning and contributor workflow live under `dev/implementation_plan/`.
 
 Reference source in `dev/reference/Baileys-master/` (not tracked in git).
 

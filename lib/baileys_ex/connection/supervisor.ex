@@ -9,6 +9,7 @@ defmodule BaileysEx.Connection.Supervisor do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
 
   @spec start_link(keyword()) :: Elixir.Supervisor.on_start()
   def start_link(opts) when is_list(opts) do
@@ -27,15 +28,20 @@ defmodule BaileysEx.Connection.Supervisor do
   def init(opts) do
     instance_id = Keyword.get(opts, :name, make_ref())
     socket_module = Keyword.get(opts, :socket_module, Socket)
+    signal_store_module = Keyword.get(opts, :signal_store_module, SignalStoreMemory)
+    signal_store_opts = Keyword.get(opts, :signal_store_opts, [])
     coordinator_name = {:global, {__MODULE__, instance_id, Coordinator}}
     emitter_name = {:global, {__MODULE__, instance_id, EventEmitter}}
     store_name = {:global, {__MODULE__, instance_id, Store}}
     task_supervisor_name = {:global, {__MODULE__, instance_id, Task.Supervisor}}
+    signal_store_name = {:global, {__MODULE__, instance_id, signal_store_module}}
 
     socket_opts =
       opts
-      |> Keyword.drop([:name, :socket_module])
+      |> Keyword.drop([:name, :socket_module, :signal_store_module, :signal_store_opts])
       |> Keyword.put_new(:event_emitter, emitter_name)
+      |> Keyword.put_new(:signal_store, {signal_store_module, signal_store_name})
+      |> Keyword.put_new(:task_supervisor, task_supervisor_name)
 
     children = [
       Elixir.Supervisor.child_spec({socket_module, socket_opts}, id: socket_module),
@@ -43,6 +49,10 @@ defmodule BaileysEx.Connection.Supervisor do
         id: Store
       ),
       Elixir.Supervisor.child_spec({EventEmitter, [name: emitter_name]}, id: EventEmitter),
+      Elixir.Supervisor.child_spec(
+        {signal_store_module, Keyword.put_new(signal_store_opts, :name, signal_store_name)},
+        id: signal_store_module
+      ),
       Elixir.Supervisor.child_spec({Task.Supervisor, name: task_supervisor_name},
         id: Task.Supervisor
       ),
@@ -54,6 +64,7 @@ defmodule BaileysEx.Connection.Supervisor do
            supervisor: self(),
            event_emitter: emitter_name,
            store: store_name,
+           signal_store: {signal_store_module, signal_store_name},
            socket_module: socket_module,
            task_supervisor: task_supervisor_name
          ]},

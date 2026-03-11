@@ -55,11 +55,11 @@ defmodule BaileysEx.Auth.State do
     signed_identity_key: %{public: binary(), private: binary()},
     signed_pre_key: %{key_pair: map(), key_id: integer(), signature: binary()},
     registration_id: non_neg_integer(),
-    adv_secret_key: binary(),
+    adv_secret_key: String.t(),
     next_pre_key_id: non_neg_integer(),
     first_unuploaded_pre_key_id: non_neg_integer(),
     account: map() | nil,
-    me: JID.t() | nil,
+    me: map() | nil,
     signal_identities: [map()],
     platform: String.t() | nil,
     last_account_sync_timestamp: integer() | nil,
@@ -77,18 +77,18 @@ defmodule BaileysEx.Auth.State do
   defstruct [...]
 
   def new do
-    noise_key = BaileysEx.Crypto.generate_key_pair()
-    identity_key = BaileysEx.Crypto.generate_key_pair()
-    signed_pre_key = BaileysEx.Crypto.signed_key_pair(identity_key)
-    registration_id = :rand.uniform(16380) + 1
+    noise_key = BaileysEx.Signal.Curve.generate_key_pair()
+    identity_key = BaileysEx.Signal.Curve.generate_key_pair()
+    {:ok, signed_pre_key} = BaileysEx.Signal.Curve.signed_key_pair(identity_key, 1)
+    <<registration_id::unsigned-integer-size(16)>> = BaileysEx.Crypto.random_bytes(2)
 
     %__MODULE__{
       noise_key: noise_key,
-      pairing_ephemeral_key: BaileysEx.Crypto.generate_key_pair(),
+      pairing_ephemeral_key: BaileysEx.Signal.Curve.generate_key_pair(),
       signed_identity_key: identity_key,
-      signed_pre_key: %{key_pair: signed_pre_key, key_id: 1, signature: signed_pre_key.signature},
-      registration_id: registration_id,
-      adv_secret_key: BaileysEx.Crypto.random_bytes(32),
+      signed_pre_key: signed_pre_key,
+      registration_id: Bitwise.band(registration_id, 16_383),
+      adv_secret_key: BaileysEx.Crypto.random_bytes(32) |> Base.encode64(),
       processed_history_messages: [],
       next_pre_key_id: 1,
       first_unuploaded_pre_key_id: 1,
@@ -97,7 +97,9 @@ defmodule BaileysEx.Auth.State do
       registered: false,
       pairing_code: nil,
       last_prop_hash: nil,
-      routing_info: nil
+      routing_info: nil,
+      my_app_state_key_id: nil,
+      additional_data: nil
     }
   end
 end
@@ -109,11 +111,11 @@ File: `lib/baileys_ex/auth/persistence.ex`
 
 ```elixir
 defmodule BaileysEx.Auth.Persistence do
-  @callback load_credentials() :: {:ok, Auth.State.t()} | {:error, :not_found}
+  @callback load_credentials() :: {:ok, Auth.State.t()} | {:error, term()}
   @callback save_credentials(Auth.State.t()) :: :ok | {:error, term()}
-  @callback load_keys(type :: atom(), id :: term()) :: {:ok, binary()} | {:error, :not_found}
-  @callback save_keys(type :: atom(), id :: term(), data :: binary()) :: :ok
-  @callback delete_keys(type :: atom(), id :: term()) :: :ok
+  @callback load_keys(type :: atom(), id :: term()) :: {:ok, term()} | {:error, term()}
+  @callback save_keys(type :: atom(), id :: term(), data :: term()) :: :ok | {:error, term()}
+  @callback delete_keys(type :: atom(), id :: term()) :: :ok | {:error, term()}
 end
 ```
 
@@ -125,35 +127,36 @@ File: `lib/baileys_ex/auth/file_persistence.ex`
 defmodule BaileysEx.Auth.FilePersistence do
   @behaviour BaileysEx.Auth.Persistence
 
-  # Stores each key type in a separate file within a directory
-  # Uses JSON with explicit binary encoding/decoding (Baileys BufferJSON-style)
-  # so credentials remain inspectable on disk.
-  # File access is guarded by a per-path mutex because async reads/writes can race.
-  # Atomic writes still use write-to-temp-then-rename once data is encoded.
+  # Missing creds.json initializes fresh credentials, matching
+  # Baileys `useMultiFileAuthState`.
+  # Each key type/id pair is stored in a separate sanitized JSON file.
+  # JSON encoding uses explicit BufferJSON-style binary tagging so the files
+  # stay inspectable while round-tripping arbitrary auth/key-store terms.
+  # File access is guarded by a per-path mutex; writes use temp-file-then-rename.
 end
 ```
 
 ### 7.4 Reuse QR pairing helpers at the auth boundary
 
-File: `lib/baileys_ex/auth/qr.ex` (extend the existing helper only if the auth layer needs extra formatting utilities)
+Files: `lib/baileys_ex/auth/qr.ex`, `lib/baileys_ex/auth/pairing.ex`
 
 Flow:
 1. Phase 6 socket reaches `:authenticating` and emits rc.9 QR updates
 2. `Auth.QR` remains the shared payload formatter for `ref,public_key,identity_key,adv_secret`
-3. Phase 7 wires persistence and user-facing auth flows around those emitted QR updates
-4. On `pair-success`, persist the extracted credentials and auth metadata needed for later reconnects
+3. `Auth.QR.generate/2` accepts either raw 32-byte ADV secrets or the persisted base64 string form without double-encoding
+4. `Auth.Pairing.configure_successful_pairing/2` remains the `pair-success` verifier/signing helper; the runtime persists the emitted `creds_update` payload around it
 
 ```elixir
 defmodule BaileysEx.Auth.QR do
   @doc """
   Shared QR payload formatter used by Connection.Socket and auth-facing flows.
   """
-  def generate_qr_data(ref, auth_state) do
+  def generate(ref, auth_state) do
     [
       ref,
       Base.encode64(auth_state.noise_key.public),
       Base.encode64(auth_state.signed_identity_key.public),
-      Base.encode64(auth_state.adv_secret_key)
+      auth_state.adv_secret_key
     ]
     |> Enum.join(",")
   end
@@ -165,25 +168,27 @@ end
 File: `lib/baileys_ex/auth/phone.ex`
 
 Flow:
-1. User calls `BaileysEx.request_pairing_code(conn, phone_number)`
-2. Generate pairing ephemeral key pair
-3. Send pairing request node to server
-4. Server returns pairing code
-5. User enters code in WhatsApp mobile
-6. Key derivation via PBKDF2 (131,072 iterations)
-7. Complete pairing
+1. User calls `Connection.Socket.request_pairing_code/3` while the socket is `:authenticating`
+2. `Auth.Phone.build_pairing_request/4` generates or validates the 8-char pairing code, derives the wrapped companion ephemeral key via PBKDF2-SHA256 (131,072 iterations), and builds the `link_code_companion_reg` companion-hello IQ
+3. The socket emits `creds_update` with `pairing_code` and `me`, then sends the companion-hello node
+4. WhatsApp later sends a `notification/link_code_companion_reg` auth node with the wrapped primary ephemeral key
+5. `Auth.Phone.complete_pairing/2` deciphers that payload, derives the new ADV secret, and builds the companion-finish IQ
+6. `Connection.Socket` sends the companion-finish node as a query, waits for the server result, and only then emits `creds_update` with `registered: true`
 
 ### 7.6 Pre-key upload
 
-File: `lib/baileys_ex/signal/prekey.ex` (extend from Phase 5)
+Files: `lib/baileys_ex/signal/prekey.ex`, `lib/baileys_ex/connection/socket.ex`, `lib/baileys_ex/connection/supervisor.ex`
 
 Upload pre-keys to WhatsApp server after authentication:
 - Check server's pre-key count
 - Generate batch of new pre-keys if needed
 - Upload via binary node
 - Track uploaded key IDs in auth state
-- Run the sync on socket open and serialize concurrent upload attempts, matching
-  the v7 pre-key synchronization hardening work
+- Run the sync inside `Connection.Socket`'s post-success path, before `connection.update(:open)`,
+  so the order matches rc.9: `count -> upload_if_required -> passive(active) -> digest -> open`
+- Serialize concurrent upload attempts and bound the upload work with the explicit 30s timeout used by Baileys
+- Phase 7 currently uses the existing `Signal.Store.Memory` child for runtime pre-key material;
+  Phase 7.7 replaces that narrow runtime child with the richer transactional key-store wrapper
 
 ### 7.7 Transactional Signal Key Storage (GAP-44)
 
@@ -194,80 +199,53 @@ Baileys wraps Signal key state operations in transactions using `AsyncLocalStora
 conditions and database locks during massive parallel read/write bursts seen in
 history sync and group messaging.
 
-Our Elixir approach: GenServer per key type that serializes writes and caches
-reads within a transaction window. Uses `Ecto.Multi` or similar for atomic
-commits when backed by a database.
+Our Elixir approach is a persistence-backed `Signal.Store` implementation:
+- ETS read-through cache for hot reads and cached misses
+- caller-local transaction context via process dictionary, mirroring the Baileys
+  transaction-cache behavior
+- per-transaction-key mutexing in the owner process so overlapping history/app-state
+  bursts serialize cleanly
+- commit retry plus snapshot rollback to restore the previous persisted view if
+  a batch write fails
+- pre-key deletion safeguards matching Baileys `PreKeyManager`
+- runtime injection seam in `Connection.Supervisor` so the connection stack can
+  host either the persistent store or the in-memory store
 
 ```elixir
 defmodule BaileysEx.Auth.KeyStore do
-  @moduledoc """
-  Transactional Signal key storage. Wraps the persistence behaviour with
-  caching and serialized writes to prevent race conditions during heavy
-  sync operations (history sync, group message bursts).
+  @behaviour BaileysEx.Signal.Store
 
-  Each key type (session, pre-key, sender-key, etc.) gets its own serialized
-  queue to prevent cross-type contention while maintaining per-type ordering.
-  """
-
-  use GenServer
-
-  @key_types [
-    :session,
-    :pre_key,
-    :signed_pre_key,
-    :sender_key,
-    :sender_key_memory,
-    :app_state_sync_key,
-    :app_state_sync_version,
-    :lid_mapping,
-    :device_list,
-    :identity_key,
-    :tctoken
-  ]
-
-  defstruct [
-    :persistence_module,  # User's Auth.Persistence implementation
-    :cache,               # ETS table for read-through cache
-    :pending_writes,      # Accumulated writes within current transaction
-    :in_transaction?      # Whether we're inside a transaction
-  ]
-
-  @doc "Start a transaction: caches reads, batches writes"
-  def transaction(store, fun) do
-    GenServer.call(store, {:transaction, fun}, :infinity)
-  end
-
-  @doc "Read within transaction (cache-first)"
-  def get(store, type, ids) when type in @key_types do
-    GenServer.call(store, {:get, type, ids})
-  end
-
-  @doc "Write within transaction (buffered until commit)"
-  def set(store, type, data) when type in @key_types do
-    GenServer.call(store, {:set, type, data})
-  end
-
-  # GenServer callbacks serialize all operations per-store.
-  # During transaction:
-  #   - Reads check pending_writes first, then cache, then persistence
-  #   - Writes accumulate in pending_writes
-  #   - On commit: flush all pending_writes to persistence atomically
-  #   - On rollback: discard pending_writes, clear cache entries
+  # `start_link/1` accepts a persistence module plus optional context. If the
+  # module exports context-aware `load_keys/save_keys/delete_keys` arities
+  # (`3/4/3`), the store uses those; otherwise it falls back to the plain
+  # `Auth.Persistence` callback arities.
   #
-  # For database-backed persistence, commit uses Ecto.Multi for atomicity.
-  # For file-backed persistence, commit writes sequentially with fsync.
+  # Reads:
+  #   - hit ETS directly for cached values and cached misses
+  #   - load missing ids from persistence and populate ETS
   #
-  # Retry logic: on "database is locked" errors, retry with exponential
-  # backoff (matching Baileys' commitWithRetry behavior).
+  # Transactions:
+  #   - reuse nested transaction contexts
+  #   - cache fetched ids in the caller process
+  #   - buffer writes until commit
+  #   - serialize by transaction key
   #
-  # Pre-key deletions get specialized validation so we do not enqueue deletes
-  # for keys that never existed, matching Baileys' PreKeyManager safeguards.
+  # Commits:
+  #   - snapshot the previous persisted values for touched ids
+  #   - apply writes/deletes
+  #   - on failure, restore the previous snapshot and retry
+  #
+  # Pre-keys:
+  #   - outside transactions, only delete ids that actually exist
+  #   - inside transactions, only delete ids already present in the transaction cache
 end
 ```
 
 ### 7.8 Connection validation (login/registration nodes)
 
-File: `lib/baileys_ex/auth/connection_validator.ex`
+Files: `lib/baileys_ex/auth/connection_validator.ex`,
+`lib/baileys_ex/protocol/proto/client_payload_messages.ex`,
+`lib/baileys_ex/connection/config.ex`, `lib/baileys_ex/connection/socket.ex`
 
 Constructs login and registration payloads sent after the Noise handshake completes.
 These are the first application-level messages exchanged with WhatsApp servers.
@@ -278,100 +256,89 @@ defmodule BaileysEx.Auth.ConnectionValidator do
   Constructs login and registration payloads sent after Noise handshake.
   """
 
-  @doc "Build login payload for returning users (have credentials)"
-  def generate_login_node(me_jid, config) do
-    # ClientPayload protobuf with:
-    # - username (user part of JID)
-    # - device (device ID)
-    # - passive: true (for login)
-    # - user_agent: browser info + platform type + app version
-    # - web_info: web_sub_platform
-  end
-
-  @doc "Build registration payload for new devices"
-  def generate_registration_node(creds, config) do
-    # ClientPayload with:
-    # - reg_data: registration ID, identity key, signed pre-key, device props
-    # - passive: false
-    # - device_pairing_data: app version config
-    # - user_agent: platform type mapping
-    # - history sync config: storage quota, inline payloads, chunk tuning
-  end
-
-  @doc "Process pair-success response: verify HMAC + ADV signatures, create reply"
-  def configure_successful_pairing(stanza, creds) do
-    # Parse pair-success binary node
-    # Validate HMAC using adv_secret_key
-    # Verify account signature (ADV)
-    # Verify device signature
-    # Append new signal identity (identifier + account signature key)
-    # Preserve returned platform and LID/JID identity data
-    # Construct reply node
-    # encode_signed_device_identity/2 omits the account signature key unless
-    # the reply specifically needs it
-    # Return updated credentials
-  end
+  # Minimal WAProto coverage for rc.9 handshake payloads now lives in
+  # `Protocol.Proto.ClientPayload` and `Protocol.Proto.DeviceProps`.
+  #
+  # `generate_login_node/2`:
+  #   - parses JID user/device into ClientPayload.username/device
+  #   - sets passive/pull/lid_db_migrated exactly like rc.9
+  #   - builds UserAgent/WebInfo from config.version/country_code/browser
+  #
+  # `generate_registration_node/2`:
+  #   - md5 hashes config.version for devicePairingData.buildHash
+  #   - encodes DeviceProps with requireFullSync/historySyncConfig/platformType
+  #   - carries registration id, identity key, and signed pre-key bytes
+  #
+  # `generate_client_payload/2` selects login vs registration from auth_state.me
+  # and returns the encoded binary fed into Noise.client_finish/2.
 end
 ```
 
 ### 7.9 Pre-key management (advanced)
 
-File: `lib/baileys_ex/signal/prekey.ex` (extend)
+Files: `lib/baileys_ex/signal/prekey.ex`, `lib/baileys_ex/connection/socket.ex`
 
 Additional pre-key management functions beyond basic upload, covering automatic
 replenishment and rotation:
 
 ```elixir
-# Additional pre-key management functions (in BaileysEx.Signal.PreKey or new module):
-
-@doc "Check server pre-key count and upload if needed"
-def upload_if_required(conn) do
-  # Query server for remaining pre-key count
-  # If below threshold, generate and upload batch
-  # Minimum interval between uploads to prevent spam
-end
-
-@doc "Rotate signed pre-key"
-def rotate_signed_pre_key(conn) do
-  # Generate new signed pre-key
-  # Upload to server via IQ xmlns='encrypt'
-  # Emit :creds_update event
-end
-
-@doc "Send key bundle digest"
-def digest_key_bundle(conn) do
-  # IQ xmlns='encrypt' with digest of current key bundle
-end
+# `PreKey.digest_key_bundle/1`:
+#   - sends encrypt/get digest
+#   - treats a missing digest node as the rc.9 recovery case:
+#     upload pre-keys, then return an error
+#
+# `PreKey.rotate_signed_pre_key/1`:
+#   - increments the signed pre-key id
+#   - generates a fresh signed pre-key from signed_identity_key
+#   - sends encrypt/set rotate<skey>
+#   - emits creds_update with the new signed_pre_key
+#
+# `Connection.Socket` now owns the rc.9 post-auth sequencing:
+#   - awaits the passive IQ result before emitting `connection.update(:open)`
+#   - runs digest validation after the pre-key upload check
+#   - handles low pre-key server notifications without routing them through the wrapper
 ```
 
 ### 7.10 Tests
 
-- Auth state creation with valid crypto keys
-- Persistence save/load roundtrip (file-based)
-- QR data generation matches expected format
-- Pre-key upload node construction
-- Phone pairing PBKDF2 key derivation against test vectors
+- [x] Auth state creation with valid crypto keys
+- [x] Persistence save/load roundtrip (file-based)
+- [x] File persistence binary encoding, sanitized file names, and concurrent write coverage
+- [x] QR data generation matches expected format
+- [x] Phone pairing PBKDF2 key derivation against test vectors
+- [x] Phone pairing companion-hello and companion-finish node coverage
+- [x] Pre-key upload node construction
+- [x] Connection-socket pre-key upload ordering coverage
+- [x] Login payload generation and socket handshake coverage
+- [x] Registration payload generation and device-props coverage
+- [x] Open-path digest validation coverage
+- [x] Signed pre-key rotation coverage
+- [x] Explicit pre-key upload timeout coverage
+- [x] Transactional key-store persistence, rollback, and cache coverage
+- [x] Persistent key-store integration coverage through the connection supervisor
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] New auth state generates valid crypto keys
-- [ ] File persistence saves and loads credentials correctly
-- [ ] File persistence serializes binaries safely and guards per-file writes with a mutex
+- [x] New auth state generates valid crypto keys
+- [x] File persistence saves and loads credentials correctly
+- [x] File persistence serializes binaries safely and guards per-file writes with a mutex
 - [x] QR code data format matches WhatsApp expectations
-- [ ] Phone pairing key derivation matches Baileys output
-- [ ] Pre-key upload constructs correct binary nodes
-- [ ] Custom persistence backend can be swapped via behaviour
-- [ ] Login node constructed correctly for returning users
-- [ ] Registration node includes device props, history sync config, platform type
+- [x] Phone pairing key derivation matches Baileys output
+- [x] Pre-key upload constructs correct binary nodes
+- [x] Custom persistence backend can be swapped via behaviour
+- [x] Login node constructed correctly for returning users
+- [x] Registration node includes device props, history sync config, platform type
 - [x] Pair-success HMAC and ADV signature verification passes
-- [ ] Pre-key upload triggered automatically when server count is low
-- [ ] Signed pre-key rotation works correctly
-- [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
-- [ ] Transaction commits are atomic (Ecto.Multi for DB, sequential for files)
-- [ ] Read-through cache prevents redundant persistence lookups during sync
-- [ ] Key store supports lid-mapping, device-list, identity-key, sender-key-memory, and tctoken datasets
+- [x] Companion-finish waits for an IQ result before `registered: true` is persisted
+- [x] Pre-key upload triggered automatically when server count is low
+- [x] Socket delays `connection.update(:open)` until the rc.9 pre-key upload / passive / digest sequence completes
+- [x] Signed pre-key rotation works correctly
+- [x] Key store transactions serialize concurrent read/write bursts (GAP-44)
+- [x] Transaction commits roll back to the previous persisted snapshot on failure (GAP-44)
+- [x] Read-through cache prevents redundant persistence lookups during sync
+- [x] Key store supports lid-mapping, device-list, identity-key, sender-key-memory, and tctoken datasets
 
 ## Files Created/Modified
 
@@ -381,9 +348,21 @@ end
 - `lib/baileys_ex/auth/pairing.ex`
 - `lib/baileys_ex/auth/qr.ex`
 - `lib/baileys_ex/auth/phone.ex`
+- `lib/baileys_ex/auth/connection_validator.ex`
 - `lib/baileys_ex/signal/prekey.ex` (extend)
+- `lib/baileys_ex/protocol/proto/client_payload_messages.ex`
+- `lib/baileys_ex/connection/socket.ex`
+- `lib/baileys_ex/connection/config.ex`
+- `lib/baileys_ex/connection/coordinator.ex`
+- `lib/baileys_ex/connection/supervisor.ex`
 - `test/baileys_ex/auth/state_test.exs`
 - `test/baileys_ex/auth/file_persistence_test.exs`
+- `test/baileys_ex/auth/key_store_test.exs`
 - `test/baileys_ex/auth/qr_test.exs`
-- `lib/baileys_ex/auth/connection_validator.ex`
+- `test/baileys_ex/auth/phone_test.exs`
+- `test/baileys_ex/auth/connection_validator_test.exs`
+- `test/baileys_ex/auth/connection_validator_runtime_test.exs`
+- `test/baileys_ex/connection/socket_test.exs`
+- `test/baileys_ex/connection/supervisor_test.exs`
+- `test/baileys_ex/signal/prekey_test.exs`
 - `lib/baileys_ex/auth/key_store.ex`

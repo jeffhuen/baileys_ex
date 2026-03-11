@@ -5,6 +5,8 @@ defmodule BaileysEx.Connection.Store do
 
   use GenServer
 
+  alias BaileysEx.Auth.State, as: AuthState
+
   defmodule Ref do
     @moduledoc """
     Read-only reference to a connection store ETS table.
@@ -80,7 +82,7 @@ defmodule BaileysEx.Connection.Store do
 
     persist_entries(table, %{
       auth_state: auth_state,
-      creds: get_in(auth_state, [:creds]) || %{},
+      creds: AuthState.creds_view(auth_state),
       connection_name: Keyword.get(opts, :connection_name)
     })
 
@@ -97,9 +99,8 @@ defmodule BaileysEx.Connection.Store do
 
   def handle_call({:merge_creds, updates}, _from, state) do
     current_auth_state = lookup(state.table, :auth_state, %{})
-    current_creds = lookup(state.table, :creds, %{})
-    merged_creds = merge_maps(current_creds, updates)
-    merged_auth_state = merge_maps(current_auth_state, %{creds: merged_creds})
+    merged_auth_state = AuthState.merge_updates(current_auth_state, updates)
+    merged_creds = AuthState.creds_view(merged_auth_state)
 
     persist_entries(state.table, %{auth_state: merged_auth_state, creds: merged_creds})
 
@@ -128,15 +129,5 @@ defmodule BaileysEx.Connection.Store do
     |> Enum.each(fn {key, value} -> true = :ets.insert(table, {key, value}) end)
 
     :ok
-  end
-
-  defp merge_maps(left, right) when is_map(left) and is_map(right) do
-    Map.merge(left, right, fn _key, left_value, right_value ->
-      if is_map(left_value) and is_map(right_value) do
-        merge_maps(left_value, right_value)
-      else
-        right_value
-      end
-    end)
   end
 end

@@ -14,18 +14,29 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  alias BaileysEx.Signal.Store, as: SignalStore
+  alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
 
   @s_whatsapp_net "s.whatsapp.net"
 
   defmodule State do
     @moduledoc false
 
-    @enforce_keys [:config, :event_emitter, :socket_module, :store, :supervisor, :task_supervisor]
+    @enforce_keys [
+      :config,
+      :event_emitter,
+      :socket_module,
+      :store,
+      :supervisor,
+      :task_supervisor,
+      :signal_store
+    ]
     defstruct [
       :config,
       :event_emitter,
       :socket_module,
       :store,
+      :signal_store,
       :store_ref,
       :supervisor,
       :task_supervisor,
@@ -54,6 +65,7 @@ defmodule BaileysEx.Connection.Coordinator do
       event_emitter: Keyword.fetch!(opts, :event_emitter),
       socket_module: Keyword.get(opts, :socket_module, Socket),
       store: Keyword.fetch!(opts, :store),
+      signal_store: Keyword.fetch!(opts, :signal_store),
       supervisor: Keyword.fetch!(opts, :supervisor),
       task_supervisor: Keyword.fetch!(opts, :task_supervisor)
     }
@@ -72,6 +84,7 @@ defmodule BaileysEx.Connection.Coordinator do
       state
       |> Map.put(:unsubscribe, unsubscribe)
       |> Map.put(:store_ref, Store.wrap(state.store))
+      |> Map.put(:signal_store, wrap_signal_store(state.signal_store))
       |> Map.put(:reconnect_timer, nil)
 
     {:noreply, connect_socket(state)}
@@ -79,9 +92,12 @@ defmodule BaileysEx.Connection.Coordinator do
 
   @impl true
   def handle_info({:events, events}, %State{} = state) when is_map(events) do
+    previous_creds = Store.get(state.store_ref, :creds, %{})
+
     state =
       state
       |> persist_creds_update(events)
+      |> maybe_send_push_name_presence_update(previous_creds, events)
       |> handle_connection_update(events)
       |> handle_sync_event(events)
       |> handle_dirty_update(events)
@@ -384,6 +400,29 @@ defmodule BaileysEx.Connection.Coordinator do
     end)
   end
 
+  defp maybe_send_push_name_presence_update(
+         %State{} = state,
+         previous_creds,
+         %{creds_update: %{me: me_update}}
+       )
+       when is_map(previous_creds) and is_map(me_update) do
+    previous_name = nested_name(previous_creds)
+    next_name = nested_name(%{me: me_update})
+
+    if is_binary(next_name) and next_name != "" and next_name != previous_name do
+      node = %BinaryNode{tag: "presence", attrs: %{"name" => next_name}, content: nil}
+
+      case fetch_socket_pid(state) do
+        {:ok, socket_pid} -> _ = state.socket_module.send_node(socket_pid, node)
+        :error -> :ok
+      end
+    end
+
+    state
+  end
+
+  defp maybe_send_push_name_presence_update(%State{} = state, _previous_creds, _events), do: state
+
   defp send_clean_dirty_bits(%State{} = state, type, from_timestamp \\ nil)
        when is_binary(type) do
     attrs =
@@ -435,4 +474,27 @@ defmodule BaileysEx.Connection.Coordinator do
       _ -> nil
     end)
   end
+
+  defp wrap_signal_store(nil), do: nil
+  defp wrap_signal_store(%SignalStore{} = signal_store), do: signal_store
+
+  defp wrap_signal_store({module, server}) when is_atom(module) do
+    pid = GenServer.whereis(server)
+
+    if is_pid(pid) and function_exported?(module, :wrap, 1) do
+      %SignalStore{module: module, ref: module.wrap(pid)}
+    else
+      nil
+    end
+  end
+
+  defp wrap_signal_store(server) do
+    wrap_signal_store({SignalStoreMemory, server})
+  end
+
+  defp nested_name(%{me: %{name: name}}) when is_binary(name), do: name
+  defp nested_name(%{me: %{"name" => name}}) when is_binary(name), do: name
+  defp nested_name(%{"me" => %{name: name}}) when is_binary(name), do: name
+  defp nested_name(%{"me" => %{"name" => name}}) when is_binary(name), do: name
+  defp nested_name(_creds), do: nil
 end

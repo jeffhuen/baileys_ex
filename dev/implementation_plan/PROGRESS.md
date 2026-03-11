@@ -18,7 +18,7 @@
 | 4 | Noise NIF | 6 | IN PROGRESS | 1 | 6 |
 | 5 | Signal Protocol | 8 | COMPLETE | 1, 2 | 7, 8 |
 | 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
-| 7 | Authentication | 10 | NOT STARTED | 5, 6 | 8 |
+| 7 | Authentication | 10 | COMPLETE | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | NOT STARTED | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | NOT STARTED | 2, 8 | 12 |
 | 10 | Features | 17 | NOT STARTED | 8 | 11 |
@@ -339,56 +339,70 @@ falsely marked as implemented here.
 
 ## Phase 7: Authentication
 
-**Status:** NOT STARTED (aside from the connection-coupled `Auth.QR` / `Auth.Pairing` helpers landed in Phase 6) · **Depends on:** Phases 5, 6 · **Blocks:** 8
+**Status:** COMPLETE · **Depends on:** Phases 5, 6 · **Blocks:** 8
 
 ### Tasks
 
-- [ ] 7.1 Auth state struct
-- [ ] 7.2 Persistence behaviour
-- [ ] 7.3 File-based persistence (default)
-- [ ] 7.4 QR code pairing
-- [ ] 7.5 Phone number pairing
-- [ ] 7.6 Pre-key upload
-- [ ] 7.7 Transactional Signal Key Storage (GAP-44)
-- [ ] 7.8 Connection validation (login/registration nodes)
-- [ ] 7.9 Pre-key management (advanced — rotation, min count)
-- [ ] 7.10 Tests
+- [x] 7.1 Auth state struct
+- [x] 7.2 Persistence behaviour
+- [x] 7.3 File-based persistence (default)
+- [x] 7.4 QR code pairing
+- [x] 7.5 Phone number pairing
+- [x] 7.6 Pre-key upload
+- [x] 7.7 Transactional Signal Key Storage (GAP-44)
+- [x] 7.8 Connection validation (login/registration nodes)
+- [x] 7.9 Pre-key management (advanced — rotation, min count)
+- [x] 7.10 Tests
 
 ### Acceptance Criteria
 
-- [ ] New auth state generates valid crypto keys
-- [ ] File persistence saves and loads credentials correctly
-- [ ] File persistence serializes binaries safely and guards per-file writes with a mutex
+- [x] New auth state generates valid crypto keys
+- [x] File persistence saves and loads credentials correctly
+- [x] File persistence serializes binaries safely and guards per-file writes with a mutex
 - [x] QR code data format matches WhatsApp expectations
-- [ ] Phone pairing key derivation matches Baileys output
-- [ ] Pre-key upload constructs correct binary nodes
-- [ ] Custom persistence backend can be swapped via behaviour
-- [ ] Login node constructed correctly for returning users
-- [ ] Registration node includes device props, history sync config, platform type
+- [x] Phone pairing key derivation matches Baileys output
+- [x] Pre-key upload constructs correct binary nodes
+- [x] Custom persistence backend can be swapped via behaviour
+- [x] Login node constructed correctly for returning users
+- [x] Registration node includes device props, history sync config, platform type
 - [x] Pair-success HMAC and ADV signature verification passes
-- [ ] Pre-key upload triggered automatically when server count is low
-- [ ] Signed pre-key rotation works correctly
-- [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
-- [ ] Transaction commits are atomic (GAP-44)
-- [ ] Read-through cache prevents redundant persistence lookups during sync
-- [ ] Key store supports lid-mapping, device-list, identity-key, sender-key-memory, and tctoken datasets
+- [x] Companion-finish waits for the query result before `registered: true` is emitted
+- [x] Pre-key upload triggered automatically when server count is low
+- [x] Socket-owned post-auth pre-key ordering matches rc.9 before `connection.update(:open)`
+- [x] Signed pre-key rotation works correctly
+- [x] Key store transactions serialize concurrent read/write bursts (GAP-44)
+- [x] Transaction commits roll back to the previous persisted snapshot on failure (GAP-44)
+- [x] Read-through cache prevents redundant persistence lookups during sync
+- [x] Key store supports lid-mapping, device-list, identity-key, sender-key-memory, and tctoken datasets
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `lib/baileys_ex/auth/state.ex` | ⬜ |
-| `lib/baileys_ex/auth/persistence.ex` | ⬜ |
-| `lib/baileys_ex/auth/file_persistence.ex` | ⬜ |
-| `lib/baileys_ex/auth/pairing.ex` | 🟡 |
-| `lib/baileys_ex/auth/qr.ex` | 🟡 |
-| `lib/baileys_ex/auth/phone.ex` | ⬜ |
-| `lib/baileys_ex/auth/key_store.ex` | ⬜ |
-| `lib/baileys_ex/auth/connection_validator.ex` | ⬜ |
-| `lib/baileys_ex/signal/prekey.ex` (extend) | ⬜ |
-| `test/baileys_ex/auth/state_test.exs` | ⬜ |
-| `test/baileys_ex/auth/file_persistence_test.exs` | ⬜ |
-| `test/baileys_ex/auth/qr_test.exs` | ⬜ |
+| `lib/baileys_ex/auth/state.ex` | ✅ |
+| `lib/baileys_ex/auth/persistence.ex` | ✅ |
+| `lib/baileys_ex/auth/file_persistence.ex` | ✅ |
+| `lib/baileys_ex/auth/pairing.ex` | ✅ |
+| `lib/baileys_ex/auth/qr.ex` | ✅ |
+| `lib/baileys_ex/auth/phone.ex` | ✅ |
+| `lib/baileys_ex/auth/key_store.ex` | ✅ |
+| `lib/baileys_ex/auth/connection_validator.ex` | ✅ |
+| `lib/baileys_ex/protocol/proto/client_payload_messages.ex` | ✅ |
+| `lib/baileys_ex/connection/config.ex` | ✅ |
+| `lib/baileys_ex/signal/prekey.ex` (extend) | ✅ |
+| `lib/baileys_ex/connection/socket.ex` | ✅ |
+| `lib/baileys_ex/connection/coordinator.ex` | ✅ |
+| `lib/baileys_ex/connection/supervisor.ex` | ✅ |
+| `test/baileys_ex/auth/state_test.exs` | ✅ |
+| `test/baileys_ex/auth/file_persistence_test.exs` | ✅ |
+| `test/baileys_ex/auth/key_store_test.exs` | ✅ |
+| `test/baileys_ex/auth/qr_test.exs` | ✅ |
+| `test/baileys_ex/auth/phone_test.exs` | ✅ |
+| `test/baileys_ex/auth/connection_validator_test.exs` | ✅ |
+| `test/baileys_ex/auth/connection_validator_runtime_test.exs` | ✅ |
+| `test/baileys_ex/connection/socket_test.exs` | ✅ |
+| `test/baileys_ex/connection/supervisor_test.exs` | ✅ |
+| `test/baileys_ex/signal/prekey_test.exs` | ✅ |
 
 ---
 

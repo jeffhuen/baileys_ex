@@ -365,9 +365,8 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert :ok = EventEmitter.emit(emitter_pid, :connection_update, %{connection: :open})
 
     assert_receive {:fake_socket_presence_update, :available}
-    assert_receive {:fake_socket_query, %BinaryNode{attrs: %{"xmlns" => "w"}}, 60_000}
-    assert_receive {:fake_socket_query, %BinaryNode{attrs: %{"xmlns" => "blocklist"}}, 60_000}
-    assert_receive {:fake_socket_query, %BinaryNode{attrs: %{"xmlns" => "privacy"}}, 60_000}
+
+    assert_eventually_xmlns(["w", "blocklist", "privacy"])
 
     assert_eventually(fn ->
       Store.get(store_ref, :props) == %{"web:voip" => "1"} and
@@ -375,6 +374,29 @@ defmodule BaileysEx.Connection.SupervisorTest do
         Store.get(store_ref, :privacy_settings) == %{"last" => "contacts"} and
         Store.get(store_ref, :creds)[:last_prop_hash] == "next-prop-hash"
     end)
+  end
+
+  test "creds updates that change push name send a presence node through the socket" do
+    name = {:phase7_test, System.unique_integer([:positive])}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15551234567@s.whatsapp.net", name: "Old"}}},
+               socket_module: FakeSocket,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+
+    assert :ok = EventEmitter.emit(emitter_pid, :creds_update, %{me: %{name: "New"}})
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{tag: "presence", attrs: %{"name" => "New"}}}
   end
 
   test "account sync dirty updates last_account_sync_timestamp and cleans from the previous timestamp" do
@@ -468,4 +490,33 @@ defmodule BaileysEx.Connection.SupervisorTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition was not met in time")
+
+  defp assert_eventually_xmlns(expected, attempts \\ 20, seen \\ MapSet.new())
+
+  defp assert_eventually_xmlns(expected, attempts, seen) when attempts > 0 do
+    seen = drain_fake_socket_queries(seen)
+
+    if MapSet.equal?(seen, MapSet.new(expected)) do
+      assert true
+    else
+      Process.sleep(10)
+      assert_eventually_xmlns(expected, attempts - 1, seen)
+    end
+  end
+
+  defp assert_eventually_xmlns(expected, 0, seen) do
+    flunk(
+      "expected query xmlns #{inspect(Enum.sort(expected))}, got #{inspect(seen |> MapSet.to_list() |> Enum.sort())}"
+    )
+  end
+
+  defp drain_fake_socket_queries(seen) do
+    receive do
+      {:fake_socket_query, %BinaryNode{attrs: %{"xmlns" => xmlns}}, 60_000} ->
+        drain_fake_socket_queries(MapSet.put(seen, xmlns))
+    after
+      0 ->
+        seen
+    end
+  end
 end

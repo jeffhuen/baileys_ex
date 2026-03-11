@@ -14,18 +14,30 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  alias BaileysEx.Signal.PreKey
+  alias BaileysEx.Signal.Store, as: SignalStore
+  alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
 
   @s_whatsapp_net "s.whatsapp.net"
 
   defmodule State do
     @moduledoc false
 
-    @enforce_keys [:config, :event_emitter, :socket_module, :store, :supervisor, :task_supervisor]
+    @enforce_keys [
+      :config,
+      :event_emitter,
+      :socket_module,
+      :store,
+      :supervisor,
+      :task_supervisor,
+      :signal_store
+    ]
     defstruct [
       :config,
       :event_emitter,
       :socket_module,
       :store,
+      :signal_store,
       :store_ref,
       :supervisor,
       :task_supervisor,
@@ -54,6 +66,7 @@ defmodule BaileysEx.Connection.Coordinator do
       event_emitter: Keyword.fetch!(opts, :event_emitter),
       socket_module: Keyword.get(opts, :socket_module, Socket),
       store: Keyword.fetch!(opts, :store),
+      signal_store: Keyword.fetch!(opts, :signal_store),
       supervisor: Keyword.fetch!(opts, :supervisor),
       task_supervisor: Keyword.fetch!(opts, :task_supervisor)
     }
@@ -72,6 +85,7 @@ defmodule BaileysEx.Connection.Coordinator do
       state
       |> Map.put(:unsubscribe, unsubscribe)
       |> Map.put(:store_ref, Store.wrap(state.store))
+      |> Map.put(:signal_store, wrap_signal_store(state.signal_store))
       |> Map.put(:reconnect_timer, nil)
 
     {:noreply, connect_socket(state)}
@@ -132,6 +146,7 @@ defmodule BaileysEx.Connection.Coordinator do
     |> cancel_reconnect()
     |> maybe_execute_init_queries()
     |> maybe_send_presence_update()
+    |> maybe_upload_prekeys()
   end
 
   defp handle_connection_update(
@@ -273,6 +288,36 @@ defmodule BaileysEx.Connection.Coordinator do
       :error ->
         state
     end
+  end
+
+  defp maybe_upload_prekeys(%State{signal_store: nil} = state), do: state
+
+  defp maybe_upload_prekeys(%State{} = state) do
+    _ =
+      Task.Supervisor.start_child(state.task_supervisor, fn ->
+        with {:ok, socket_pid} <- fetch_socket_pid(state) do
+          _ =
+            PreKey.upload_if_required(
+              store: state.signal_store,
+              auth_state: Store.get(state.store_ref, :auth_state, %{}),
+              query_fun: fn node ->
+                state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms)
+              end,
+              emit_creds_update: fn update ->
+                EventEmitter.emit(state.event_emitter, :creds_update, update)
+              end,
+              upload_key: {:prekey_upload, state.supervisor},
+              get_last_upload_at: fn ->
+                Store.get(state.store_ref, :last_pre_key_upload_at)
+              end,
+              put_last_upload_at: fn timestamp ->
+                Store.put(state.store, :last_pre_key_upload_at, timestamp)
+              end
+            )
+        end
+      end)
+
+    state
   end
 
   defp init_query_work(%State{} = state) do
@@ -434,5 +479,18 @@ defmodule BaileysEx.Connection.Coordinator do
       {^socket_module, pid, _type, _modules} when is_pid(pid) -> pid
       _ -> nil
     end)
+  end
+
+  defp wrap_signal_store(nil), do: nil
+  defp wrap_signal_store(%SignalStore{} = signal_store), do: signal_store
+
+  defp wrap_signal_store(server) do
+    pid = GenServer.whereis(server)
+
+    if is_pid(pid) do
+      %SignalStore{module: SignalStoreMemory, ref: SignalStoreMemory.wrap(pid)}
+    else
+      nil
+    end
   end
 end

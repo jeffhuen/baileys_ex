@@ -11,7 +11,9 @@ defmodule BaileysEx.Connection.Socket do
 
   alias BaileysEx.BinaryNode
   alias BaileysEx.Auth.Pairing
+  alias BaileysEx.Auth.Phone
   alias BaileysEx.Auth.QR
+  alias BaileysEx.Auth.State, as: AuthState
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Transport
@@ -118,6 +120,13 @@ defmodule BaileysEx.Connection.Socket do
 
   @spec logout(GenServer.server()) :: :ok | {:error, :not_connected}
   def logout(server), do: :gen_statem.call(server, :logout)
+
+  @spec request_pairing_code(GenServer.server(), binary(), keyword()) ::
+          {:ok, binary()} | {:error, :not_connected | term()}
+  def request_pairing_code(server, phone_number, opts \\ [])
+      when is_binary(phone_number) and is_list(opts) do
+    :gen_statem.call(server, {:request_pairing_code, phone_number, opts})
+  end
 
   @spec send_node(GenServer.server(), BinaryNode.t()) :: :ok | {:error, :not_connected | term()}
   def send_node(server, %BinaryNode{} = node), do: :gen_statem.call(server, {:send_node, node})
@@ -319,6 +328,24 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  defp handle_call(:authenticating, from, {:request_pairing_code, phone_number, opts}, data)
+       when is_binary(phone_number) and is_list(opts) do
+    with {:ok, %{pairing_code: pairing_code, creds_update: creds_update, node: node}} <-
+           Phone.build_pairing_request(phone_number, data.auth_state, data.config, opts),
+         auth_state <- AuthState.merge_updates(data.auth_state, creds_update),
+         data = %{data | auth_state: auth_state},
+         :ok <- emit_event(data, :creds_update, creds_update),
+         {:ok, data} <- send_node_internal(data, node) do
+      {:keep_state, data, [{:reply, from, {:ok, pairing_code}}]}
+    else
+      {:error, reason, data} ->
+        {:keep_state, data, [{:reply, from, {:error, reason}}]}
+
+      {:error, reason} ->
+        {:keep_state, data, [{:reply, from, {:error, reason}}]}
+    end
+  end
+
   defp handle_call(_current_state, from, {:send_payload, _payload}, data) do
     {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
   end
@@ -332,6 +359,10 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp handle_call(_current_state, from, {:send_presence_update, _type}, data) do
+    {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
+  end
+
+  defp handle_call(_current_state, from, {:request_pairing_code, _phone_number, _opts}, data) do
     {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
   end
 
@@ -432,7 +463,7 @@ defmodule BaileysEx.Connection.Socket do
   defp apply_transport_event(current_state, _event, data), do: {:ok, current_state, data}
 
   defp start_noise_handshake(data) do
-    routing_info = get_in(data.auth_state, [:creds, :routing_info])
+    routing_info = AuthState.get(data.auth_state, :routing_info)
     noise_opts = Keyword.put_new(data.noise_opts, :routing_info, routing_info)
 
     with {:ok, noise} <- Noise.new(noise_opts),
@@ -521,6 +552,14 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  defp apply_binary_node(:authenticating, %BinaryNode{tag: "notification"} = node, data) do
+    if BinaryNodeUtil.child(node, "link_code_companion_reg") do
+      handle_phone_pairing_notification(node, data)
+    else
+      {:ok, :authenticating, data}
+    end
+  end
+
   defp apply_binary_node(current_state, %BinaryNode{tag: "iq"} = node, data) do
     {:ok, current_state, maybe_resolve_query(data, node)}
   end
@@ -587,7 +626,7 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp logout_connection(%__MODULE__{} = data) do
-    case get_in(data.auth_state, [:creds, :me, :id]) do
+    case me_id(data.auth_state) do
       jid when is_binary(jid) ->
         case send_node_internal(data, logout_node(jid)) do
           {:ok, data} ->
@@ -663,19 +702,25 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp send_pair_success_reply(%__MODULE__{} = data, %BinaryNode{} = reply, creds_update) do
-    auth_state_update = %{
-      creds: %{me: Map.get(creds_update, :me)},
-      account: Map.get(creds_update, :account),
-      platform: Map.get(creds_update, :platform),
-      signal_identities: Map.get(creds_update, :signal_identities)
-    }
-
-    data = %{data | auth_state: update_auth_state(data.auth_state, auth_state_update)}
+    data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)}
     emit_event(data, :creds_update, creds_update)
     emit_event(data, :connection_update, %{is_new_login: true, qr: nil})
 
     with {:ok, data} <- send_node_internal(data, reply) do
       send_unified_session(data)
+    end
+  end
+
+  defp handle_phone_pairing_notification(%BinaryNode{} = node, %__MODULE__{} = data) do
+    with {:ok, %{creds_update: creds_update, node: finish_node}} <-
+           Phone.complete_pairing(node, data.auth_state),
+         data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)},
+         :ok <- emit_event(data, :creds_update, creds_update),
+         {:ok, data} <- send_node_internal(data, finish_node) do
+      {:ok, :authenticating, data}
+    else
+      {:error, reason, data} -> {:error, reason, data}
+      {:error, reason} -> {:error, reason, data}
     end
   end
 
@@ -792,7 +837,7 @@ defmodule BaileysEx.Connection.Socket do
 
   defp send_presence_update_node(%__MODULE__{} = data, type)
        when type in [:available, :unavailable] do
-    me = get_in(data.auth_state, [:creds, :me]) || %{}
+    me = AuthState.get(data.auth_state, :me, %{}) || %{}
     name = me[:name] || me["name"]
 
     if is_binary(name) and name != "" do
@@ -881,8 +926,8 @@ defmodule BaileysEx.Connection.Socket do
   defp maybe_update_lid(data, nil), do: data
 
   defp maybe_update_lid(%__MODULE__{} = data, lid) when is_binary(lid) do
-    creds_update = %{me: merge_maps(get_in(data.auth_state, [:creds, :me]) || %{}, %{lid: lid})}
-    data = %{data | auth_state: update_auth_state(data.auth_state, %{creds: creds_update})}
+    creds_update = %{me: merge_maps(AuthState.get(data.auth_state, :me, %{}) || %{}, %{lid: lid})}
+    data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)}
     emit_event(data, :creds_update, creds_update)
     data
   end
@@ -891,7 +936,7 @@ defmodule BaileysEx.Connection.Socket do
     case edge_routing_node |> BinaryNodeUtil.child("routing_info") |> extract_binary_content() do
       routing_info when is_binary(routing_info) ->
         creds_update = %{routing_info: routing_info}
-        data = %{data | auth_state: update_auth_state(data.auth_state, %{creds: creds_update})}
+        data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)}
         emit_event(data, :creds_update, creds_update)
         data
 
@@ -907,12 +952,6 @@ defmodule BaileysEx.Connection.Socket do
 
   defp extract_binary_content(%BinaryNode{content: binary}) when is_binary(binary), do: binary
   defp extract_binary_content(%BinaryNode{}), do: nil
-
-  defp update_auth_state(auth_state, updates) when is_map(auth_state) and is_map(updates) do
-    merge_maps(auth_state, updates)
-  end
-
-  defp update_auth_state(_auth_state, updates), do: updates
 
   defp merge_maps(left, right) when is_map(left) and is_map(right) do
     Map.merge(left, right, fn _key, left_value, right_value ->
@@ -933,6 +972,14 @@ defmodule BaileysEx.Connection.Socket do
 
       _ ->
         data
+    end
+  end
+
+  defp me_id(auth_state) do
+    case AuthState.get(auth_state, :me) do
+      %{id: jid} when is_binary(jid) -> jid
+      %{"id" => jid} when is_binary(jid) -> jid
+      _ -> nil
     end
   end
 

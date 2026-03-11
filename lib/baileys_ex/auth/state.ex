@@ -1,0 +1,168 @@
+defmodule BaileysEx.Auth.State do
+  @moduledoc """
+  Authentication credential state matching the Baileys rc.9 auth envelope.
+  """
+
+  alias BaileysEx.Crypto
+  alias BaileysEx.Signal.Curve
+
+  @type key_pair :: %{public: binary(), private: binary()}
+  @type signed_key_pair :: %{
+          key_pair: key_pair(),
+          key_id: non_neg_integer(),
+          signature: binary()
+        }
+  @type signal_identity :: %{
+          identifier: %{name: binary(), device_id: non_neg_integer()},
+          identifier_key: binary()
+        }
+  @type account_settings :: %{
+          unarchive_chats: boolean(),
+          default_disappearing_mode: map() | nil
+        }
+
+  @type t :: %__MODULE__{
+          noise_key: key_pair(),
+          pairing_ephemeral_key: key_pair() | nil,
+          signed_identity_key: key_pair(),
+          signed_pre_key: signed_key_pair(),
+          registration_id: non_neg_integer(),
+          adv_secret_key: binary(),
+          account: map() | nil,
+          me: map() | nil,
+          signal_identities: [signal_identity()],
+          platform: binary() | nil,
+          last_account_sync_timestamp: integer() | nil,
+          processed_history_messages: [map()],
+          account_sync_counter: non_neg_integer(),
+          account_settings: account_settings(),
+          registered: boolean(),
+          pairing_code: binary() | nil,
+          last_prop_hash: binary() | nil,
+          routing_info: binary() | nil,
+          my_app_state_key_id: binary() | nil,
+          additional_data: term() | nil
+        }
+
+  defstruct [
+    :account,
+    :additional_data,
+    :last_account_sync_timestamp,
+    :last_prop_hash,
+    :me,
+    :my_app_state_key_id,
+    :pairing_code,
+    :platform,
+    :routing_info,
+    noise_key: nil,
+    pairing_ephemeral_key: nil,
+    signed_identity_key: nil,
+    signed_pre_key: nil,
+    registration_id: 0,
+    adv_secret_key: nil,
+    signal_identities: [],
+    processed_history_messages: [],
+    account_sync_counter: 0,
+    account_settings: %{unarchive_chats: false, default_disappearing_mode: nil},
+    registered: false,
+    first_unuploaded_pre_key_id: 1,
+    next_pre_key_id: 1
+  ]
+
+  @spec new() :: t()
+  def new do
+    identity_key = Curve.generate_key_pair()
+    {:ok, signed_pre_key} = Curve.signed_key_pair(identity_key, 1)
+
+    %__MODULE__{
+      noise_key: Curve.generate_key_pair(),
+      pairing_ephemeral_key: Curve.generate_key_pair(),
+      signed_identity_key: identity_key,
+      signed_pre_key: signed_pre_key,
+      registration_id: generate_registration_id(),
+      adv_secret_key: Crypto.random_bytes(32) |> Base.encode64(),
+      processed_history_messages: [],
+      next_pre_key_id: 1,
+      first_unuploaded_pre_key_id: 1,
+      account_sync_counter: 0,
+      account_settings: %{unarchive_chats: false, default_disappearing_mode: nil},
+      registered: false,
+      pairing_code: nil,
+      last_prop_hash: nil,
+      routing_info: nil,
+      additional_data: nil
+    }
+  end
+
+  def get(state, key, default \\ nil)
+
+  @spec get(t() | map(), atom(), term()) :: term()
+  def get(%__MODULE__{} = state, key, default) when is_atom(key) do
+    Map.get(state, key, default)
+  end
+
+  def get(%{} = state, key, default) when is_atom(key) do
+    case Map.fetch(state, key) do
+      {:ok, nil} -> nested_creds_get(state, key, default)
+      {:ok, value} -> value
+      :error -> nested_creds_get(state, key, default)
+    end
+  end
+
+  def get(_state, _key, default), do: default
+
+  @spec creds_view(t() | map()) :: map()
+  def creds_view(%{creds: creds}) when is_map(creds), do: creds
+  def creds_view(%__MODULE__{} = state), do: Map.from_struct(state)
+  def creds_view(%{} = state), do: state
+  def creds_view(_state), do: %{}
+
+  @spec merge_updates(t() | map(), map()) :: t() | map()
+  def merge_updates(%__MODULE__{} = state, updates) when is_map(updates) do
+    Enum.reduce(updates, state, fn
+      {key, value}, %__MODULE__{} = acc when key != :__struct__ and is_map(value) ->
+        existing = Map.get(acc, key)
+
+        if is_map(existing) do
+          Map.put(acc, key, merge_maps(existing, value))
+        else
+          Map.put(acc, key, value)
+        end
+
+      {key, value}, %__MODULE__{} = acc when key != :__struct__ ->
+        if Map.has_key?(acc, key) do
+          Map.put(acc, key, value)
+        else
+          acc
+        end
+    end)
+  end
+
+  def merge_updates(%{creds: creds} = state, updates) when is_map(creds) and is_map(updates) do
+    merge_maps(state, %{creds: updates})
+  end
+
+  def merge_updates(%{} = state, updates) when is_map(updates), do: merge_maps(state, updates)
+  def merge_updates(state, _updates), do: state
+
+  defp generate_registration_id do
+    <<registration_id::unsigned-integer-size(16)>> = Crypto.random_bytes(2)
+    Bitwise.band(registration_id, 16_383)
+  end
+
+  defp nested_creds_get(%{creds: creds}, key, default) when is_map(creds) do
+    Map.get(creds, key, default)
+  end
+
+  defp nested_creds_get(_state, _key, default), do: default
+
+  defp merge_maps(left, right) when is_map(left) and is_map(right) do
+    Map.merge(left, right, fn _key, left_value, right_value ->
+      if is_map(left_value) and is_map(right_value) do
+        merge_maps(left_value, right_value)
+      else
+        right_value
+      end
+    end)
+  end
+end

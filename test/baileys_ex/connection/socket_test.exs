@@ -785,6 +785,98 @@ defmodule BaileysEx.Connection.SocketTest do
              BinaryNodeUtil.child(unified_session_node, "unified_session")
   end
 
+  test "request_pairing_code/3 sends the companion hello node and emits creds updates" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    auth_state = phone_pairing_auth_state()
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(browser: {"BaileysEx", "Chrome", "0.1.0"}),
+        auth_state: auth_state
+      )
+
+    assert {:ok, "ABCDEFGH"} =
+             Socket.request_pairing_code(pid, "15551234567", custom_pairing_code: "ABCDEFGH")
+
+    assert_receive {:processed_events,
+                    %{
+                      creds_update: %{
+                        pairing_code: "ABCDEFGH",
+                        me: %{id: "15551234567@s.whatsapp.net"}
+                      }
+                    }}
+
+    assert_receive {:transport_sent, pairing_frame}
+
+    {_server_transport, pairing_node} =
+      decode_client_transport_frame(server_transport, pairing_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "md"}
+           } = pairing_node
+
+    assert %BinaryNode{tag: "link_code_companion_reg", attrs: %{"stage" => "companion_hello"}} =
+             BinaryNodeUtil.child(pairing_node, "link_code_companion_reg")
+  end
+
+  test "phone pairing notifications emit registered creds updates and send the companion finish node" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    auth_state = phone_pairing_auth_state()
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(browser: {"BaileysEx", "Chrome", "0.1.0"}),
+        auth_state: auth_state
+      )
+
+    assert {:ok, "ABCDEFGH"} =
+             Socket.request_pairing_code(pid, "15551234567", custom_pairing_code: "ABCDEFGH")
+
+    assert_receive {:transport_sent, pairing_request_frame}
+
+    {server_transport, _pairing_request_node} =
+      decode_client_transport_frame(server_transport, pairing_request_frame)
+
+    notification = phone_pairing_notification("ref-123", "ABCDEFGH")
+
+    {server_transport, notification_frame} =
+      server_transport_frame(server_transport, notification)
+
+    Kernel.send(pid, {:scripted_transport, {:binary, notification_frame}})
+
+    assert_receive {:processed_events,
+                    %{creds_update: %{registered: true, adv_secret_key: adv_secret_key}}}
+
+    assert {:ok, decoded_adv_secret_key} = Base.decode64(adv_secret_key)
+    assert byte_size(decoded_adv_secret_key) == 32
+
+    assert_receive {:transport_sent, finish_frame}
+
+    {_server_transport, finish_node} =
+      decode_client_transport_frame(server_transport, finish_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "md"}
+           } = finish_node
+
+    assert %BinaryNode{tag: "link_code_companion_reg", attrs: %{"stage" => "companion_finish"}} =
+             BinaryNodeUtil.child(finish_node, "link_code_companion_reg")
+  end
+
   defp start_connected_socket(opts) do
     {:ok, pid, server_transport} = start_authenticated_socket(opts)
 
@@ -998,6 +1090,54 @@ defmodule BaileysEx.Connection.SocketTest do
       adv_secret_key: Crypto.random_bytes(32),
       signal_identities: [],
       creds: %{routing_info: nil}
+    }
+  end
+
+  defp phone_pairing_auth_state do
+    state = BaileysEx.Auth.State.new()
+
+    %{
+      noise_key: state.noise_key,
+      pairing_ephemeral_key: state.pairing_ephemeral_key,
+      signed_identity_key: state.signed_identity_key,
+      adv_secret_key: state.adv_secret_key,
+      pairing_code: state.pairing_code,
+      me: state.me,
+      registered: state.registered,
+      creds: %{routing_info: nil}
+    }
+  end
+
+  defp phone_pairing_notification(ref, pairing_code) do
+    primary_identity_key = Crypto.generate_key_pair(:x25519)
+    code_pairing_key = Crypto.generate_key_pair(:x25519)
+    salt = :binary.copy(<<17>>, 32)
+    iv = :binary.copy(<<29>>, 16)
+    {:ok, pairing_key} = BaileysEx.Auth.Phone.derive_pairing_code_key(pairing_code, salt)
+    {:ok, wrapped_public_key} = Crypto.aes_ctr_encrypt(pairing_key, iv, code_pairing_key.public)
+
+    %BinaryNode{
+      tag: "notification",
+      attrs: %{"type" => "set"},
+      content: [
+        %BinaryNode{
+          tag: "link_code_companion_reg",
+          attrs: %{},
+          content: [
+            %BinaryNode{tag: "link_code_pairing_ref", attrs: %{}, content: ref},
+            %BinaryNode{
+              tag: "primary_identity_pub",
+              attrs: %{},
+              content: {:binary, primary_identity_key.public}
+            },
+            %BinaryNode{
+              tag: "link_code_pairing_wrapped_primary_ephemeral_pub",
+              attrs: %{},
+              content: {:binary, salt <> iv <> wrapped_public_key}
+            }
+          ]
+        }
+      ]
     }
   end
 

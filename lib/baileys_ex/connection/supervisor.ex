@@ -9,6 +9,7 @@ defmodule BaileysEx.Connection.Supervisor do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
 
   @spec start_link(keyword()) :: Elixir.Supervisor.on_start()
   def start_link(opts) when is_list(opts) do
@@ -31,6 +32,7 @@ defmodule BaileysEx.Connection.Supervisor do
     emitter_name = {:global, {__MODULE__, instance_id, EventEmitter}}
     store_name = {:global, {__MODULE__, instance_id, Store}}
     task_supervisor_name = {:global, {__MODULE__, instance_id, Task.Supervisor}}
+    signal_store_name = {:global, {__MODULE__, instance_id, SignalStoreMemory}}
 
     socket_opts =
       opts
@@ -43,6 +45,9 @@ defmodule BaileysEx.Connection.Supervisor do
         id: Store
       ),
       Elixir.Supervisor.child_spec({EventEmitter, [name: emitter_name]}, id: EventEmitter),
+      Elixir.Supervisor.child_spec({SignalStoreMemory, [name: signal_store_name]},
+        id: SignalStoreMemory
+      ),
       Elixir.Supervisor.child_spec({Task.Supervisor, name: task_supervisor_name},
         id: Task.Supervisor
       ),
@@ -54,6 +59,7 @@ defmodule BaileysEx.Connection.Supervisor do
            supervisor: self(),
            event_emitter: emitter_name,
            store: store_name,
+           signal_store: signal_store_name,
            socket_module: socket_module,
            task_supervisor: task_supervisor_name
          ]},

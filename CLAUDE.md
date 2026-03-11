@@ -41,9 +41,6 @@ when a working reference exists 50 feet away in `dev/reference/`.
 | Progress | `dev/implementation_plan/PROGRESS.md` | Task/file/acceptance-criteria tracker |
 | Reference source | `dev/reference/Baileys-master/` | Authoritative Baileys rc.9 behavior and wire semantics |
 
-**Current status:** Phases 1-6 are implemented on `phase-06-connection`.
-Remaining planned work begins at Phase 7 (Authentication).
-
 ---
 
 ## Baileys Architecture Reference

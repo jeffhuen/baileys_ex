@@ -3,8 +3,22 @@
 **Goal:** QR code pairing, phone number pairing, credential persistence, pre-key
 upload flow.
 
-**Depends on:** Phase 5 (Signal / libsignal native layer), Phase 6 (Connection)
+**Depends on:** Phase 5 (Signal boundary / key-store contracts), Phase 6 (Connection)
 **Blocks:** Phase 8 (Messaging)
+
+**Baileys reference:**
+- `src/Utils/auth-utils.ts` — `initAuthCreds`, `makeCacheableSignalKeyStore`, `addTransactionCapability`
+- `src/Utils/validate-connection.ts` — `generateLoginNode`, `generateRegistrationNode`, `configureSuccessfulPairing`, `encodeSignedDeviceIdentity`
+- `src/Utils/signal.ts` — `createSignalIdentity`, `getPreKeys`, `generateOrGetPreKeys`, `xmppSignedPreKey`, `xmppPreKey`, `parseAndInjectE2ESessions`, `extractDeviceJids`, `getNextPreKeysNode`
+- `src/Utils/use-multi-file-auth-state.ts` — file-based persistence reference
+- `src/Defaults/index.ts` — `MIN_PREKEY_COUNT=5`, `INITIAL_PREKEY_COUNT=812`, transaction opts
+
+> **Phase 6 note:** the connection-coupled rc.9 QR helpers and `pair-success`
+> verification/signing path now live in `Connection.Socket` plus
+> `Auth.QR` / `Auth.Pairing`, because Baileys performs that work at the
+> socket boundary. Phase 7 still owns the remaining auth surface: the auth
+> state struct, persistence backends, phone pairing code flow, and pre-key
+> upload / key-store transaction work.
 
 ---
 
@@ -119,20 +133,21 @@ defmodule BaileysEx.Auth.FilePersistence do
 end
 ```
 
-### 7.4 QR code pairing
+### 7.4 Reuse QR pairing helpers at the auth boundary
 
-File: `lib/baileys_ex/auth/qr.ex`
+File: `lib/baileys_ex/auth/qr.ex` (extend the existing helper only if the auth layer needs extra formatting utilities)
 
 Flow:
-1. Connection reaches `:authenticating` state
-2. Server sends QR challenge data
-3. Generate QR payload: `ref,public_key,identity_key,adv_secret`
-4. Emit `:qr` event with payload (and optionally render to terminal)
-5. Wait for server confirmation
-6. On success: extract credentials, transition to `:connected`
+1. Phase 6 socket reaches `:authenticating` and emits rc.9 QR updates
+2. `Auth.QR` remains the shared payload formatter for `ref,public_key,identity_key,adv_secret`
+3. Phase 7 wires persistence and user-facing auth flows around those emitted QR updates
+4. On `pair-success`, persist the extracted credentials and auth metadata needed for later reconnects
 
 ```elixir
 defmodule BaileysEx.Auth.QR do
+  @doc """
+  Shared QR payload formatter used by Connection.Socket and auth-facing flows.
+  """
   def generate_qr_data(ref, auth_state) do
     [
       ref,
@@ -141,11 +156,6 @@ defmodule BaileysEx.Auth.QR do
       Base.encode64(auth_state.adv_secret_key)
     ]
     |> Enum.join(",")
-  end
-
-  def handle_qr_event(data, auth_state, event_emitter) do
-    qr_data = generate_qr_data(data.ref, auth_state)
-    EventEmitter.emit(event_emitter, {:qr, qr_data})
   end
 end
 ```
@@ -349,13 +359,13 @@ end
 - [ ] New auth state generates valid crypto keys
 - [ ] File persistence saves and loads credentials correctly
 - [ ] File persistence serializes binaries safely and guards per-file writes with a mutex
-- [ ] QR code data format matches WhatsApp expectations
+- [x] QR code data format matches WhatsApp expectations
 - [ ] Phone pairing key derivation matches Baileys output
 - [ ] Pre-key upload constructs correct binary nodes
 - [ ] Custom persistence backend can be swapped via behaviour
 - [ ] Login node constructed correctly for returning users
 - [ ] Registration node includes device props, history sync config, platform type
-- [ ] Pair-success HMAC and ADV signature verification passes
+- [x] Pair-success HMAC and ADV signature verification passes
 - [ ] Pre-key upload triggered automatically when server count is low
 - [ ] Signed pre-key rotation works correctly
 - [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
@@ -368,6 +378,7 @@ end
 - `lib/baileys_ex/auth/state.ex`
 - `lib/baileys_ex/auth/persistence.ex`
 - `lib/baileys_ex/auth/file_persistence.ex`
+- `lib/baileys_ex/auth/pairing.ex`
 - `lib/baileys_ex/auth/qr.ex`
 - `lib/baileys_ex/auth/phone.ex`
 - `lib/baileys_ex/signal/prekey.ex` (extend)

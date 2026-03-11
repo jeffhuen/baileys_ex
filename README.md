@@ -6,10 +6,10 @@ In-progress Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) 
 - **Crypto** is complete for the current Phase 2 scope
 - **Protocol layer and Noise transport foundations** are implemented in-tree for the current scope
 - **Signal Phase 5 is complete for the current scope**: repository/address boundary, Local Identifier (LID) mapping, session migration, sender-key group crypto, TOFU identity handling, the runtime store contract, fixture-backed Baileys cross-validation, and narrow verification helpers
-- **Connection, auth, messaging, media, and feature layers** are still planned work
+- **Connection Phase 6 is complete for its current scope**: config defaults, the 3-byte frame codec, the Mint-backed WebSocket transport, the rc.9-style socket state machine, QR / `pair-device` / `pair-success` auth-coupled socket flow, `connection.update` sequencing, keep-alive/logout/offline/presence/send-node/query foundations, the reconnecting wrapper, the ETS-backed runtime store, init queries, dirty-bit handling, and the `connecting -> awaiting_initial_sync -> syncing -> online` runtime choreography are now in-tree
 - Targets Elixir 1.19+ / OTP 28
 
-> **Status:** Phases 1-3 are complete for their current scope, Phase 4 has a reference-aligned Noise implementation, and Phase 5 is complete for its adapter-driven scope: Signal curve/repository boundary, LID mapping, PN->LID session migration, sender-key group state/crypto, TOFU identity invalidation semantics, the in-memory transactional Signal store contract, and committed Baileys-generated cross-validation fixtures. Broad WAProto message/auth code generation and a concrete 1:1 session engine remain intentionally deferred to the later phases that consume them. See `dev/implementation_plan/PROGRESS.md`.
+> **Status:** Phases 1-6 are complete for their current scope. The next remaining work starts in Phase 7 auth persistence / pre-key upload and Phase 8's wider receive pipeline, where the rest of the Baileys 7.0.0-rc.9 message/runtime contract lives. See `dev/implementation_plan/PROGRESS.md`.
 
 ## Target Architecture
 

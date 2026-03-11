@@ -171,7 +171,6 @@ dev/
 │   ├── 00-overview.md … 12-polish.md   — phase specs
 │   ├── CLAUDE.md                        — agent workflow rules
 │   ├── PROGRESS.md                      — task tracker
-│   ├── GAP_ANALYSIS.md                  — Baileys audit (48 items)
 │   └── documentation-system.md          — this file
 └── reference/
     ├── Baileys-master/                  — TypeScript reference source

@@ -5,6 +5,18 @@
 **Depends on:** Phase 10 (Features)
 **Blocks:** Phase 12 (Polish)
 
+**Baileys reference:**
+- `src/Socket/business.ts` — 9 functions (catalog, products, orders, cover photo)
+- `src/Socket/newsletter.ts` — 19 functions (mixed WMex/IQ/message transport)
+- `src/Socket/communities.ts` — 24 functions (mirrors groups.ts structure)
+- `src/Socket/messages-recv.ts` — `handleCall` (call event handling)
+- `src/Socket/chats.ts` — `createCallLink` (call link creation)
+- `src/Utils/business.ts` — node builders/parsers for catalog/product/order data
+
+Community functions are structurally identical to group functions (same IQ patterns,
+different namespace). Newsletter uses WMex GraphQL for most operations. Both are
+mostly mechanical porting once the connection transport layer works.
+
 ---
 
 ## Tasks
@@ -143,6 +155,10 @@ defmodule BaileysEx.Feature.Community do
 end
 ```
 
+Wire a community dirty-update handler from Phase 6 `dirty_update` events so
+`type="communities"` refetches participating communities, emits `groups.update`,
+and cleans the `groups` bucket the same way rc.9 does in `communities.ts`.
+
 Reference: `dev/reference/Baileys-master/src/Socket/communities.ts`
 
 ### 11.4 Call handling
@@ -168,10 +184,7 @@ defmodule BaileysEx.Feature.Call do
 
     node = %BinaryNode{
       tag: "call",
-      attrs: %{
-        "id" => Connection.Socket.generate_message_tag(conn),
-        "to" => "@call"
-      },
+      attrs: %{"to" => "@call"},
       content: [
         %BinaryNode{
           tag: "link_create",
@@ -184,7 +197,7 @@ defmodule BaileysEx.Feature.Call do
       ]
     }
 
-    with {:ok, response} <- Connection.Socket.send_node_and_wait(conn, node, timeout_ms) do
+    with {:ok, response} <- Connection.Socket.query(conn, node, timeout_ms) do
       {:ok, extract_link_create_token(response)}
     end
   end
@@ -202,10 +215,11 @@ end
 
 ## Acceptance Criteria
 
-- [ ] Newsletter: all 19 functions construct correct WMex/IQ/message nodes
-- [ ] Community: all 23 functions construct correct IQ nodes
+- [ ] Newsletter: all exported newsletter operations construct correct WMex/IQ/message nodes
+- [ ] Community: all exported community operations construct correct IQ nodes
 - [ ] Community: subgroup linking/unlinking works
 - [ ] Community: fetch_linked_groups returns correct structure
+- [ ] Community dirty updates refetch participating communities, emit `groups.update`, and clean the `groups` bucket
 - [ ] Business: profile update with hours/website arrays
 - [ ] Business: cover photo upload via media upload pipeline
 - [ ] Business: product CRUD operations

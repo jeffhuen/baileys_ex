@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-08
+> Last updated: 2026-03-10
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -17,13 +17,13 @@
 | 3 | Protocol Layer | 10 | COMPLETE | 1 | 6 |
 | 4 | Noise NIF | 6 | IN PROGRESS | 1 | 6 |
 | 5 | Signal Protocol | 8 | COMPLETE | 1, 2 | 7, 8 |
-| 6 | Connection | 7 | NOT STARTED | 3, 4 | 7, 8 |
+| 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | NOT STARTED | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | NOT STARTED | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | NOT STARTED | 2, 8 | 12 |
-| 10 | Features | 14 | NOT STARTED | 8 | 11 |
+| 10 | Features | 17 | NOT STARTED | 8 | 11 |
 | 11 | Advanced Features | 5 | NOT STARTED | 10 | 12 |
-| 12 | Polish | 6 | NOT STARTED | All | — |
+| 12 | Polish | 7 | NOT STARTED | All | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -254,60 +254,92 @@ falsely marked as implemented here.
 
 ## Phase 6: Connection
 
-**Status:** NOT STARTED · **Depends on:** Phases 3, 4 · **Blocks:** 7, 8
+**Status:** COMPLETE · **Depends on:** Phases 3, 4 · **Blocks:** 7, 8
+
+> **Current snapshot:** the Phase 6 runtime is now in-tree and complete for its
+> current scope. `Connection.Socket` reaches `:connected` once the
+> auth-success seam is satisfied, emits `connection_update` `:connecting` /
+> `:open` / `:close` / `:qr` / `:is_new_login` transitions, sends
+> `passive/active` plus `unified_session` on open and presence-available, runs
+> `w:p` keep-alive pings, handles `offline_preview`, `offline`, and
+> `edge_routing`, and supports explicit logout plus rc.9 `pair-device` /
+> `pair-success` pairing.
+> `Connection.EventEmitter` now covers `process/2`, internal runtime taps,
+> the rc.9 bufferable event set, `create_buffered_function/2`, flush/auto-flush,
+> mixed `messages_upsert` boundaries, and conditional `chats_update`
+> preservation. `Connection.Supervisor`, `Connection.Coordinator`, and
+> `Connection.Store` now provide auto-connect/reconnect, `creds_update`
+> persistence, ETS-backed concurrent reads, init queries, dirty-bit handling,
+> and the `connecting -> awaiting_initial_sync -> syncing -> online`
+> runtime choreography. Remaining auth persistence / pre-key upload work now
+> belongs to Phase 7+, not Phase 6.
 
 ### Tasks
 
-- [ ] 6.1 Connection config (browser/platform — GAP-27)
-- [ ] 6.2 Connection socket (`:gen_statem`)
-- [ ] 6.3 Frame handling (3-byte length prefix)
-- [ ] 6.4 Per-connection supervisor (`:rest_for_one`)
-- [ ] 6.5 Event emitter (25+ types — GAP-07, buffering — GAP-22)
-- [ ] 6.6 Store (GenServer + ETS)
-- [ ] 6.7 Tests
+- [x] 6.1 Connection config (browser/platform — GAP-27)
+- [x] 6.2 Connection socket (`:gen_statem`, `makeSocket` parity)
+- [x] 6.3 Frame handling (3-byte length prefix)
+- [x] 6.4 Per-connection supervisor / reconnect wrapper (`:rest_for_one`)
+- [x] 6.5 Event emitter + buffered event contract (25+ types — GAP-07, buffering — GAP-22)
+- [x] 6.6 Store (GenServer + ETS, creds/runtime metadata, LID mappings)
+- [x] 6.7 Tests and parity verification
 
 ### Acceptance Criteria
 
-- [ ] State machine transitions through all states correctly
-- [ ] Noise handshake integrates with WebSocket transport
-- [ ] Frame encoding/decoding with length prefix works
-- [ ] Keep-alive prevents timeout disconnection
-- [ ] Reconnection works after unexpected disconnect
-- [ ] Supervisor `:rest_for_one` restarts children correctly
-- [ ] Event emitter dispatches to subscribers
-- [ ] Store reads are concurrent via ETS
-- [ ] Every received node with "id" attr gets automatic ACK (GAP-03)
-- [ ] Logout sends `remove-companion-device` and disconnects (GAP-18)
-- [ ] EventEmitter supports all 25+ event types (GAP-07)
-- [ ] EventEmitter covers Utils-driven events: messaging_history_set, messages_reaction, group_participants_update, group_join_request, group_member_tag_update, lid_mapping_update, settings_update, chats_lock
-- [ ] Event buffering accumulates events, flushes on demand (GAP-22)
-- [ ] Buffer auto-flushes after 30 seconds (GAP-22)
-- [ ] Dirty bit notifications trigger appropriate refresh (GAP-24)
-- [ ] `account_sync` dirty handling persists `lastAccountSyncTimestamp`; group/community dirty refresh reuses correct clean bucket (GAP-24)
-- [ ] Platform type correctly mapped for device registration (GAP-27)
-- [ ] Unified session sent on connection open (GAP-33)
-- [ ] Init queries (props, blocklist, privacy) fetched in parallel and cache `lastPropHash` deltas (GAP-34)
-- [ ] Conditional chat updates held during sync (GAP-48)
-- [ ] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
+- [x] State machine transitions through all states correctly
+- [x] Noise handshake integrates with WebSocket transport up to `:authenticating`
+- [x] Frame encoding/decoding with length prefix works
+- [x] `connection.update` mirrors rc.9 field sequencing (`connecting`, `open`, `close`, `qr`, `isNewLogin`, `receivedPendingNotifications`, `isOnline`, `lastDisconnect`)
+- [x] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
+- [x] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
+- [x] Reconnect works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
+- [x] Supervisor `:rest_for_one` restarts children correctly
+- [x] Event emitter dispatches to subscribers and supports batched `process` handling
+- [x] Store reads are concurrent via ETS
+- [x] Raw socket does not blanket-send successful ACKs; per-message ACK/NACK parity remains in the receive pipeline (GAP-03)
+- [x] Logout sends `remove-companion-device` and disconnects (GAP-18)
+- [x] EventEmitter supports all 25+ event types (GAP-07)
+- [x] EventEmitter covers Utils-driven events: messaging_history_set, messages_reaction, group_participants_update, group_join_request, group_member_tag_update, lid_mapping_update, settings_update, chats_lock
+- [x] Event buffering accumulates events, flushes on demand, and preserves conditional chat updates (GAP-22, GAP-48)
+- [x] Buffer auto-flushes after 30 seconds (GAP-22)
+- [x] Dirty bit notifications trigger appropriate refresh (GAP-24)
+- [x] `account_sync` dirty handling persists `lastAccountSyncTimestamp`; group/community dirty refresh reuses correct clean bucket (GAP-24)
+- [x] Platform type correctly mapped for device registration (GAP-27)
+- [x] Unified session sent on connection open and on presence available (GAP-33)
+- [x] Init queries (props, blocklist, privacy) fetched in parallel and cache `lastPropHash` deltas (GAP-34)
+- [x] Conditional chat updates held during sync (GAP-48)
+- [x] Sync state machine: connecting → awaiting_initial_sync → syncing → online (GAP-48)
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `lib/baileys_ex/connection/config.ex` | ⬜ |
-| `lib/baileys_ex/connection/socket.ex` | ⬜ |
-| `lib/baileys_ex/connection/supervisor.ex` | ⬜ |
-| `lib/baileys_ex/connection/event_emitter.ex` | ⬜ |
-| `lib/baileys_ex/connection/store.ex` | ⬜ |
-| `test/baileys_ex/connection/socket_test.exs` | ⬜ |
-| `test/baileys_ex/connection/event_emitter_test.exs` | ⬜ |
-| `test/baileys_ex/connection/store_test.exs` | ⬜ |
+| `lib/baileys_ex/connection/config.ex` | ✅ |
+| `lib/baileys_ex/connection/frame.ex` | ✅ |
+| `lib/baileys_ex/connection/transport.ex` | ✅ |
+| `lib/baileys_ex/connection/transport/mint_adapter.ex` | ✅ |
+| `lib/baileys_ex/connection/transport/mint_web_socket.ex` | ✅ |
+| `lib/baileys_ex/auth/pairing.ex` | ✅ |
+| `lib/baileys_ex/auth/qr.ex` | ✅ |
+| `lib/baileys_ex/connection/socket.ex` | ✅ |
+| `lib/baileys_ex/connection/coordinator.ex` | ✅ |
+| `lib/baileys_ex/connection/supervisor.ex` | ✅ |
+| `lib/baileys_ex/connection/event_emitter.ex` | ✅ |
+| `lib/baileys_ex/connection/store.ex` | ✅ |
+| `lib/baileys_ex/protocol/proto/adv_messages.ex` | ✅ |
+| `test/baileys_ex/connection/config_test.exs` | ✅ |
+| `test/baileys_ex/connection/frame_test.exs` | ✅ |
+| `test/baileys_ex/connection/socket_test.exs` | ✅ |
+| `test/baileys_ex/connection/transport/mint_web_socket_test.exs` | ✅ |
+| `test/baileys_ex/connection/event_emitter_test.exs` | ✅ |
+| `test/baileys_ex/connection/supervisor_test.exs` | ✅ |
+| `test/baileys_ex/connection/store_test.exs` | ✅ |
 
 ---
 
 ## Phase 7: Authentication
 
-**Status:** NOT STARTED · **Depends on:** Phases 5, 6 · **Blocks:** 8
+**Status:** NOT STARTED (aside from the connection-coupled `Auth.QR` / `Auth.Pairing` helpers landed in Phase 6) · **Depends on:** Phases 5, 6 · **Blocks:** 8
 
 ### Tasks
 
@@ -327,13 +359,13 @@ falsely marked as implemented here.
 - [ ] New auth state generates valid crypto keys
 - [ ] File persistence saves and loads credentials correctly
 - [ ] File persistence serializes binaries safely and guards per-file writes with a mutex
-- [ ] QR code data format matches WhatsApp expectations
+- [x] QR code data format matches WhatsApp expectations
 - [ ] Phone pairing key derivation matches Baileys output
 - [ ] Pre-key upload constructs correct binary nodes
 - [ ] Custom persistence backend can be swapped via behaviour
 - [ ] Login node constructed correctly for returning users
 - [ ] Registration node includes device props, history sync config, platform type
-- [ ] Pair-success HMAC and ADV signature verification passes
+- [x] Pair-success HMAC and ADV signature verification passes
 - [ ] Pre-key upload triggered automatically when server count is low
 - [ ] Signed pre-key rotation works correctly
 - [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
@@ -348,7 +380,8 @@ falsely marked as implemented here.
 | `lib/baileys_ex/auth/state.ex` | ⬜ |
 | `lib/baileys_ex/auth/persistence.ex` | ⬜ |
 | `lib/baileys_ex/auth/file_persistence.ex` | ⬜ |
-| `lib/baileys_ex/auth/qr.ex` | ⬜ |
+| `lib/baileys_ex/auth/pairing.ex` | 🟡 |
+| `lib/baileys_ex/auth/qr.ex` | 🟡 |
 | `lib/baileys_ex/auth/phone.ex` | ⬜ |
 | `lib/baileys_ex/auth/key_store.ex` | ⬜ |
 | `lib/baileys_ex/auth/connection_validator.ex` | ⬜ |
@@ -518,7 +551,10 @@ falsely marked as implemented here.
 - [ ] 10.3a Trusted Contact Tokens (GAP-23)
 - [ ] 10.3b Bot Directory (GAP-37)
 - [ ] 10.4 Privacy settings (8 categories + block list + disappearing)
-- [ ] 10.5 App state sync (Syncd protocol, patches)
+- [ ] 10.5a App state sync — key expansion + snapshot decode
+- [ ] 10.5b App state sync — patch encode/decode + MAC verification
+- [ ] 10.5c App state sync — ChatMutationMap + process patches → emit events
+- [ ] 10.5d App state sync — full resync + push patch flow
 - [ ] 10.6 LTHash utility
 - [ ] 10.7 Profile management (picture, name, status, business)
 - [ ] 10.8 Label management (CRUD, associations)
@@ -637,6 +673,7 @@ falsely marked as implemented here.
 - [ ] 12.4 Example application (echo bot)
 - [ ] 12.5 Hex.pm preparation (`mix hex.build`)
 - [ ] 12.6 CI setup (GitHub Actions)
+- [ ] 12.7 WAM analytics encoding (optional/deferred)
 
 ### Acceptance Criteria
 
@@ -664,8 +701,8 @@ falsely marked as implemented here.
 | Metric | Count |
 |--------|-------|
 | Phases | 12 |
-| Tasks | 97 |
-| Acceptance Criteria | 146 |
+| Tasks | 101 |
+| Acceptance Criteria | 148 |
 | Source Files | ~80 |
 | Test Files | ~30 |
 | GAP items resolved | 48/48 |

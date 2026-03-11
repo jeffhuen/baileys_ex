@@ -1,13 +1,35 @@
 # BaileysEx
 
-Full-featured Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) —
-a WhatsApp Web API library. Signal is currently in Phase 5 implementation and is
-being built around a Baileys-compatible Elixir boundary with the smallest native
-surface justified by interoperability and performance. Rust NIFs are currently used
-for Noise protocol (`snow`) and the narrow XEdDSA helper (`curve25519-dalek`).
-Targets SOTA Elixir patterns (Elixir 1.19+/OTP 28).
+**Behaviour-accurate Elixir port of [Baileys 7.00rc9](https://github.com/WhiskeySockets/Baileys)** —
+a WhatsApp Web API library. The goal is a **drop-in replacement** for Elixir apps
+currently using Baileys (Node.js) as a sidecar. Same wire behaviour, same protocol
+semantics, idiomatic Elixir implementation. Targets Elixir 1.19+/OTP 28.
 
-Reference source: `dev/reference/Baileys-master/`
+Rust NIFs are currently used for Noise protocol (`snow`) and the narrow XEdDSA
+helper (`curve25519-dalek`). Signal protocol is pure Elixir.
+
+Reference source: `dev/reference/Baileys-master/` (pinned at 7.00rc9)
+
+### Baileys Is the Spec
+
+**Do not deliberate about what to implement or how the protocol should behave.**
+Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
+all wire behaviour, protocol semantics, message formats, handshake flows, and feature
+scope. When you are unsure what to do:
+
+1. **Read the Baileys source.** Find the corresponding TypeScript file and understand
+   what it does.
+2. **Port the behaviour faithfully.** Match the observable behaviour — same messages
+   on the wire, same protocol flows, same error handling semantics.
+3. **Implement idiomatically in Elixir.** Use BEAM patterns (processes, supervisors,
+   ETS, pattern matching) instead of JS patterns (callbacks, promises, mutexes). The
+   *what* comes from Baileys; the *how* is SOTA Elixir.
+4. **Do not invent new behaviour.** If Baileys doesn't do it, neither do we (yet).
+   If Baileys does do it, we must too.
+
+This means: no asking "should we support X?" — check Baileys. No asking "how should
+this handshake work?" — read the Baileys handshake code. No designing from scratch
+when a working reference exists 50 feet away in `dev/reference/`.
 
 ### Implementation Tracking
 
@@ -17,10 +39,10 @@ Reference source: `dev/reference/Baileys-master/`
 | Overview | `dev/implementation_plan/00-overview.md` | Architecture, dependency graph |
 | Agent rules | `dev/implementation_plan/CLAUDE.md` | Phase workflow, native-first policy |
 | Progress | `dev/implementation_plan/PROGRESS.md` | Task/file/acceptance-criteria tracker |
-| Gap analysis | `dev/implementation_plan/GAP_ANALYSIS.md` | Baileys audit (48/48 resolved) |
+| Reference source | `dev/reference/Baileys-master/` | Authoritative Baileys rc.9 behavior and wire semantics |
 
-**Current status:** Phases 1-4 are implemented and merged. Phase 5 (Signal Protocol)
-is the active branch and the next implementation target.
+**Current status:** Phases 1-6 are implemented on `phase-06-connection`.
+Remaining planned work begins at Phase 7 (Authentication).
 
 ---
 
@@ -196,6 +218,8 @@ This section adds behavioural expectations.
 
 ### Planning and Execution
 
+- **Baileys is the spec.** When unsure what to build or how something should behave,
+  read the Baileys source in `dev/reference/Baileys-master/`. Do not ask — look it up.
 - **Plan before building.** Enter plan mode for any non-trivial task (3+ steps or
   architectural decisions). If execution diverges from the plan, stop and re-plan —
   don't push through a broken approach.

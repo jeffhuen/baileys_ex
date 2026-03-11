@@ -6,6 +6,9 @@
 **Parallel with:** Phase 9 (Media)
 **Blocks:** Phase 11 (Advanced Features)
 
+**Baileys reference:** `src/Socket/chats.ts` (40+ functions), `src/Socket/groups.ts` (20 functions),
+`src/Utils/chat-utils.ts` (Syncd protocol), `src/Utils/lt-hash.ts`, `src/Utils/sync-action-utils.ts`
+
 ---
 
 ## Design Decisions
@@ -16,8 +19,14 @@ and parses responses. No dedicated processes — these are just organized functi
 namespaces that operate on the connection.
 
 **App state sync is the most complex feature here.**
-The Syncd protocol uses LTHash, versioned patches, and CRC verification. It gets
-its own focused implementation.
+The Syncd protocol uses LTHash, versioned patches, and CRC verification. It is split
+into 4 sub-tasks (10.5a–10.5d) to manage complexity. The key reference files are:
+- `src/Utils/chat-utils.ts` — `expandAppStateKeys`, `decodeSyncdPatch`, `decodeSyncdSnapshot`, `encodeSyncdMutations`, `processSyncdPatches`, `processAppStateSyncMessage`, `ChatMutationMap`, `makeLtHashGenerator`
+- `src/Utils/sync-action-utils.ts` — `processContactAction`, `emitSyncActionResults`
+
+**First step for each task:** open the corresponding Baileys source file, list every
+exported function, and verify it has a home in this plan. The plan is the skeleton —
+the Baileys source is the spec for filling in the details.
 
 ---
 
@@ -31,16 +40,18 @@ File: `lib/baileys_ex/feature/group.ex`
 defmodule BaileysEx.Feature.Group do
   @doc "Create a new group"
   def create(conn, subject, participants) do
+    key = generate_message_id_v2()
+
     node = %BinaryNode{
       tag: "iq",
       attrs: %{"type" => "set", "xmlns" => "w:g2", "to" => "@g.us"},
       content: [
-        %BinaryNode{tag: "create", attrs: %{"subject" => subject}, content:
+        %BinaryNode{tag: "create", attrs: %{"subject" => subject, "key" => key}, content:
           Enum.map(participants, &participant_node/1)
         }
       ]
     }
-    Connection.Socket.send_node_and_wait(conn, node)
+    Connection.Socket.query(conn, node)
   end
 
   def update_subject(conn, group_jid, subject), do: ...
@@ -54,7 +65,7 @@ defmodule BaileysEx.Feature.Group do
   def revoke_invite(conn, group_jid), do: ...
   def accept_invite(conn, code), do: ...
   def get_metadata(conn, group_jid), do: ...
-  def get_all_groups(conn), do: ...
+  def fetch_all_participating(conn), do: ...
   def toggle_ephemeral(conn, group_jid, expiration), do: ...
   def get_invite_info(conn, code), do: ...
   def setting_update(conn, group_jid, setting) when setting in [:announcement, :not_announcement, :locked, :unlocked], do: ...
@@ -77,6 +88,10 @@ defmodule BaileysEx.Feature.Group do
 end
 ```
 
+Include `fetch_all_participating/1` plus a dirty-update handler fed from Phase 6
+`dirty_update` events so `type="groups"` refetches participating groups, emits
+`groups.update`, and cleans the `groups` dirty bucket just like `groups.ts`.
+
 ### 10.1a Phone number validation
 
 File: `lib/baileys_ex/feature/phone_validation.ex`
@@ -88,7 +103,7 @@ defmodule BaileysEx.Feature.PhoneValidation do
   @doc "Check one or more phone numbers. Returns [{exists?, jid}]"
   def on_whatsapp(conn, phone_numbers) when is_list(phone_numbers) do
     query = USync.build_query([:contact], phone_numbers, context: :interactive)
-    {:ok, response} = Connection.Socket.send_node_and_wait(conn, query)
+    {:ok, response} = Connection.Socket.query(conn, query)
     USync.parse_response(response, :contact)
     # Returns [%{exists: true, jid: "1234@s.whatsapp.net"}, ...]
     # v7 note: this is PN/contact discovery, not a source of truth for LIDs
@@ -190,8 +205,9 @@ end
 File: `lib/baileys_ex/feature/tc_token.ex`
 
 Trusted Contact tokens are fetched from the key store and appended to presence
-subscribe and profile picture queries. They enable privacy-aware access to
-profile data.
+subscribe and profile picture queries. They also feed the direct 1:1 message
+relay path in Phase 8. They enable privacy-aware access to profile data and
+privacy-sensitive message sends.
 
 ```elixir
 defmodule BaileysEx.Feature.TcToken do
@@ -212,21 +228,24 @@ defmodule BaileysEx.Feature.TcToken do
 
   @doc "Fetch privacy tokens for JIDs from server"
   def get_privacy_tokens(conn, jids) when is_list(jids) do
+    timestamp = System.os_time(:second) |> Integer.to_string()
+
     node = %BinaryNode{
       tag: "iq",
-      attrs: %{"to" => "s.whatsapp.net", "type" => "get", "xmlns" => "privacy"},
+      attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "privacy"},
       content: [
         %BinaryNode{tag: "tokens", attrs: %{}, content:
           Enum.map(jids, fn jid ->
             %BinaryNode{tag: "token", attrs: %{
               "jid" => JID.to_string(jid),
+              "t" => timestamp,
               "type" => "trusted_contact"
             }}
           end)
         }
       ]
     }
-    Connection.Socket.send_node_and_wait(conn, node)
+    Connection.Socket.query(conn, node)
   end
 
   @doc "Handle privacy_token notification: store received tokens"
@@ -252,7 +271,7 @@ def get_bot_list(conn) do
     ]
   }
 
-  with {:ok, response} <- Connection.Socket.send_node_and_wait(conn, node) do
+  with {:ok, response} <- Connection.Socket.query(conn, node) do
     bots = parse_bot_list(response)
     {:ok, bots}
     # Returns [%{jid: jid, persona_id: id}]
@@ -353,7 +372,7 @@ defmodule BaileysEx.Feature.Privacy do
         ]}
       ]
     }
-    Connection.Socket.send_node_and_wait(conn, node)
+    Connection.Socket.query(conn, node)
   end
 end
 ```
@@ -361,6 +380,45 @@ end
 ### 10.5 App state sync (Syncd)
 
 File: `lib/baileys_ex/feature/app_state.ex`
+
+The Syncd protocol is the most complex feature in this phase. It handles cross-device
+state synchronization for mute/pin/star/archive/labels/contacts/settings.
+
+**Baileys reference:** `src/Utils/chat-utils.ts` (all exported functions),
+`src/Utils/sync-action-utils.ts`, `src/Socket/chats.ts` (`appPatch`, `resyncAppState`,
+`chatModify`).
+
+This task is split into 4 sub-tasks to manage complexity:
+
+#### 10.5a Syncd key expansion + snapshot decode
+
+- `expandAppStateKeys(keydata)` — extract {indexKey, valueEncryptionKey, valueMacKey, snapshotMacKey, patchMacKey} from raw key material
+- `decodeAppStateSyncKey(key)` — decode a sync key from protobuf
+- `decodeSyncdSnapshot(snapshot, keys)` — decode full app state snapshot, verify MACs
+- 5 collection names: `critical_block`, `critical_unblock_low`, `regular_high`, `regular_low`, `regular`
+
+#### 10.5b Syncd patch encode/decode + MAC verification
+
+- `decodeSyncdMutation(mutation)` — decode a single mutation
+- `decodeSyncdPatch(patch, keyId, keys)` — decode + verify patch MAC
+- `encodeSyncdMutations(mutations, keys)` — encode outbound mutations with MAC
+- `generateMac(operation, data, keyId, key)` — HMAC-SHA512(opByte | keyId | data | length[8])
+
+#### 10.5c ChatMutationMap + process patches → emit events
+
+- `ChatMutationMap` — mapping sync action types to chat/contact/label/setting modifications
+  covering: pin, mute, archive, star, clear, delete, contact, label, quick reply, settings,
+  disappearing mode, link preview privacy, push name, locale, etc.
+- `processSyncdPatches(patches, keyId, keys, ...)` — apply mutations, verify LTHash, emit events
+- `processContactAction(action, id)` — parse contact action, emit contacts.upsert + lid-mapping.update
+- `emitSyncActionResults(ev, results)` — dispatch consolidated results to event emitter
+
+#### 10.5d Full resync + push patch flow
+
+- `processAppStateSyncMessage(message, ...)` — main entry point for incoming app state sync
+- `initial_sync(conn)` — fetch snapshots for all 5 collections, apply, verify, emit
+- `resyncAppState(conn, collections)` — full resync from server for specified collections
+- `push_patch(conn, action, jid, value)` — construct patch, encode, encrypt, send, update local LTHash
 
 ```elixir
 defmodule BaileysEx.Feature.AppState do
@@ -382,6 +440,11 @@ defmodule BaileysEx.Feature.AppState do
     # Construct patch for the appropriate collection
     # Encode, encrypt, send
     # Update local LTHash
+  end
+
+  def resync(conn, collections \\ @collections) do
+    # Full resync from server for specified collections
+    # Re-fetch snapshots, re-apply, re-verify LTHash
   end
 
   def process_sync_notification(conn, node) do
@@ -615,6 +678,7 @@ end
 - [ ] Group member add mode and join approval mode supported
 - [ ] Pending join request list and approve/reject operations work
 - [ ] V4 invite accept and revoke operations work
+- [ ] Group dirty updates refetch participating groups, emit `groups.update`, and clean the `groups` bucket
 - [ ] TC tokens built and attached to presence/profile queries (GAP-23)
 - [ ] Privacy token notifications stored correctly (GAP-23)
 - [ ] Bot directory fetched via IQ query (GAP-37)

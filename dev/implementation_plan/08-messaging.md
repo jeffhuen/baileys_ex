@@ -6,6 +6,19 @@ receipt handling, and retry logic.
 **Depends on:** Phase 5 (Signal), Phase 6 (Connection), Phase 7 (Auth)
 **Blocks:** Phase 9 (Media), Phase 10 (Features)
 
+**Baileys reference:**
+- `src/Socket/messages-send.ts` — `relayMessage`, `sendMessage`, `sendReceipt`, `getUSyncDevices`, `assertSessions`, `createParticipantNodes`, `getPrivacyTokens`
+- `src/Socket/messages-recv.ts` — `handleRawMessage`, `handleEncryption`, `handleMessageRetry`, `handleNotification`, `handleReceipt`, `fetchMessageHistory`, `requestPlaceholderResend`
+- `src/Utils/messages.ts` — `generateWAMessage`, `generateWAMessageContent`, `generateWAMessageFromContent`, `getContentType`, `normalizeMessageContent`, `extractMessageContent`, `updateMessageWithReceipt/Reaction/PollUpdate/EventResponse`, `getAggregateVotesInPollMessage`, `getDevice`
+- `src/Utils/link-preview.ts` — `getUrlInfo` (auto-generates text link previews when configured)
+- `src/Utils/process-message.ts` — `cleanMessage`, `isRealMessage`, `decryptPollVote`, `decryptEventResponse`, `processMessage`
+- `src/Utils/decode-wa-message.ts` — `decodeMessageStanza`, `processMessageStanza`, `NACK_REASONS`, `DECRYPTION_RETRY_CONFIG`
+- `src/Utils/message-retry-manager.ts` — `MessageRetryManager` (14 reason codes, MAC error cooldown, session recreation tracking)
+- `src/Utils/reporting-utils.ts` — `shouldIncludeReportingToken`, `getMessageReportingToken`
+
+**27+ outbound message types** must have explicit builder clauses. See task 8.1 for the
+full enumeration. Every type listed in Baileys' `generateWAMessageContent` must be covered.
+
 ---
 
 ## Design Decisions
@@ -424,6 +437,12 @@ defmodule BaileysEx.Message.Builder do
 end
 ```
 
+Text message building must also mirror `generateLinkPreviewIfRequired` from
+`src/Utils/messages.ts`: when URL text is present and a `get_url_info` callback
+is configured, fetch preview metadata through `src/Utils/link-preview.ts` and
+populate the extended-text preview fields automatically rather than requiring
+callers to pre-build them.
+
 **Inbound-only message types (parsed by Receiver, not built by Builder):**
 
 These types are received from WhatsApp but cannot be sent by regular users. The
@@ -525,6 +544,9 @@ defmodule BaileysEx.Message.Sender do
   end
 
   defp relay_message(conn, jid, message_id, encrypted_nodes, opts) do
+    # build_relay_node/4 mirrors messages-send.ts by attaching reporting tokens
+    # where applicable and appending a stored trusted-contact token for direct
+    # 1:1 sends when one exists in the key store.
     node = build_relay_node(jid, message_id, encrypted_nodes, opts)
     Connection.Socket.send_node(conn, node)
   end
@@ -720,6 +742,11 @@ defmodule BaileysEx.Message.Receipt do
     Connection.Socket.send_node(conn, node)
   end
 
+  def read_messages(conn, keys) do
+    # Mirror messages-send.ts: choose :read vs :read_self from the current
+    # privacy settings before bulk-sending receipts.
+  end
+
   def process_receipt(%BinaryNode{tag: "receipt"} = node, conn) do
     receipt = parse_receipt(node)
     EventEmitter.emit(conn, {:receipt, receipt})
@@ -894,7 +921,7 @@ defmodule BaileysEx.Signal.Device do
 
   defp fetch_devices(conn, jid) do
     node = build_usync_query(jid)
-    {:ok, response} = Connection.Socket.send_node_and_wait(conn, node)
+    {:ok, response} = Connection.Socket.query(conn, node)
     devices = parse_device_list(response)
     Store.save_devices(conn, jid, devices)
     {:ok, devices}
@@ -1261,11 +1288,13 @@ end
 - [ ] Signal encryption/decryption integrated into pipeline
 - [ ] Device discovery queries and caches device lists
 - [ ] Receipts (delivered, read, played) sent correctly
+- [ ] Read receipts choose `read` vs `read-self` from privacy settings
 - [ ] Retry logic handles failed decryption
 - [ ] **Builder covers ALL message types explicitly** (no catch-all clause)
 - [ ] Events emitted for received messages
 - [ ] Reactions send and receive correctly
 - [ ] Polls create with message secret, correct version selection (V1/V2/V3)
+- [ ] URL text auto-generates link previews when `get_url_info` is configured
 - [ ] Contacts: single → `contactMessage`, multiple → `contactsArrayMessage`
 - [ ] Location and live location produce correct proto
 - [ ] Message delete (revoke) constructs correct `protocolMessage`
@@ -1297,6 +1326,7 @@ end
 - [ ] Received messages normalized (JIDs, reactions, polls, LID/PN)
 - [ ] Received event responses decrypt and update the source event message when the message secret is available
 - [ ] Reporting tokens attached to applicable message types (GAP-32)
+- [ ] Direct 1:1 relay attaches stored trusted-contact tokens when available
 - [ ] Bad ACK errors emit messages.update with ERROR status (GAP-40)
 - [ ] History sync extracts PN-LID mappings with fallback recovery (GAP-45)
 - [ ] Offline node processor drains FIFO batches of 10 without long scheduler monopolization

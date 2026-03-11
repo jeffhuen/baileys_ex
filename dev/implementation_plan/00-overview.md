@@ -2,12 +2,23 @@
 
 ## Vision
 
-Full-featured Elixir port of Baileys (WhatsApp Web API). The current architectural
-direction is to keep connection management, state machines, concurrency, and business
-logic in Elixir, while exposing battle-tested native crypto or narrowly-scoped Signal
-helpers only where they are actually required. The WhatsApp-specific Noise handler
-should mirror the Baileys reference in Elixir rather than delegating the whole handshake
-to a generic raw XX engine.
+**Behaviour-accurate Elixir port of Baileys 7.00rc9** (WhatsApp Web API). The goal is a
+**drop-in replacement** for Elixir apps currently using Baileys (Node.js) as a sidecar.
+Same wire behaviour, same protocol semantics, idiomatic Elixir implementation.
+
+Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
+all wire behaviour, protocol semantics, message formats, handshake flows, and feature
+scope. The *what* comes from Baileys; the *how* is SOTA Elixir.
+
+The current architectural direction is to keep connection management, state machines,
+concurrency, and business logic in Elixir, while exposing battle-tested native crypto
+or narrowly-scoped Signal helpers only where they are actually required. The
+WhatsApp-specific Noise handler mirrors the Baileys reference in Elixir rather than
+delegating the whole handshake to a generic raw XX engine.
+
+**Baileys source inventory:** ~90 files, ~570+ functions, ~300+ types across 8
+directories (Socket, Signal, Utils, Types, WABinary, WAProto, WAUSync, WAM, Defaults).
+WAM (WhatsApp Analytics/Metrics) is optional — see Phase 12.7.
 
 ## Core Principles
 
@@ -41,15 +52,17 @@ BaileysEx.Application (Supervisor)
 │   └── Per-connection Supervisor (:rest_for_one)
 │       ├── BaileysEx.Connection.Socket     (:gen_statem)
 │       │   - Owns WebSocket + Noise transport state
-│       │   - States: disconnected → handshaking → authenticating → connected
-│       │   - Handles keep-alive, reconnection
+│       │   - States: disconnected → connecting → noise_handshake → authenticating → connected
+│       │   - Mirrors Baileys `makeSocket`: query/send runtime, keep-alive, logout,
+│       │     unified_session, and transport-level offline/routing callbacks
 │       ├── BaileysEx.Connection.Store       (GenServer + ETS)
 │       │   - Signal session state, auth credentials
 │       │   - ETS :read_concurrency for lookups
 │       │   - GenServer serializes writes + persistence
 │       ├── BaileysEx.Connection.EventEmitter (GenServer)
-│       │   - Subscriber registry, event dispatch
-│       │   - Buffers events during offline message processing
+│       │   - Subscriber registry, batched event dispatch, buffer/flush/process API
+│       │   - Internal tap path for runtime coordination without breaking buffered app delivery
+│       │   - Mirrors Baileys `makeEventBuffer` semantics during offline processing
 │       └── Task.Supervisor (BaileysEx.Connection.TaskSupervisor)
 │           - Concurrent ops: device discovery, media upload/download
 │           - async_nolink for fault isolation
@@ -63,6 +76,12 @@ Child ordering matters:
 2. **Store** — if it crashes, EventEmitter restarts (may have stale refs)
 3. **EventEmitter** — if it crashes, only it restarts
 4. **TaskSupervisor** — independent, but ordered last
+
+Reconnect policy belongs to the per-connection runtime wrapper around the socket,
+not to invented raw-socket semantics. Baileys rc.9 recreates the socket in
+consumer code based on `connection.update(connection: 'close')`; the Elixir port
+may internalize that in supervision, but the socket contract must still match the
+reference behavior first.
 
 ## Module Architecture
 
@@ -124,11 +143,16 @@ lib/baileys_ex/protocol/
 
 ```
 lib/baileys_ex/connection/
+├── frame.ex          # Pure 3-byte length-prefixed frame codec
+├── transport.ex      # Transport behaviour seam for the socket runtime
+├── transport/
+│   ├── mint_adapter.ex    # Narrow adapter over Mint for deterministic tests
+│   └── mint_web_socket.ex # Real Mint-backed WebSocket transport
+├── config.ex         # Connection configuration struct
 ├── supervisor.ex     # Per-connection :rest_for_one supervisor
 ├── socket.ex         # :gen_statem — WebSocket + Noise transport
 ├── store.ex          # GenServer + ETS — Signal sessions, credentials
-├── event_emitter.ex  # GenServer — subscriber registry, event dispatch
-└── config.ex         # Connection configuration struct
+└── event_emitter.ex  # GenServer — subscriber registry, event dispatch
 ```
 
 ### Layer 4: Feature Modules (plain functions, no processes)
@@ -137,7 +161,8 @@ lib/baileys_ex/connection/
 lib/baileys_ex/
 ├── auth/
 │   ├── state.ex          # Auth credentials struct
-│   ├── qr.ex             # QR code pairing flow
+│   ├── pairing.ex        # Pair-success ADV verification/signing helper used by the socket
+│   ├── qr.ex             # QR payload helper shared by socket pairing and Phase 7 auth flow
 │   ├── phone.ex          # Phone number pairing flow
 │   └── persistence.ex    # Behaviour for credential storage backends
 ├── signal/                # Phase 5 area — curve/address/repository first, deeper session logic later

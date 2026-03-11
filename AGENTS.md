@@ -1,10 +1,32 @@
 # BaileysEx
 
-Full-featured Elixir port of [Baileys](https://github.com/WhiskeySockets/Baileys) —
-a WhatsApp Web API library. Uses Rust NIFs for Signal protocol cryptography and
-performance-critical operations. Targets SOTA Elixir patterns (Elixir 1.18+/OTP 27+).
+**Behaviour-accurate Elixir port of [Baileys 7.00rc9](https://github.com/WhiskeySockets/Baileys)** —
+a WhatsApp Web API library. The goal is a **drop-in replacement** for Elixir apps
+currently using Baileys (Node.js) as a sidecar. Same wire behaviour, same protocol
+semantics, idiomatic Elixir implementation. Targets Elixir 1.19+/OTP 28.
 
-Reference source: `dev/reference/Baileys-master/`
+Reference source: `dev/reference/Baileys-master/` (pinned at 7.00rc9)
+
+### Baileys Is the Spec
+
+**Do not deliberate about what to implement or how the protocol should behave.**
+Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
+all wire behaviour, protocol semantics, message formats, handshake flows, and feature
+scope. When you are unsure what to do:
+
+1. **Read the Baileys source.** Find the corresponding TypeScript file and understand
+   what it does.
+2. **Port the behaviour faithfully.** Match the observable behaviour — same messages
+   on the wire, same protocol flows, same error handling semantics.
+3. **Implement idiomatically in Elixir.** Use BEAM patterns (processes, supervisors,
+   ETS, pattern matching) instead of JS patterns (callbacks, promises, mutexes). The
+   *what* comes from Baileys; the *how* is SOTA Elixir.
+4. **Do not invent new behaviour.** If Baileys doesn't do it, neither do we (yet).
+   If Baileys does do it, we must too.
+
+This means: no asking "should we support X?" — check Baileys. No asking "how should
+this handshake work?" — read the Baileys handshake code. No designing from scratch
+when a working reference exists 50 feet away in `dev/reference/`.
 
 ---
 
@@ -128,37 +150,42 @@ atomic multi-key read/write with retry
 - Pre-key upload: minimum interval, concurrent prevention, exponential backoff (3 retries)
 - Concurrency: separate mutexes for messages, app state patches, receipts, notifications
 
-### Rust NIF Strategy
+### Native First, Rust NIF Only When Necessary
 
-**Philosophy: wrap, don't reimplement.** Use Rustler to bring in existing, battle-tested
-Rust crates via NIFs. We do not maintain our own crypto or protocol implementations.
+**Philosophy: use Elixir/Erlang ecosystem first.** Erlang `:crypto` (OTP 28) handles
+all cryptographic primitives natively. Rust NIFs are reserved exclusively for complex
+protocol crates that have no Elixir/Erlang equivalent.
 
-| Rust Crate | Wraps | Used For |
-|------------|-------|----------|
-| `libsignal-protocol` | Signal Protocol (Double Ratchet, X3DH, Sender Keys, pre-keys, sessions) | All E2E encryption |
-| `snow` (or `noise-protocol`) | Noise Protocol Framework | Transport-layer encryption over WebSocket |
-| `curve25519-dalek` / `x25519-dalek` | Curve25519 ECDH, Ed25519 signing | Key generation, exchange, signatures (may be covered by libsignal) |
-| `ring` or `rustcrypto` crates | AES-GCM/CBC/CTR, HMAC, SHA-256, HKDF, PBKDF2 | Media encryption, key derivation, hashing |
-| `prost` | Protocol Buffers | Message serialization (alternative: use Elixir-side `protox`/`protobuf`) |
+**Erlang `:crypto` handles (NO Rust NIF):**
+AES-256-GCM/CBC/CTR, HMAC-SHA256/512, SHA-256, MD5, PBKDF2, Curve25519 ECDH,
+Ed25519 sign/verify, random bytes. HKDF implemented in pure Elixir using `:crypto.mac/4`.
+
+**Rust NIFs (Rustler ~> 0.37) — only for crates with no native equivalent:**
+
+| Rust Crate | Used For | Why NIF? |
+|------------|----------|----------|
+| `snow` | Noise Protocol Framework | No Elixir/Erlang implementation exists |
+| `curve25519-dalek` | XEdDSA sign/verify (~80 lines Rust) | Montgomery↔Edwards key conversion — no native equivalent |
+
+**Signal Protocol:** Pure Elixir implementation (~1,500 lines across ~20 modules).
+Baileys-compatible wire format and session semantics.
 
 **What stays in Elixir:** connection management, event handling, state machines,
-supervision trees, caching, business logic, message routing — everything that benefits
-from BEAM concurrency and fault tolerance.
-
-**What goes to Rust NIFs:** cryptographic operations, protocol state machines that are
-already implemented in Rust crates, any CPU-intensive binary encoding/decoding.
+supervision trees, caching, business logic, message routing, all crypto primitives,
+Signal protocol, binary encoding/decoding, protobuf (via `protox`) — everything that
+benefits from BEAM concurrency, fault tolerance, or has native support.
 
 ### Key Dependencies (Baileys → Elixir/Rust mapping)
 
 | Baileys Dep | Role | BaileysEx Approach |
 |-------------|------|-------------------|
-| `ws` | WebSocket transport | `Mint.WebSocket` / `Fresh` (low-level, fits Noise integration) |
-| `libsignal` | Signal Protocol | Rustler NIF wrapping `libsignal-protocol` crate |
-| `whatsapp-rust-bridge` | Crypto (HKDF, MD5) | Rustler NIF wrapping `ring`/`rustcrypto` crates + Erlang `:crypto` |
+| `ws` | WebSocket transport | `Mint.WebSocket` (process-less, explicit encode/decode for Noise layer) |
+| `libsignal` | Signal Protocol | Baileys-compatible Elixir boundary; narrow native helpers only where justified |
+| `whatsapp-rust-bridge` | Crypto (HKDF, MD5) | **Erlang `:crypto`** (native — no NIF needed) |
 | Noise handshake (custom) | Transport encryption | Rustler NIF wrapping `snow` crate |
-| `protobufjs` | Protobuf serialization | `protox` (pure Elixir, good codegen) or Rust-side `prost` via NIF |
+| `protobufjs` | Protobuf serialization | `protox` (pure Elixir, good codegen) |
 | `pino` | Structured logging | `Logger` (stdlib) |
-| `async-mutex` | Concurrency | Process-based (BEAM handles this natively — GenServer, Task) |
+| `async-mutex` | Concurrency | Process-based (BEAM handles this natively) |
 | `@hapi/boom` | Error objects | Tagged tuples / custom exception structs |
 | `lru-cache` / `node-cache` | Caching | ETS tables (built-in, concurrent, fast) |
 
@@ -167,18 +194,20 @@ already implemented in Rust crates, any CPU-intensive binary encoding/decoding.
 ## Agent Workflow — How to Work on This Project
 
 These rules apply to all agents (main session, teammates, subagents). They reinforce
-the detailed protocols in `dev/CLAUDE.md` and `dev/implementation_plans/CLAUDE.md` —
-those files are canonical. This section adds behavioural expectations.
+the detailed protocols in `dev/implementation_plan/CLAUDE.md` — that file is canonical.
+This section adds behavioural expectations.
 
 ### Planning and Execution
 
+- **Baileys is the spec.** When unsure what to build or how something should behave,
+  read the Baileys source in `dev/reference/Baileys-master/`. Do not ask — look it up.
 - **Plan before building.** Enter plan mode for any non-trivial task (3+ steps or
   architectural decisions). If execution diverges from the plan, stop and re-plan —
   don't push through a broken approach.
-- **SOTA-first.** For every non-trivial decision, evaluate the best path available
-  today — Elixir 1.18+/OTP 27+ primitives, Ash ecosystem, emerging libraries — not
-  last year's patterns. Prefer solutions that will age well over ones that are merely
-  familiar. See `dev/CLAUDE.md` § SOTA-first decision policy.
+- **Native-first.** For every non-trivial decision, evaluate the best path available
+  today — Elixir 1.19+/OTP 28 primitives, stdlib, battle-tested Hex packages — not
+  last year's patterns. Rust NIFs only when no native equivalent exists. See
+  `dev/implementation_plan/CLAUDE.md` § Native-First Decision Policy.
 - **Elegance within scope.** For the requested change, find the cleanest implementation.
   "Knowing everything I know now, is there a more elegant way?" But do not expand scope —
   elegance means less code, not more features.
@@ -190,7 +219,7 @@ those files are canonical. This section adds behavioural expectations.
   subagent.
 - **Use worktree isolation for parallel work.** When tasks have non-overlapping file
   scope and no decision coupling, dispatch `batch-worker` teammates in isolated
-  worktrees. See `dev/implementation_plans/CLAUDE.md` § Task Dispatch Modes.
+  worktrees. See `dev/implementation_plan/CLAUDE.md` § Task Dispatch Modes.
 - **Throw compute at hard problems.** For complex debugging, multi-perspective review,
   or design exploration — use multiple subagents with competing hypotheses rather than
   serial iteration in a single context.

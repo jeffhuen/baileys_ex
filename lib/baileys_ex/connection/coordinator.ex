@@ -484,13 +484,17 @@ defmodule BaileysEx.Connection.Coordinator do
   defp wrap_signal_store(nil), do: nil
   defp wrap_signal_store(%SignalStore{} = signal_store), do: signal_store
 
-  defp wrap_signal_store(server) do
+  defp wrap_signal_store({module, server}) when is_atom(module) do
     pid = GenServer.whereis(server)
 
-    if is_pid(pid) do
-      %SignalStore{module: SignalStoreMemory, ref: SignalStoreMemory.wrap(pid)}
+    if is_pid(pid) and function_exported?(module, :wrap, 1) do
+      %SignalStore{module: module, ref: module.wrap(pid)}
     else
       nil
     end
+  end
+
+  defp wrap_signal_store(server) do
+    wrap_signal_store({SignalStoreMemory, server})
   end
 end

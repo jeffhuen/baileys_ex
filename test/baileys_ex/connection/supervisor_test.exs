@@ -2,6 +2,8 @@ defmodule BaileysEx.Connection.SupervisorTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Auth.FilePersistence
+  alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.State
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
@@ -386,7 +388,10 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end)
   end
 
-  test "connection open uploads pre-keys when the current pre-key is missing from storage" do
+  @tag :tmp_dir
+  test "connection open uploads pre-keys when the current pre-key is missing from storage", %{
+    tmp_dir: tmp_dir
+  } do
     name = {:phase7_test, System.unique_integer([:positive])}
     test_pid = self()
 
@@ -420,6 +425,11 @@ defmodule BaileysEx.Connection.SupervisorTest do
                config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
                auth_state: auth_state,
                socket_module: FakeSocket,
+               signal_store_module: KeyStore,
+               signal_store_opts: [
+                 persistence_module: FilePersistence,
+                 persistence_context: tmp_dir
+               ],
                test_pid: self(),
                query_handler: query_handler,
                transport: {NoopTransport, %{}}
@@ -435,13 +445,29 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_receive {:fake_socket_query,
                     %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "get"}}, 60_000}
 
-    assert_receive {:prekey_upload_query,
-                    %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}}}
+    assert_eventually(fn ->
+      receive do
+        {:prekey_upload_query, %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}}} ->
+          true
+
+        {:fake_socket_presence_update, :unavailable} ->
+          false
+      after
+        0 ->
+          false
+      end
+    end)
 
     assert_eventually(fn ->
       Store.get(store_ref, :creds)[:next_pre_key_id] == 7 and
         Store.get(store_ref, :creds)[:first_unuploaded_pre_key_id] == 7
     end)
+
+    assert {:ok, %{public: public, private: private}} =
+             FilePersistence.load_keys(tmp_dir, :"pre-key", "2")
+
+    assert is_binary(public)
+    assert is_binary(private)
   end
 
   test "account sync dirty updates last_account_sync_timestamp and cleans from the previous timestamp" do

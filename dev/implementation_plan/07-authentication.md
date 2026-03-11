@@ -197,74 +197,45 @@ Baileys wraps Signal key state operations in transactions using `AsyncLocalStora
 conditions and database locks during massive parallel read/write bursts seen in
 history sync and group messaging.
 
-Our Elixir approach: GenServer per key type that serializes writes and caches
-reads within a transaction window. Uses `Ecto.Multi` or similar for atomic
-commits when backed by a database.
+Our Elixir approach is a persistence-backed `Signal.Store` implementation:
+- ETS read-through cache for hot reads and cached misses
+- caller-local transaction context via process dictionary, mirroring the Baileys
+  transaction-cache behavior
+- per-transaction-key mutexing in the owner process so overlapping history/app-state
+  bursts serialize cleanly
+- commit retry plus snapshot rollback to restore the previous persisted view if
+  a batch write fails
+- pre-key deletion safeguards matching Baileys `PreKeyManager`
+- runtime injection seam in `Connection.Supervisor` so the connection stack can
+  host either the persistent store or the in-memory store
 
 ```elixir
 defmodule BaileysEx.Auth.KeyStore do
-  @moduledoc """
-  Transactional Signal key storage. Wraps the persistence behaviour with
-  caching and serialized writes to prevent race conditions during heavy
-  sync operations (history sync, group message bursts).
+  @behaviour BaileysEx.Signal.Store
 
-  Each key type (session, pre-key, sender-key, etc.) gets its own serialized
-  queue to prevent cross-type contention while maintaining per-type ordering.
-  """
-
-  use GenServer
-
-  @key_types [
-    :session,
-    :pre_key,
-    :signed_pre_key,
-    :sender_key,
-    :sender_key_memory,
-    :app_state_sync_key,
-    :app_state_sync_version,
-    :lid_mapping,
-    :device_list,
-    :identity_key,
-    :tctoken
-  ]
-
-  defstruct [
-    :persistence_module,  # User's Auth.Persistence implementation
-    :cache,               # ETS table for read-through cache
-    :pending_writes,      # Accumulated writes within current transaction
-    :in_transaction?      # Whether we're inside a transaction
-  ]
-
-  @doc "Start a transaction: caches reads, batches writes"
-  def transaction(store, fun) do
-    GenServer.call(store, {:transaction, fun}, :infinity)
-  end
-
-  @doc "Read within transaction (cache-first)"
-  def get(store, type, ids) when type in @key_types do
-    GenServer.call(store, {:get, type, ids})
-  end
-
-  @doc "Write within transaction (buffered until commit)"
-  def set(store, type, data) when type in @key_types do
-    GenServer.call(store, {:set, type, data})
-  end
-
-  # GenServer callbacks serialize all operations per-store.
-  # During transaction:
-  #   - Reads check pending_writes first, then cache, then persistence
-  #   - Writes accumulate in pending_writes
-  #   - On commit: flush all pending_writes to persistence atomically
-  #   - On rollback: discard pending_writes, clear cache entries
+  # `start_link/1` accepts a persistence module plus optional context. If the
+  # module exports context-aware `load_keys/save_keys/delete_keys` arities
+  # (`3/4/3`), the store uses those; otherwise it falls back to the plain
+  # `Auth.Persistence` callback arities.
   #
-  # For database-backed persistence, commit uses Ecto.Multi for atomicity.
-  # For file-backed persistence, commit writes sequentially with fsync.
+  # Reads:
+  #   - hit ETS directly for cached values and cached misses
+  #   - load missing ids from persistence and populate ETS
   #
-  # Retry logic: on "database is locked" errors, retry with exponential
-  # backoff (matching Baileys' commitWithRetry behavior).
+  # Transactions:
+  #   - reuse nested transaction contexts
+  #   - cache fetched ids in the caller process
+  #   - buffer writes until commit
+  #   - serialize by transaction key
   #
-  # Pre-key deletions get specialized validation so we do not enqueue deletes
-  # for keys that never existed, matching Baileys' PreKeyManager safeguards.
+  # Commits:
+  #   - snapshot the previous persisted values for touched ids
+  #   - apply writes/deletes
+  #   - on failure, restore the previous snapshot and retry
+  #
+  # Pre-keys:
+  #   - outside transactions, only delete ids that actually exist
+  #   - inside transactions, only delete ids already present in the transaction cache
 end
 ```
 
@@ -357,6 +328,8 @@ end
 - [x] Phone pairing companion-hello and companion-finish node coverage
 - [x] Pre-key upload node construction
 - [x] Connection-open pre-key upload trigger coverage
+- [x] Transactional key-store persistence, rollback, and cache coverage
+- [x] Persistent key-store integration coverage through the connection supervisor
 
 ---
 
@@ -374,10 +347,10 @@ end
 - [x] Pair-success HMAC and ADV signature verification passes
 - [x] Pre-key upload triggered automatically when server count is low
 - [ ] Signed pre-key rotation works correctly
-- [ ] Key store transactions serialize concurrent read/write bursts (GAP-44)
-- [ ] Transaction commits are atomic (Ecto.Multi for DB, sequential for files)
-- [ ] Read-through cache prevents redundant persistence lookups during sync
-- [ ] Key store supports lid-mapping, device-list, identity-key, sender-key-memory, and tctoken datasets
+- [x] Key store transactions serialize concurrent read/write bursts (GAP-44)
+- [x] Transaction commits roll back to the previous persisted snapshot on failure (GAP-44)
+- [x] Read-through cache prevents redundant persistence lookups during sync
+- [x] Key store supports lid-mapping, device-list, identity-key, sender-key-memory, and tctoken datasets
 
 ## Files Created/Modified
 
@@ -393,8 +366,10 @@ end
 - `lib/baileys_ex/connection/supervisor.ex`
 - `test/baileys_ex/auth/state_test.exs`
 - `test/baileys_ex/auth/file_persistence_test.exs`
+- `test/baileys_ex/auth/key_store_test.exs`
 - `test/baileys_ex/auth/qr_test.exs`
 - `test/baileys_ex/auth/phone_test.exs`
+- `test/baileys_ex/connection/supervisor_test.exs`
 - `test/baileys_ex/signal/prekey_test.exs`
 - `lib/baileys_ex/auth/connection_validator.ex`
 - `lib/baileys_ex/auth/key_store.ex`

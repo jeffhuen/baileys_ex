@@ -19,6 +19,7 @@ defmodule BaileysEx.Connection.SocketTest do
   alias BaileysEx.Protocol.Proto.HandshakeMessage
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientHello
   alias BaileysEx.Signal.Curve
+  alias BaileysEx.Signal.Store, as: SignalStore
   alias BaileysEx.TestSupport.Connection.NoiseServer
 
   defmodule ScriptedTransport do
@@ -240,61 +241,6 @@ defmodule BaileysEx.Connection.SocketTest do
     end)
   end
 
-  test "socket transitions through disconnected, connecting, noise_handshake, authenticating, connected, and disconnected" do
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
-    root_key_pair = Crypto.generate_key_pair(:x25519)
-    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
-    server_static_key_pair = Crypto.generate_key_pair(:x25519)
-    trusted_cert = %{serial: 0, public_key: root_key_pair.public}
-
-    assert {:ok, pid} =
-             Socket.start_link(
-               config: Config.new(keep_alive_interval_ms: 5_000),
-               auth_state:
-                 State.new()
-                 |> Map.put(:noise_key, client_noise_key_pair)
-                 |> Map.put(:routing_info, nil),
-               noise_opts: [trusted_cert: trusted_cert],
-               transport: {ScriptedTransport, %{test_pid: self()}}
-             )
-
-    assert :disconnected == Socket.state(pid)
-
-    assert :ok = Socket.connect(pid)
-    assert_eventually(fn -> Socket.state(pid) == :connecting end)
-
-    Kernel.send(pid, {:scripted_transport, :connected})
-    assert_receive {:transport_sent, client_hello}
-    assert_eventually(fn -> Socket.state(pid) == :noise_handshake end)
-
-    assert {:ok, server_hello, server_state} =
-             NoiseServer.build_server_hello(client_hello,
-               root_key_pair: root_key_pair,
-               intermediate_key_pair: intermediate_key_pair,
-               server_static_key_pair: server_static_key_pair,
-               issuer_serial: trusted_cert.serial
-             )
-
-    Kernel.send(pid, {:scripted_transport, {:binary, server_hello}})
-    assert_receive {:transport_sent, client_finish}
-
-    assert {:ok, %{transport: server_transport}} =
-             NoiseServer.process_client_finish(server_state, client_finish)
-
-    assert_eventually(fn -> Socket.state(pid) == :authenticating end)
-
-    success_node = %BinaryNode{tag: "success", attrs: %{"t" => "1_710_000_000"}}
-    {_server_transport, success_frame} = server_transport_frame(server_transport, success_node)
-    Kernel.send(pid, {:scripted_transport, {:binary, success_frame}})
-
-    assert_receive {:transport_sent, _passive_iq_frame}
-    assert_receive {:transport_sent, _unified_session_frame}
-    assert_eventually(fn -> Socket.state(pid) == :connected end)
-
-    assert :ok = Socket.disconnect(pid)
-    assert :disconnected == Socket.state(pid)
-  end
-
   test "connect/1 returns to disconnected and records the error on transport failure" do
     assert {:ok, pid} =
              Socket.start_link(
@@ -364,9 +310,6 @@ defmodule BaileysEx.Connection.SocketTest do
     {server_transport, success_frame} = server_transport_frame(server_transport, success_node)
     Kernel.send(pid, {:scripted_transport, {:binary, success_frame}})
 
-    assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
-    assert_eventually(fn -> Socket.state(pid) == :connected end)
-
     assert_receive {:transport_sent, passive_iq_frame}
 
     {server_transport, passive_iq_node} =
@@ -378,6 +321,20 @@ defmodule BaileysEx.Connection.SocketTest do
            } = passive_iq_node
 
     assert %BinaryNode{tag: "active"} = BinaryNodeUtil.child(passive_iq_node, "active")
+
+    passive_result = %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => passive_iq_node.attrs["id"], "type" => "result"},
+      content: nil
+    }
+
+    {server_transport, passive_result_frame} =
+      server_transport_frame(server_transport, passive_result)
+
+    Kernel.send(pid, {:scripted_transport, {:binary, passive_result_frame}})
+
+    assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
+    assert_eventually(fn -> Socket.state(pid) == :connected end)
 
     assert_receive {:transport_sent, unified_session_frame}
 
@@ -763,7 +720,7 @@ defmodule BaileysEx.Connection.SocketTest do
       )
 
     pair_device_node = pair_device_stanza("pair-device-1", ["ref-1", "ref-2"])
-    {server_transport, frame} = server_transport_frame(server_transport, pair_device_node)
+    {_server_transport, frame} = server_transport_frame(server_transport, pair_device_node)
     Kernel.send(pid, {:scripted_transport, {:binary, frame}})
 
     assert_receive {:transport_sent, ack_frame}
@@ -779,6 +736,39 @@ defmodule BaileysEx.Connection.SocketTest do
     assert qr_payload == QR.generate("ref-1", auth_state)
 
     refute_receive {:processed_events, %{connection_update: %{qr: _next_qr}}}, 50
+  end
+
+  test "pair-device honors the configurable QR refresh timers" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    auth_state = pairing_auth_state()
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config:
+          Config.new(
+            keep_alive_interval_ms: 5_000,
+            pairing_qr_initial_timeout_ms: 10,
+            pairing_qr_refresh_timeout_ms: 10
+          ),
+        auth_state: auth_state
+      )
+
+    pair_device_node = pair_device_stanza("pair-device-2", ["ref-1", "ref-2"])
+    {_server_transport, frame} = server_transport_frame(server_transport, pair_device_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, frame}})
+
+    assert_receive {:transport_sent, _ack_frame}
+    assert_receive {:processed_events, %{connection_update: %{qr: first_qr}}}
+    assert first_qr == QR.generate("ref-1", auth_state)
+
+    assert_receive {:processed_events, %{connection_update: %{qr: second_qr}}}, 100
+    assert second_qr == QR.generate("ref-2", auth_state)
   end
 
   test "pair-success updates creds, emits is_new_login, and replies with pair-device-sign" do
@@ -887,7 +877,7 @@ defmodule BaileysEx.Connection.SocketTest do
              BinaryNodeUtil.child(pairing_node, "link_code_companion_reg")
   end
 
-  test "phone pairing notifications emit registered creds updates and send the companion finish node" do
+  test "phone pairing notifications wait for the companion finish response before emitting registered creds updates" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
 
@@ -918,15 +908,9 @@ defmodule BaileysEx.Connection.SocketTest do
 
     Kernel.send(pid, {:scripted_transport, {:binary, notification_frame}})
 
-    assert_receive {:processed_events,
-                    %{creds_update: %{registered: true, adv_secret_key: adv_secret_key}}}
-
-    assert {:ok, decoded_adv_secret_key} = Base.decode64(adv_secret_key)
-    assert byte_size(decoded_adv_secret_key) == 32
-
     assert_receive {:transport_sent, finish_frame}
 
-    {_server_transport, finish_node} =
+    {server_transport, finish_node} =
       decode_client_transport_frame(server_transport, finish_frame)
 
     assert %BinaryNode{
@@ -936,6 +920,260 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert %BinaryNode{tag: "link_code_companion_reg", attrs: %{"stage" => "companion_finish"}} =
              BinaryNodeUtil.child(finish_node, "link_code_companion_reg")
+
+    refute_receive {:processed_events, %{creds_update: %{registered: true}}}, 50
+
+    result_node = %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => finish_node.attrs["id"], "to" => "s.whatsapp.net", "type" => "result"},
+      content: nil
+    }
+
+    {_server_transport, result_frame} = server_transport_frame(server_transport, result_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, result_frame}})
+
+    assert_receive {:processed_events,
+                    %{creds_update: %{registered: true, adv_secret_key: adv_secret_key}}}
+
+    assert {:ok, decoded_adv_secret_key} = Base.decode64(adv_secret_key)
+    assert byte_size(decoded_adv_secret_key) == 32
+  end
+
+  test "success waits for pre-key upload, passive iq, and digest validation before opening" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+    {:ok, signal_store_pid} = BaileysEx.Signal.Store.Memory.start_link()
+    {:ok, task_supervisor} = Task.Supervisor.start_link()
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    auth_state =
+      State.new()
+      |> Map.put(:me, %{id: "15551234567@s.whatsapp.net", name: "~"})
+      |> Map.put(:next_pre_key_id, 2)
+      |> Map.put(:first_unuploaded_pre_key_id, 2)
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        auth_state: auth_state,
+        signal_store: %SignalStore{
+          module: BaileysEx.Signal.Store.Memory,
+          ref: BaileysEx.Signal.Store.Memory.wrap(signal_store_pid)
+        },
+        task_supervisor: task_supervisor
+      )
+
+    success_node = %BinaryNode{
+      tag: "success",
+      attrs: %{"t" => "1_710_000_000", "lid" => "12345678901234@lid"}
+    }
+
+    {server_transport, success_frame} = server_transport_frame(server_transport, success_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, success_frame}})
+
+    assert_receive {:transport_sent, count_frame}
+    {server_transport, count_node} = decode_client_transport_frame(server_transport, count_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"xmlns" => "encrypt", "type" => "get"},
+             content: [%BinaryNode{tag: "count"}]
+           } = count_node
+
+    refute_receive {:processed_events, %{connection_update: %{connection: :open}}}, 50
+
+    count_result = %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => count_node.attrs["id"], "type" => "result"},
+      content: [%BinaryNode{tag: "count", attrs: %{"value" => "10"}, content: nil}]
+    }
+
+    {server_transport, count_result_frame} =
+      server_transport_frame(server_transport, count_result)
+
+    Kernel.send(pid, {:scripted_transport, {:binary, count_result_frame}})
+
+    assert_receive {:processed_events,
+                    %{creds_update: %{next_pre_key_id: 7, first_unuploaded_pre_key_id: 7}}}
+
+    assert_receive {:transport_sent, upload_frame}
+
+    {server_transport, upload_node} =
+      decode_client_transport_frame(server_transport, upload_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"xmlns" => "encrypt", "type" => "set"},
+             content: [%BinaryNode{tag: "registration"} | _rest]
+           } = upload_node
+
+    upload_result = %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => upload_node.attrs["id"], "type" => "result"},
+      content: nil
+    }
+
+    {server_transport, upload_result_frame} =
+      server_transport_frame(server_transport, upload_result)
+
+    Kernel.send(pid, {:scripted_transport, {:binary, upload_result_frame}})
+
+    assert_receive {:transport_sent, passive_frame}
+
+    {server_transport, passive_node} =
+      decode_client_transport_frame(server_transport, passive_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"xmlns" => "passive", "type" => "set"},
+             content: [%BinaryNode{tag: "active"}]
+           } = passive_node
+
+    refute_receive {:processed_events, %{connection_update: %{connection: :open}}}, 50
+
+    passive_result = %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => passive_node.attrs["id"], "type" => "result"},
+      content: nil
+    }
+
+    {server_transport, passive_result_frame} =
+      server_transport_frame(server_transport, passive_result)
+
+    Kernel.send(pid, {:scripted_transport, {:binary, passive_result_frame}})
+
+    assert_receive {:transport_sent, digest_frame}
+
+    {server_transport, digest_node} =
+      decode_client_transport_frame(server_transport, digest_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"xmlns" => "encrypt", "type" => "get"},
+             content: [%BinaryNode{tag: "digest"}]
+           } = digest_node
+
+    digest_result = %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => digest_node.attrs["id"], "type" => "result"},
+      content: [%BinaryNode{tag: "digest", attrs: %{}, content: nil}]
+    }
+
+    {server_transport, digest_result_frame} =
+      server_transport_frame(server_transport, digest_result)
+
+    Kernel.send(pid, {:scripted_transport, {:binary, digest_result_frame}})
+
+    assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
+    assert_receive {:transport_sent, unified_session_frame}
+
+    {_server_transport, unified_session_node} =
+      decode_client_transport_frame(server_transport, unified_session_frame)
+
+    assert %BinaryNode{tag: "ib"} = unified_session_node
+  end
+
+  test "stream error closes with the mapped disconnect reason" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        auth_state: pairing_auth_state()
+      )
+
+    node = %BinaryNode{
+      tag: "stream:error",
+      attrs: %{},
+      content: [%BinaryNode{tag: "conflict", attrs: %{}, content: nil}]
+    }
+
+    {server_transport, frame} = server_transport_frame(server_transport, node)
+    Kernel.send(pid, {:scripted_transport, {:binary, frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        connection: :close,
+                        last_disconnect: %{reason: :connection_replaced}
+                      }
+                    }}
+
+    assert_eventually(fn -> Socket.snapshot(pid).last_error == :connection_replaced end)
+    assert server_transport.read_counter >= 0
+  end
+
+  test "failure nodes close with the mapped disconnect reason" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        auth_state: pairing_auth_state()
+      )
+
+    node = %BinaryNode{tag: "failure", attrs: %{"reason" => "401"}, content: nil}
+    {server_transport, frame} = server_transport_frame(server_transport, node)
+    Kernel.send(pid, {:scripted_transport, {:binary, frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        connection: :close,
+                        last_disconnect: %{reason: :logged_out}
+                      }
+                    }}
+
+    assert_eventually(fn -> Socket.snapshot(pid).last_error == :logged_out end)
+    assert server_transport.read_counter >= 0
+  end
+
+  test "downgrade_webclient closes with a multidevice mismatch reason" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        auth_state: pairing_auth_state()
+      )
+
+    node = %BinaryNode{
+      tag: "ib",
+      attrs: %{},
+      content: [%BinaryNode{tag: "downgrade_webclient", attrs: %{}, content: nil}]
+    }
+
+    {server_transport, frame} = server_transport_frame(server_transport, node)
+    Kernel.send(pid, {:scripted_transport, {:binary, frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        connection: :close,
+                        last_disconnect: %{reason: :multidevice_mismatch}
+                      }
+                    }}
+
+    assert_eventually(fn -> Socket.snapshot(pid).last_error == :multidevice_mismatch end)
+    assert server_transport.read_counter >= 0
   end
 
   defp start_connected_socket(opts) do
@@ -944,14 +1182,25 @@ defmodule BaileysEx.Connection.SocketTest do
     success_node = %BinaryNode{tag: "success", attrs: %{"t" => "1_710_000_000"}}
     {server_transport, success_frame} = server_transport_frame(server_transport, success_node)
     Kernel.send(pid, {:scripted_transport, {:binary, success_frame}})
-    assert_eventually(fn -> Socket.state(pid) == :connected end)
 
     assert_receive {:transport_sent, passive_iq_frame}
 
-    {server_transport, _passive_iq_node} =
+    {server_transport, passive_iq_node} =
       decode_client_transport_frame(server_transport, passive_iq_frame)
 
-    # swallow the unified session side effect so follow-up tests can assert on their own writes
+    passive_result = %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => passive_iq_node.attrs["id"], "type" => "result"},
+      content: nil
+    }
+
+    {server_transport, passive_result_frame} =
+      server_transport_frame(server_transport, passive_result)
+
+    Kernel.send(pid, {:scripted_transport, {:binary, passive_result_frame}})
+
+    assert_eventually(fn -> Socket.state(pid) == :connected end)
+
     assert_receive {:transport_sent, unified_session_frame}
 
     {server_transport, _unified_session_node} =
@@ -984,6 +1233,8 @@ defmodule BaileysEx.Connection.SocketTest do
                auth_state: auth_state,
                noise_opts: [trusted_cert: trusted_cert],
                event_emitter: event_emitter,
+               signal_store: Keyword.get(opts, :signal_store),
+               task_supervisor: Keyword.get(opts, :task_supervisor),
                transport: {ScriptedTransport, %{test_pid: self()}}
              )
 

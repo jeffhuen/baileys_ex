@@ -366,7 +366,9 @@ falsely marked as implemented here.
 - [x] Login node constructed correctly for returning users
 - [x] Registration node includes device props, history sync config, platform type
 - [x] Pair-success HMAC and ADV signature verification passes
+- [x] Companion-finish waits for the query result before `registered: true` is emitted
 - [x] Pre-key upload triggered automatically when server count is low
+- [x] Socket-owned post-auth pre-key ordering matches rc.9 before `connection.update(:open)`
 - [x] Signed pre-key rotation works correctly
 - [x] Key store transactions serialize concurrent read/write bursts (GAP-44)
 - [x] Transaction commits roll back to the previous persisted snapshot on failure (GAP-44)

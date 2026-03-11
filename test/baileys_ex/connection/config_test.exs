@@ -13,6 +13,8 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.max_retries == 5
     assert config.connect_timeout_ms == 20_000
     assert config.initial_sync_timeout_ms == 20_000
+    assert config.pairing_qr_initial_timeout_ms == 60_000
+    assert config.pairing_qr_refresh_timeout_ms == 20_000
     assert config.fire_init_queries == true
     assert config.mark_online_on_connect == true
     assert config.browser == {"Mac OS", "Chrome", "14.4.1"}
@@ -29,6 +31,8 @@ defmodule BaileysEx.Connection.ConfigTest do
         keep_alive_interval_ms: 5_000,
         default_query_timeout_ms: 15_000,
         initial_sync_timeout_ms: 10_000,
+        pairing_qr_initial_timeout_ms: 45_000,
+        pairing_qr_refresh_timeout_ms: 15_000,
         fire_init_queries: false,
         mark_online_on_connect: false,
         browser: {"Ubuntu", "Firefox", "24.04"},
@@ -41,6 +45,8 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.keep_alive_interval_ms == 5_000
     assert config.default_query_timeout_ms == 15_000
     assert config.initial_sync_timeout_ms == 10_000
+    assert config.pairing_qr_initial_timeout_ms == 45_000
+    assert config.pairing_qr_refresh_timeout_ms == 15_000
     assert config.fire_init_queries == false
     assert config.mark_online_on_connect == false
     assert config.browser == {"Ubuntu", "Firefox", "24.04"}

@@ -20,6 +20,8 @@ defmodule BaileysEx.Connection.Socket do
   alias BaileysEx.Connection.Transport
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Noise
+  alias BaileysEx.Signal.PreKey
+  alias BaileysEx.Signal.Store, as: SignalStore
 
   @s_whatsapp_net "s.whatsapp.net"
 
@@ -44,6 +46,8 @@ defmodule BaileysEx.Connection.Socket do
           config: Config.t(),
           auth_state: term(),
           event_emitter: GenServer.server() | nil,
+          signal_store: term(),
+          task_supervisor: term(),
           noise_opts: keyword(),
           noise: Noise.t() | nil,
           transport_module: module(),
@@ -68,7 +72,9 @@ defmodule BaileysEx.Connection.Socket do
     :config,
     :auth_state,
     :event_emitter,
+    :signal_store,
     :noise,
+    :task_supervisor,
     :transport_module,
     :transport_options,
     :transport_state,
@@ -176,6 +182,8 @@ defmodule BaileysEx.Connection.Socket do
       config: Keyword.get(opts, :config, Config.new()),
       auth_state: Keyword.get(opts, :auth_state),
       event_emitter: Keyword.get(opts, :event_emitter),
+      signal_store: Keyword.get(opts, :signal_store),
+      task_supervisor: Keyword.get(opts, :task_supervisor),
       noise_opts: Keyword.get(opts, :noise_opts, []),
       transport_module: transport_module,
       transport_options: transport_options
@@ -221,6 +229,15 @@ defmodule BaileysEx.Connection.Socket do
 
   def authenticating(:enter, _old_state, data), do: {:keep_state, data}
 
+  def authenticating(:info, {:internal_creds_update, creds_update}, data),
+    do: {:keep_state, apply_internal_creds_update(data, creds_update)}
+
+  def authenticating(:info, {:phone_pairing_finish_result, result, creds_update}, data),
+    do: handle_phone_pairing_finish_result(result, creds_update, data)
+
+  def authenticating(:info, {:post_auth_result, result}, data),
+    do: handle_post_auth_result(result, data)
+
   def authenticating(:info, :qr_refresh, data), do: refresh_pairing_qr(data)
 
   def authenticating(:info, message, data),
@@ -234,6 +251,9 @@ defmodule BaileysEx.Connection.Socket do
   def connected(:enter, _old_state, data) do
     {:keep_state, schedule_keep_alive(data)}
   end
+
+  def connected(:info, {:internal_creds_update, creds_update}, data),
+    do: {:keep_state, apply_internal_creds_update(data, creds_update)}
 
   def connected(:info, {:query_timeout, query_id}, data),
     do: {:keep_state, expire_query(data, query_id)}
@@ -291,7 +311,8 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
-  defp handle_call(:connected, from, {:send_node, %BinaryNode{} = node}, data) do
+  defp handle_call(current_state, from, {:send_node, %BinaryNode{} = node}, data)
+       when current_state in [:authenticating, :connected] do
     case send_node_internal(data, node) do
       {:ok, data} ->
         {:keep_state, data, [{:reply, from, :ok}]}
@@ -301,8 +322,9 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
-  defp handle_call(:connected, from, {:query, %BinaryNode{} = node, reply_to, timeout}, data)
-       when is_integer(timeout) and timeout > 0 do
+  defp handle_call(current_state, from, {:query, %BinaryNode{} = node, reply_to, timeout}, data)
+       when current_state in [:authenticating, :connected] and is_integer(timeout) and
+              timeout > 0 do
     {node, query_id} = ensure_query_id(node, data.pending_queries)
 
     case send_node_internal(data, node) do
@@ -520,17 +542,9 @@ defmodule BaileysEx.Connection.Socket do
       |> maybe_update_server_time_offset(attrs["t"])
       |> maybe_update_lid(attrs["lid"])
 
-    case send_passive_iq(data, :active) do
-      {:ok, data} ->
-        emit_event(data, :connection_update, %{connection: :open})
-
-        case send_unified_session(data) do
-          {:ok, data} -> {:ok, :connected, data}
-          {:error, reason, data} -> {:error, reason, data}
-        end
-
-      {:error, reason, data} ->
-        {:error, reason, data}
+    case start_post_auth_sequence(data) do
+      :ok -> {:ok, :authenticating, data}
+      {:error, reason} -> {:error, reason, data}
     end
   end
 
@@ -551,22 +565,29 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
-  defp apply_binary_node(:authenticating, %BinaryNode{tag: "notification"} = node, data) do
-    if BinaryNodeUtil.child(node, "link_code_companion_reg") do
-      handle_phone_pairing_notification(node, data)
-    else
-      {:ok, :authenticating, data}
-    end
-  end
+  defp apply_binary_node(:authenticating, %BinaryNode{tag: "notification"} = node, data),
+    do: apply_notification_node(:authenticating, node, data)
+
+  defp apply_binary_node(:connected, %BinaryNode{tag: "notification"} = node, data),
+    do: apply_notification_node(:connected, node, data)
 
   defp apply_binary_node(current_state, %BinaryNode{tag: "iq"} = node, data) do
     {:ok, current_state, maybe_resolve_query(data, node)}
   end
 
+  defp apply_binary_node(_current_state, %BinaryNode{tag: "stream:error"} = node, data),
+    do: {:error, stream_error_reason(node), data}
+
+  defp apply_binary_node(_current_state, %BinaryNode{tag: "failure"} = node, data),
+    do: {:error, failure_reason(node), data}
+
   defp apply_binary_node(current_state, _node, data), do: {:ok, current_state, data}
 
   defp apply_ib_node(current_state, node, data) do
     cond do
+      BinaryNodeUtil.child(node, "downgrade_webclient") ->
+        {:error, :multidevice_mismatch, data}
+
       BinaryNodeUtil.child(node, "offline_preview") ->
         case send_offline_batch(data) do
           {:ok, data} -> {:ok, current_state, data}
@@ -711,14 +732,18 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp handle_phone_pairing_notification(%BinaryNode{} = node, %__MODULE__{} = data) do
+    socket_pid = self()
+
     with {:ok, %{creds_update: creds_update, node: finish_node}} <-
            Phone.complete_pairing(node, data.auth_state),
-         data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)},
-         :ok <- emit_event(data, :creds_update, creds_update),
-         {:ok, data} <- send_node_internal(data, finish_node) do
+         :ok <-
+           start_socket_task(data, fn ->
+             result = query(socket_pid, finish_node, data.config.default_query_timeout_ms)
+
+             Kernel.send(socket_pid, {:phone_pairing_finish_result, result, creds_update})
+           end) do
       {:ok, :authenticating, data}
     else
-      {:error, reason, data} -> {:error, reason, data}
       {:error, reason} -> {:error, reason, data}
     end
   end
@@ -740,11 +765,11 @@ defmodule BaileysEx.Connection.Socket do
           data
           |> clear_pairing_qr()
           |> Map.put(:qr_refs, remaining_refs)
-          |> Map.put(:next_qr_timeout_ms, 20_000)
+          |> Map.put(:next_qr_timeout_ms, data.config.pairing_qr_refresh_timeout_ms)
 
         emit_event(data, :connection_update, %{qr: QR.generate(ref, data.auth_state)})
 
-        {:ok, schedule_pairing_qr(data, 60_000)}
+        {:ok, schedule_pairing_qr(data, data.config.pairing_qr_initial_timeout_ms)}
     end
   end
 
@@ -819,10 +844,6 @@ defmodule BaileysEx.Connection.Socket do
     send_node_internal(data, keep_alive_node())
   end
 
-  defp send_passive_iq(data, tag) when tag in [:active, :passive] do
-    send_node_internal(data, passive_iq_node(tag))
-  end
-
   defp send_unified_session(data) do
     send_node_internal(data, unified_session_node(data))
   end
@@ -848,6 +869,172 @@ defmodule BaileysEx.Connection.Socket do
 
   defp maybe_send_presence_unified_session(data, :available), do: send_unified_session(data)
   defp maybe_send_presence_unified_session(data, :unavailable), do: {:ok, data}
+
+  defp apply_notification_node(current_state, %BinaryNode{} = node, %__MODULE__{} = data) do
+    cond do
+      BinaryNodeUtil.child(node, "link_code_companion_reg") ->
+        handle_phone_pairing_notification(node, data)
+
+      low_prekey_count = encrypt_notification_count(node) ->
+        _ = maybe_start_low_prekey_upload(data, low_prekey_count)
+        {:ok, current_state, data}
+
+      true ->
+        {:ok, current_state, data}
+    end
+  end
+
+  defp handle_phone_pairing_finish_result({:ok, _response}, creds_update, %__MODULE__{} = data) do
+    data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)}
+    :ok = emit_event(data, :creds_update, creds_update)
+    {:keep_state, data}
+  end
+
+  defp handle_phone_pairing_finish_result({:error, reason}, _creds_update, %__MODULE__{} = data) do
+    connection_failure(data, reason)
+  end
+
+  defp handle_post_auth_result(:ok, %__MODULE__{} = data) do
+    emit_event(data, :connection_update, %{connection: :open})
+
+    case send_unified_session(data) do
+      {:ok, data} -> {:next_state, :connected, data}
+      {:error, reason, data} -> connection_failure(data, reason)
+    end
+  end
+
+  defp handle_post_auth_result({:error, reason}, %__MODULE__{} = data) do
+    connection_failure(data, reason)
+  end
+
+  defp apply_internal_creds_update(%__MODULE__{} = data, creds_update)
+       when is_map(creds_update) do
+    data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)}
+    :ok = emit_event(data, :creds_update, creds_update)
+    data
+  end
+
+  defp start_post_auth_sequence(%__MODULE__{} = data) do
+    socket_pid = self()
+
+    start_socket_task(data, fn ->
+      result =
+        with :ok <- maybe_upload_post_auth_prekeys(data, socket_pid),
+             {:ok, _response} <-
+               query(socket_pid, passive_iq_node(:active), data.config.default_query_timeout_ms) do
+          maybe_digest_post_auth_prekeys(data, socket_pid)
+        end
+
+      Kernel.send(socket_pid, {:post_auth_result, result})
+    end)
+  end
+
+  defp maybe_upload_post_auth_prekeys(%__MODULE__{} = data, socket_pid) do
+    case resolve_signal_store(data.signal_store) do
+      %SignalStore{} = signal_store ->
+        with {:ok, response} <-
+               query(
+                 socket_pid,
+                 PreKey.available_prekeys_node(),
+                 data.config.default_query_timeout_ms
+               ),
+             {:ok, count} <- PreKey.available_prekeys_count(response) do
+          PreKey.maybe_upload_for_server_count(
+            prekey_runtime_opts(data, signal_store, socket_pid),
+            count
+          )
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_digest_post_auth_prekeys(%__MODULE__{} = data, socket_pid) do
+    case resolve_signal_store(data.signal_store) do
+      %SignalStore{} = signal_store ->
+        PreKey.digest_key_bundle(prekey_runtime_opts(data, signal_store, socket_pid))
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_start_low_prekey_upload(%__MODULE__{} = data, count)
+       when is_integer(count) and count >= 0 do
+    socket_pid = self()
+
+    case resolve_signal_store(data.signal_store) do
+      %SignalStore{} = signal_store ->
+        start_socket_task(data, fn ->
+          _ =
+            PreKey.maybe_upload_for_server_count(
+              prekey_runtime_opts(data, signal_store, socket_pid),
+              count
+            )
+
+          :ok
+        end)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp start_socket_task(%__MODULE__{} = data, fun) when is_function(fun, 0) do
+    case data.task_supervisor do
+      nil ->
+        {:ok, _pid} = Task.start(fun)
+        :ok
+
+      task_supervisor ->
+        case Task.Supervisor.start_child(task_supervisor, fun) do
+          {:ok, _pid} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp prekey_runtime_opts(%__MODULE__{} = data, %SignalStore{} = signal_store, socket_pid) do
+    [
+      store: signal_store,
+      auth_state: data.auth_state,
+      query_fun: fn node -> query(socket_pid, node, data.config.default_query_timeout_ms) end,
+      emit_creds_update: fn update ->
+        Kernel.send(socket_pid, {:internal_creds_update, update})
+        :ok
+      end,
+      upload_key: {:prekey_upload, socket_pid},
+      upload_timeout_ms: 30_000
+    ]
+  end
+
+  defp resolve_signal_store(nil), do: nil
+  defp resolve_signal_store(%SignalStore{} = signal_store), do: signal_store
+
+  defp resolve_signal_store({module, server}) when is_atom(module) do
+    pid = GenServer.whereis(server)
+
+    if is_pid(pid) and function_exported?(module, :wrap, 1) do
+      %SignalStore{module: module, ref: module.wrap(pid)}
+    else
+      nil
+    end
+  end
+
+  defp resolve_signal_store(_signal_store), do: nil
+
+  defp encrypt_notification_count(%BinaryNode{attrs: %{"from" => @s_whatsapp_net}} = node) do
+    case BinaryNodeUtil.child(node, "encrypt") |> BinaryNodeUtil.child("count") do
+      %BinaryNode{attrs: %{"value" => value}} ->
+        parse_optional_integer(value)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp encrypt_notification_count(_node), do: nil
 
   defp send_node_internal(data, %BinaryNode{} = node) do
     node
@@ -996,6 +1183,38 @@ defmodule BaileysEx.Connection.Socket do
   defp parse_dirty_update(%BinaryNode{attrs: attrs}) do
     %{type: attrs["type"], timestamp: parse_optional_integer(attrs["timestamp"])}
   end
+
+  defp stream_error_reason(%BinaryNode{attrs: attrs, content: content}) do
+    reason =
+      case List.first(List.wrap(content)) do
+        %BinaryNode{tag: tag} when is_binary(tag) -> tag
+        _ -> "unknown"
+      end
+
+    attrs
+    |> Map.get("code")
+    |> parse_optional_integer()
+    |> disconnect_reason(reason)
+  end
+
+  defp failure_reason(%BinaryNode{attrs: attrs}) do
+    attrs
+    |> Map.get("reason")
+    |> parse_optional_integer()
+    |> disconnect_reason("failure")
+  end
+
+  defp disconnect_reason(nil, "conflict"), do: :connection_replaced
+  defp disconnect_reason(440, _reason), do: :connection_replaced
+  defp disconnect_reason(515, _reason), do: :restart_required
+  defp disconnect_reason(411, _reason), do: :multidevice_mismatch
+  defp disconnect_reason(401, _reason), do: :logged_out
+  defp disconnect_reason(403, _reason), do: :forbidden
+  defp disconnect_reason(503, _reason), do: :unavailable_service
+  defp disconnect_reason(408, _reason), do: :connection_lost
+  defp disconnect_reason(nil, _reason), do: :bad_session
+  defp disconnect_reason(500, _reason), do: :bad_session
+  defp disconnect_reason(code, reason) when is_integer(code), do: {:disconnect, code, reason}
 
   defp parse_optional_integer(nil), do: nil
 

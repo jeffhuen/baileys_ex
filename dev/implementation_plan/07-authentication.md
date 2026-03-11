@@ -172,19 +172,21 @@ Flow:
 2. `Auth.Phone.build_pairing_request/4` generates or validates the 8-char pairing code, derives the wrapped companion ephemeral key via PBKDF2-SHA256 (131,072 iterations), and builds the `link_code_companion_reg` companion-hello IQ
 3. The socket emits `creds_update` with `pairing_code` and `me`, then sends the companion-hello node
 4. WhatsApp later sends a `notification/link_code_companion_reg` auth node with the wrapped primary ephemeral key
-5. `Auth.Phone.complete_pairing/2` deciphers that payload, derives the new ADV secret, builds the companion-finish IQ, and emits `creds_update` with `registered: true`
+5. `Auth.Phone.complete_pairing/2` deciphers that payload, derives the new ADV secret, and builds the companion-finish IQ
+6. `Connection.Socket` sends the companion-finish node as a query, waits for the server result, and only then emits `creds_update` with `registered: true`
 
 ### 7.6 Pre-key upload
 
-Files: `lib/baileys_ex/signal/prekey.ex`, `lib/baileys_ex/connection/coordinator.ex`, `lib/baileys_ex/connection/supervisor.ex`
+Files: `lib/baileys_ex/signal/prekey.ex`, `lib/baileys_ex/connection/socket.ex`, `lib/baileys_ex/connection/supervisor.ex`
 
 Upload pre-keys to WhatsApp server after authentication:
 - Check server's pre-key count
 - Generate batch of new pre-keys if needed
 - Upload via binary node
 - Track uploaded key IDs in auth state
-- Run the sync on connection open and serialize concurrent upload attempts, matching
-  the v7 pre-key synchronization hardening work
+- Run the sync inside `Connection.Socket`'s post-success path, before `connection.update(:open)`,
+  so the order matches rc.9: `count -> upload_if_required -> passive(active) -> digest -> open`
+- Serialize concurrent upload attempts and bound the upload work with the explicit 30s timeout used by Baileys
 - Phase 7 currently uses the existing `Signal.Store.Memory` child for runtime pre-key material;
   Phase 7.7 replaces that narrow runtime child with the richer transactional key-store wrapper
 
@@ -274,7 +276,7 @@ end
 
 ### 7.9 Pre-key management (advanced)
 
-Files: `lib/baileys_ex/signal/prekey.ex`, `lib/baileys_ex/connection/coordinator.ex`
+Files: `lib/baileys_ex/signal/prekey.ex`, `lib/baileys_ex/connection/socket.ex`
 
 Additional pre-key management functions beyond basic upload, covering automatic
 replenishment and rotation:
@@ -291,9 +293,10 @@ replenishment and rotation:
 #   - sends encrypt/set rotate<skey>
 #   - emits creds_update with the new signed_pre_key
 #
-# `Connection.Coordinator` now runs digest validation after the open-path
-# pre-key upload check, preserving the rc.9 "upload then digest" flow while
-# keeping the wrapper/runtime layering established in Phase 6.
+# `Connection.Socket` now owns the rc.9 post-auth sequencing:
+#   - awaits the passive IQ result before emitting `connection.update(:open)`
+#   - runs digest validation after the pre-key upload check
+#   - handles low pre-key server notifications without routing them through the wrapper
 ```
 
 ### 7.10 Tests
@@ -305,11 +308,12 @@ replenishment and rotation:
 - [x] Phone pairing PBKDF2 key derivation against test vectors
 - [x] Phone pairing companion-hello and companion-finish node coverage
 - [x] Pre-key upload node construction
-- [x] Connection-open pre-key upload trigger coverage
+- [x] Connection-socket pre-key upload ordering coverage
 - [x] Login payload generation and socket handshake coverage
 - [x] Registration payload generation and device-props coverage
 - [x] Open-path digest validation coverage
 - [x] Signed pre-key rotation coverage
+- [x] Explicit pre-key upload timeout coverage
 - [x] Transactional key-store persistence, rollback, and cache coverage
 - [x] Persistent key-store integration coverage through the connection supervisor
 
@@ -327,7 +331,9 @@ replenishment and rotation:
 - [x] Login node constructed correctly for returning users
 - [x] Registration node includes device props, history sync config, platform type
 - [x] Pair-success HMAC and ADV signature verification passes
+- [x] Companion-finish waits for an IQ result before `registered: true` is persisted
 - [x] Pre-key upload triggered automatically when server count is low
+- [x] Socket delays `connection.update(:open)` until the rc.9 pre-key upload / passive / digest sequence completes
 - [x] Signed pre-key rotation works correctly
 - [x] Key store transactions serialize concurrent read/write bursts (GAP-44)
 - [x] Transaction commits roll back to the previous persisted snapshot on failure (GAP-44)

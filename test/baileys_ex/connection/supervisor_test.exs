@@ -2,9 +2,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.BinaryNode
-  alias BaileysEx.Auth.FilePersistence
-  alias BaileysEx.Auth.KeyStore
-  alias BaileysEx.Auth.State
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
@@ -347,15 +344,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
              }
            ]
          }}
-
-      %BinaryNode{attrs: %{"xmlns" => "encrypt"}, content: [%BinaryNode{tag: "count"}]},
-      _timeout ->
-        {:ok,
-         %BinaryNode{
-           tag: "iq",
-           attrs: %{"type" => "result"},
-           content: [%BinaryNode{tag: "count", attrs: %{"value" => "10"}, content: nil}]
-         }}
     end
 
     assert {:ok, supervisor} =
@@ -378,7 +366,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     assert_receive {:fake_socket_presence_update, :available}
 
-    assert_eventually_xmlns(["w", "blocklist", "privacy", "encrypt"])
+    assert_eventually_xmlns(["w", "blocklist", "privacy"])
 
     assert_eventually(fn ->
       Store.get(store_ref, :props) == %{"web:voip" => "1"} and
@@ -388,156 +376,27 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end)
   end
 
-  @tag :tmp_dir
-  test "connection open uploads pre-keys when the current pre-key is missing from storage", %{
-    tmp_dir: tmp_dir
-  } do
+  test "creds updates that change push name send a presence node through the socket" do
     name = {:phase7_test, System.unique_integer([:positive])}
-    test_pid = self()
-
-    query_handler = fn
-      %BinaryNode{
-        attrs: %{"xmlns" => "encrypt", "type" => "get"},
-        content: [%BinaryNode{tag: "count"}]
-      },
-      _timeout ->
-        {:ok,
-         %BinaryNode{
-           tag: "iq",
-           attrs: %{"type" => "result"},
-           content: [%BinaryNode{tag: "count", attrs: %{"value" => "10"}, content: nil}]
-         }}
-
-      %BinaryNode{
-        attrs: %{"xmlns" => "encrypt", "type" => "get"},
-        content: [%BinaryNode{tag: "digest"}]
-      },
-      _timeout ->
-        {:ok,
-         %BinaryNode{
-           tag: "iq",
-           attrs: %{"type" => "result"},
-           content: [%BinaryNode{tag: "digest", attrs: %{}, content: nil}]
-         }}
-
-      %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}} = node, _timeout ->
-        send(test_pid, {:prekey_upload_query, node})
-        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
-    end
-
-    auth_state =
-      State.new()
-      |> Map.put(:me, %{id: "15551234567@s.whatsapp.net", name: "~"})
-      |> Map.put(:next_pre_key_id, 2)
-      |> Map.put(:first_unuploaded_pre_key_id, 2)
 
     assert {:ok, supervisor} =
              Supervisor.start_link(
                name: name,
                config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
-               auth_state: auth_state,
+               auth_state: %{creds: %{me: %{id: "15551234567@s.whatsapp.net", name: "Old"}}},
                socket_module: FakeSocket,
-               signal_store_module: KeyStore,
-               signal_store_opts: [
-                 persistence_module: FilePersistence,
-                 persistence_context: tmp_dir
-               ],
                test_pid: self(),
-               query_handler: query_handler,
                transport: {NoopTransport, %{}}
              )
 
     assert_receive :fake_socket_connect
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
-    store_ref = supervisor |> child_pid!(Store) |> Store.wrap()
 
-    assert :ok = EventEmitter.emit(emitter_pid, :connection_update, %{connection: :open})
+    assert :ok = EventEmitter.emit(emitter_pid, :creds_update, %{me: %{name: "New"}})
 
-    assert_receive {:fake_socket_query,
-                    %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "get"}}, 60_000}
-
-    assert_eventually(fn ->
-      receive do
-        {:prekey_upload_query, %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}}} ->
-          true
-
-        {:fake_socket_presence_update, :unavailable} ->
-          false
-      after
-        0 ->
-          false
-      end
-    end)
-
-    assert_eventually(fn ->
-      Store.get(store_ref, :creds)[:next_pre_key_id] == 7 and
-        Store.get(store_ref, :creds)[:first_unuploaded_pre_key_id] == 7
-    end)
-
-    assert {:ok, %{public: public, private: private}} =
-             FilePersistence.load_keys(tmp_dir, :"pre-key", "2")
-
-    assert is_binary(public)
-    assert is_binary(private)
-  end
-
-  test "connection open runs encrypt digest validation after the initial pre-key checks" do
-    name = {:phase7_test, System.unique_integer([:positive])}
-    test_pid = self()
-
-    query_handler = fn
-      %BinaryNode{
-        attrs: %{"xmlns" => "encrypt", "type" => "get"},
-        content: [%BinaryNode{tag: "count"}]
-      },
-      _timeout ->
-        send(test_pid, :count_query_seen)
-
-        {:ok,
-         %BinaryNode{
-           tag: "iq",
-           attrs: %{"type" => "result"},
-           content: [%BinaryNode{tag: "count", attrs: %{"value" => "10"}, content: nil}]
-         }}
-
-      %BinaryNode{
-        attrs: %{"xmlns" => "encrypt", "type" => "get"},
-        content: [%BinaryNode{tag: "digest"}]
-      },
-      _timeout ->
-        send(test_pid, :digest_query_seen)
-
-        {:ok,
-         %BinaryNode{
-           tag: "iq",
-           attrs: %{"type" => "result"},
-           content: [%BinaryNode{tag: "digest", attrs: %{}, content: nil}]
-         }}
-
-      _node, _timeout ->
-        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
-    end
-
-    assert {:ok, supervisor} =
-             Supervisor.start_link(
-               name: name,
-               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
-               auth_state:
-                 State.new() |> Map.put(:me, %{id: "15551234567@s.whatsapp.net", name: "~"}),
-               socket_module: FakeSocket,
-               test_pid: self(),
-               query_handler: query_handler,
-               transport: {NoopTransport, %{}}
-             )
-
-    assert_receive :fake_socket_connect
-
-    emitter_pid = child_pid!(supervisor, EventEmitter)
-    assert :ok = EventEmitter.emit(emitter_pid, :connection_update, %{connection: :open})
-
-    assert_receive :count_query_seen
-    assert_receive :digest_query_seen
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{tag: "presence", attrs: %{"name" => "New"}}}
   end
 
   test "account sync dirty updates last_account_sync_timestamp and cleans from the previous timestamp" do

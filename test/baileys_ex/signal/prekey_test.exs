@@ -30,7 +30,7 @@ defmodule BaileysEx.Signal.PreKeyTest do
     assert %BinaryNode{tag: "registration"} = Enum.find(content, &(&1.tag == "registration"))
     assert %BinaryNode{tag: "type"} = Enum.find(content, &(&1.tag == "type"))
 
-    assert %BinaryNode{tag: "identity", content: identity_public} =
+    assert %BinaryNode{tag: "identity", content: {:binary, identity_public}} =
              Enum.find(content, &(&1.tag == "identity"))
 
     assert identity_public == state.signed_identity_key.public
@@ -201,5 +201,39 @@ defmodule BaileysEx.Signal.PreKeyTest do
     assert signed_pre_key.key_id == state.signed_pre_key.key_id + 1
     assert_receive {:creds_update, %{signed_pre_key: ^signed_pre_key}}
     assert_receive {:rotate_query, %BinaryNode{}, %BinaryNode{tag: "rotate"}}
+  end
+
+  test "upload_if_required/1 returns an upload timeout when the upload exceeds the explicit timeout",
+       %{
+         store: store
+       } do
+    state = State.new() |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
+
+    assert {:error, :upload_timeout} =
+             PreKey.upload_if_required(
+               store: store,
+               auth_state: state,
+               query_fun: fn
+                 %BinaryNode{
+                   attrs: %{"xmlns" => "encrypt", "type" => "get"},
+                   content: [%BinaryNode{tag: "count"}]
+                 } ->
+                   {:ok,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{"type" => "result"},
+                      content: [%BinaryNode{tag: "count", attrs: %{"value" => "0"}, content: nil}]
+                    }}
+
+                 %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}} ->
+                   Process.sleep(30)
+                   {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+               end,
+               emit_creds_update: fn _update -> :ok end,
+               upload_key: {"timed-upload", System.unique_integer([:positive])},
+               initial_prekey_count: 2,
+               min_prekey_count: 2,
+               upload_timeout_ms: 5
+             )
   end
 end

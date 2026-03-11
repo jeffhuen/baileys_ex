@@ -40,6 +40,8 @@ defmodule BaileysEx.Connection.Supervisor do
       opts
       |> Keyword.drop([:name, :socket_module, :signal_store_module, :signal_store_opts])
       |> Keyword.put_new(:event_emitter, emitter_name)
+      |> Keyword.put_new(:signal_store, {signal_store_module, signal_store_name})
+      |> Keyword.put_new(:task_supervisor, task_supervisor_name)
 
     children = [
       Elixir.Supervisor.child_spec({socket_module, socket_opts}, id: socket_module),

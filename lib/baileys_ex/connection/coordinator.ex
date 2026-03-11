@@ -14,7 +14,6 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
-  alias BaileysEx.Signal.PreKey
   alias BaileysEx.Signal.Store, as: SignalStore
   alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
 
@@ -93,9 +92,12 @@ defmodule BaileysEx.Connection.Coordinator do
 
   @impl true
   def handle_info({:events, events}, %State{} = state) when is_map(events) do
+    previous_creds = Store.get(state.store_ref, :creds, %{})
+
     state =
       state
       |> persist_creds_update(events)
+      |> maybe_send_push_name_presence_update(previous_creds, events)
       |> handle_connection_update(events)
       |> handle_sync_event(events)
       |> handle_dirty_update(events)
@@ -146,7 +148,6 @@ defmodule BaileysEx.Connection.Coordinator do
     |> cancel_reconnect()
     |> maybe_execute_init_queries()
     |> maybe_send_presence_update()
-    |> maybe_upload_prekeys()
   end
 
   defp handle_connection_update(
@@ -290,41 +291,6 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp maybe_upload_prekeys(%State{signal_store: nil} = state), do: state
-
-  defp maybe_upload_prekeys(%State{} = state) do
-    _ =
-      Task.Supervisor.start_child(state.task_supervisor, fn ->
-        with {:ok, socket_pid} <- fetch_socket_pid(state) do
-          prekey_opts = prekey_runtime_opts(state, socket_pid)
-          _ = PreKey.upload_if_required(prekey_opts)
-          _ = PreKey.digest_key_bundle(prekey_opts)
-        end
-      end)
-
-    state
-  end
-
-  defp prekey_runtime_opts(%State{} = state, socket_pid) do
-    [
-      store: state.signal_store,
-      auth_state: Store.get(state.store_ref, :auth_state, %{}),
-      query_fun: fn node ->
-        state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms)
-      end,
-      emit_creds_update: fn update ->
-        EventEmitter.emit(state.event_emitter, :creds_update, update)
-      end,
-      upload_key: {:prekey_upload, state.supervisor},
-      get_last_upload_at: fn ->
-        Store.get(state.store_ref, :last_pre_key_upload_at)
-      end,
-      put_last_upload_at: fn timestamp ->
-        Store.put(state.store, :last_pre_key_upload_at, timestamp)
-      end
-    ]
-  end
-
   defp init_query_work(%State{} = state) do
     [
       fn -> fetch_props(state) end,
@@ -434,6 +400,29 @@ defmodule BaileysEx.Connection.Coordinator do
     end)
   end
 
+  defp maybe_send_push_name_presence_update(
+         %State{} = state,
+         previous_creds,
+         %{creds_update: %{me: me_update}}
+       )
+       when is_map(previous_creds) and is_map(me_update) do
+    previous_name = nested_name(previous_creds)
+    next_name = nested_name(%{me: me_update})
+
+    if is_binary(next_name) and next_name != "" and next_name != previous_name do
+      node = %BinaryNode{tag: "presence", attrs: %{"name" => next_name}, content: nil}
+
+      case fetch_socket_pid(state) do
+        {:ok, socket_pid} -> _ = state.socket_module.send_node(socket_pid, node)
+        :error -> :ok
+      end
+    end
+
+    state
+  end
+
+  defp maybe_send_push_name_presence_update(%State{} = state, _previous_creds, _events), do: state
+
   defp send_clean_dirty_bits(%State{} = state, type, from_timestamp \\ nil)
        when is_binary(type) do
     attrs =
@@ -502,4 +491,10 @@ defmodule BaileysEx.Connection.Coordinator do
   defp wrap_signal_store(server) do
     wrap_signal_store({SignalStoreMemory, server})
   end
+
+  defp nested_name(%{me: %{name: name}}) when is_binary(name), do: name
+  defp nested_name(%{me: %{"name" => name}}) when is_binary(name), do: name
+  defp nested_name(%{"me" => %{name: name}}) when is_binary(name), do: name
+  defp nested_name(%{"me" => %{"name" => name}}) when is_binary(name), do: name
+  defp nested_name(_creds), do: nil
 end

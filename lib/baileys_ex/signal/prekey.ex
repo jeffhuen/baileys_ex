@@ -12,6 +12,7 @@ defmodule BaileysEx.Signal.PreKey do
   @default_min_prekey_count 5
   @default_initial_prekey_count 812
   @default_min_upload_interval_ms 5_000
+  @default_upload_timeout_ms 30_000
 
   @spec next_pre_keys_node(Store.t(), map(), pos_integer()) ::
           {:ok, %{update: map(), node: BinaryNode.t()}} | {:error, term()}
@@ -39,7 +40,24 @@ defmodule BaileysEx.Signal.PreKey do
   @spec upload_if_required(keyword()) :: :ok | {:error, term()}
   def upload_if_required(opts) when is_list(opts) do
     upload_key = Keyword.get(opts, :upload_key, self())
-    :global.trans({__MODULE__, upload_key}, fn -> do_upload_if_required(opts) end)
+    timeout_ms = Keyword.get(opts, :upload_timeout_ms, @default_upload_timeout_ms)
+
+    :global.trans({__MODULE__, upload_key}, fn ->
+      with_upload_timeout(timeout_ms, fn -> do_upload_if_required_locked(opts) end)
+    end)
+  end
+
+  @spec maybe_upload_for_server_count(keyword(), non_neg_integer()) :: :ok | {:error, term()}
+  def maybe_upload_for_server_count(opts, pre_key_count)
+      when is_list(opts) and is_integer(pre_key_count) and pre_key_count >= 0 do
+    upload_key = Keyword.get(opts, :upload_key, self())
+    timeout_ms = Keyword.get(opts, :upload_timeout_ms, @default_upload_timeout_ms)
+
+    :global.trans({__MODULE__, upload_key}, fn ->
+      with_upload_timeout(timeout_ms, fn ->
+        do_maybe_upload_for_server_count_locked(opts, pre_key_count)
+      end)
+    end)
   end
 
   @spec digest_key_bundle(keyword()) :: :ok | {:error, term()}
@@ -79,15 +97,41 @@ defmodule BaileysEx.Signal.PreKey do
     end
   end
 
-  defp do_upload_if_required(opts) do
+  @spec available_prekeys_node() :: BinaryNode.t()
+  def available_prekeys_node do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"to" => @s_whatsapp_net, "type" => "get", "xmlns" => "encrypt"},
+      content: [%BinaryNode{tag: "count", attrs: %{}, content: nil}]
+    }
+  end
+
+  @spec available_prekeys_count(BinaryNode.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def available_prekeys_count(%BinaryNode{} = response) do
+    with %BinaryNode{attrs: %{"value" => value}} <- child_by_tag(response, "count"),
+         {count, ""} <- Integer.parse(value) do
+      {:ok, count}
+    else
+      _ -> {:error, :invalid_prekey_count_response}
+    end
+  end
+
+  defp do_upload_if_required_locked(opts) do
+    query_fun = Keyword.fetch!(opts, :query_fun)
+
+    with {:ok, pre_key_count} <- get_available_prekeys_on_server(query_fun) do
+      do_maybe_upload_for_server_count_locked(opts, pre_key_count)
+    end
+  end
+
+  defp do_maybe_upload_for_server_count_locked(opts, pre_key_count) do
     store = Keyword.fetch!(opts, :store)
     auth_state = Keyword.fetch!(opts, :auth_state)
     context = build_upload_context(opts)
     min_prekey_count = Keyword.get(opts, :min_prekey_count, @default_min_prekey_count)
     initial_prekey_count = Keyword.get(opts, :initial_prekey_count, @default_initial_prekey_count)
 
-    with {:ok, pre_key_count} <- get_available_prekeys_on_server(context.query_fun),
-         {:ok, current_prekey_id, current_prekey_exists?} <-
+    with {:ok, current_prekey_id, current_prekey_exists?} <-
            verify_current_prekey_exists(store, auth_state) do
       requested_count = if pre_key_count == 0, do: initial_prekey_count, else: min_prekey_count
       low_server_count? = pre_key_count <= requested_count
@@ -162,15 +206,13 @@ defmodule BaileysEx.Signal.PreKey do
     end
   end
 
-  defp get_available_prekeys_on_server(query_fun) do
-    with {:ok, response} <- query_fun.(available_prekeys_node()),
-         %BinaryNode{attrs: %{"value" => value}} <- child_by_tag(response, "count"),
-         {count, ""} <- Integer.parse(value) do
-      {:ok, count}
-    else
-      _ -> {:error, :invalid_prekey_count_response}
-    end
-  end
+  defp get_available_prekeys_on_server(query_fun),
+    do:
+      query_fun.(available_prekeys_node())
+      |> then(fn
+        {:ok, response} -> available_prekeys_count(response)
+        {:error, _reason} = error -> error
+      end)
 
   defp verify_current_prekey_exists(store, auth_state) do
     next_pre_key_id = State.get(auth_state, :next_pre_key_id, 1)
@@ -218,14 +260,6 @@ defmodule BaileysEx.Signal.PreKey do
     {update, prekeys}
   end
 
-  defp available_prekeys_node do
-    %BinaryNode{
-      tag: "iq",
-      attrs: %{"to" => @s_whatsapp_net, "type" => "get", "xmlns" => "encrypt"},
-      content: [%BinaryNode{tag: "count", attrs: %{}, content: nil}]
-    }
-  end
-
   defp digest_key_bundle_node do
     %BinaryNode{
       tag: "iq",
@@ -242,10 +276,10 @@ defmodule BaileysEx.Signal.PreKey do
         %BinaryNode{
           tag: "registration",
           attrs: %{},
-          content: encode_big_endian(registration_id, 4)
+          content: {:binary, encode_big_endian(registration_id, 4)}
         },
-        %BinaryNode{tag: "type", attrs: %{}, content: @key_bundle_type},
-        %BinaryNode{tag: "identity", attrs: %{}, content: signed_identity_public_key},
+        %BinaryNode{tag: "type", attrs: %{}, content: {:binary, @key_bundle_type}},
+        %BinaryNode{tag: "identity", attrs: %{}, content: {:binary, signed_identity_public_key}},
         %BinaryNode{
           tag: "list",
           attrs: %{},
@@ -264,9 +298,9 @@ defmodule BaileysEx.Signal.PreKey do
       tag: "skey",
       attrs: %{},
       content: [
-        %BinaryNode{tag: "id", attrs: %{}, content: encode_big_endian(key_id, 3)},
-        %BinaryNode{tag: "value", attrs: %{}, content: key_pair.public},
-        %BinaryNode{tag: "signature", attrs: %{}, content: signature}
+        %BinaryNode{tag: "id", attrs: %{}, content: {:binary, encode_big_endian(key_id, 3)}},
+        %BinaryNode{tag: "value", attrs: %{}, content: {:binary, key_pair.public}},
+        %BinaryNode{tag: "signature", attrs: %{}, content: {:binary, signature}}
       ]
     }
   end
@@ -276,8 +310,8 @@ defmodule BaileysEx.Signal.PreKey do
       tag: "key",
       attrs: %{},
       content: [
-        %BinaryNode{tag: "id", attrs: %{}, content: encode_big_endian(id, 3)},
-        %BinaryNode{tag: "value", attrs: %{}, content: key_pair.public}
+        %BinaryNode{tag: "id", attrs: %{}, content: {:binary, encode_big_endian(id, 3)}},
+        %BinaryNode{tag: "value", attrs: %{}, content: {:binary, key_pair.public}}
       ]
     }
   end
@@ -347,4 +381,35 @@ defmodule BaileysEx.Signal.PreKey do
   end
 
   defp child_by_tag(_node, _tag), do: nil
+
+  defp with_upload_timeout(timeout_ms, fun)
+       when is_integer(timeout_ms) and timeout_ms > 0 and is_function(fun, 0) do
+    caller = self()
+    ref = make_ref()
+
+    {pid, monitor_ref} =
+      spawn_monitor(fn ->
+        Kernel.send(caller, {ref, fun.()})
+      end)
+
+    receive do
+      {^ref, result} ->
+        Process.demonitor(monitor_ref, [:flush])
+        result
+
+      {:DOWN, ^monitor_ref, :process, _pid, reason} ->
+        {:error, {:upload_crash, reason}}
+    after
+      timeout_ms ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^monitor_ref, :process, _pid, _reason} -> :ok
+        after
+          0 -> :ok
+        end
+
+        {:error, :upload_timeout}
+    end
+  end
 end

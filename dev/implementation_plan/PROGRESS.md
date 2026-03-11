@@ -18,7 +18,7 @@
 | 4 | Noise NIF | 6 | IN PROGRESS | 1 | 6 |
 | 5 | Signal Protocol | 8 | COMPLETE | 1, 2 | 7, 8 |
 | 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
-| 7 | Authentication | 10 | NOT STARTED | 5, 6 | 8 |
+| 7 | Authentication | 10 | COMPLETE | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | NOT STARTED | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | NOT STARTED | 2, 8 | 12 |
 | 10 | Features | 17 | NOT STARTED | 8 | 11 |
@@ -339,7 +339,7 @@ falsely marked as implemented here.
 
 ## Phase 7: Authentication
 
-**Status:** IN PROGRESS (Tasks 7.1-7.7 complete; connection-coupled `Auth.QR` / `Auth.Pairing` helpers landed in Phase 6, phone pairing / pre-key upload are wired through the Phase 7 runtime, and the persistent transactional key-store wrapper is now in place) · **Depends on:** Phases 5, 6 · **Blocks:** 8
+**Status:** COMPLETE · **Depends on:** Phases 5, 6 · **Blocks:** 8
 
 ### Tasks
 
@@ -350,9 +350,9 @@ falsely marked as implemented here.
 - [x] 7.5 Phone number pairing
 - [x] 7.6 Pre-key upload
 - [x] 7.7 Transactional Signal Key Storage (GAP-44)
-- [ ] 7.8 Connection validation (login/registration nodes)
-- [ ] 7.9 Pre-key management (advanced — rotation, min count)
-- [ ] 7.10 Tests
+- [x] 7.8 Connection validation (login/registration nodes)
+- [x] 7.9 Pre-key management (advanced — rotation, min count)
+- [x] 7.10 Tests
 
 ### Acceptance Criteria
 
@@ -363,11 +363,11 @@ falsely marked as implemented here.
 - [x] Phone pairing key derivation matches Baileys output
 - [x] Pre-key upload constructs correct binary nodes
 - [x] Custom persistence backend can be swapped via behaviour
-- [ ] Login node constructed correctly for returning users
-- [ ] Registration node includes device props, history sync config, platform type
+- [x] Login node constructed correctly for returning users
+- [x] Registration node includes device props, history sync config, platform type
 - [x] Pair-success HMAC and ADV signature verification passes
 - [x] Pre-key upload triggered automatically when server count is low
-- [ ] Signed pre-key rotation works correctly
+- [x] Signed pre-key rotation works correctly
 - [x] Key store transactions serialize concurrent read/write bursts (GAP-44)
 - [x] Transaction commits roll back to the previous persisted snapshot on failure (GAP-44)
 - [x] Read-through cache prevents redundant persistence lookups during sync
@@ -384,7 +384,9 @@ falsely marked as implemented here.
 | `lib/baileys_ex/auth/qr.ex` | ✅ |
 | `lib/baileys_ex/auth/phone.ex` | ✅ |
 | `lib/baileys_ex/auth/key_store.ex` | ✅ |
-| `lib/baileys_ex/auth/connection_validator.ex` | ⬜ |
+| `lib/baileys_ex/auth/connection_validator.ex` | ✅ |
+| `lib/baileys_ex/protocol/proto/client_payload_messages.ex` | ✅ |
+| `lib/baileys_ex/connection/config.ex` | ✅ |
 | `lib/baileys_ex/signal/prekey.ex` (extend) | ✅ |
 | `lib/baileys_ex/connection/socket.ex` | ✅ |
 | `lib/baileys_ex/connection/coordinator.ex` | ✅ |
@@ -394,6 +396,9 @@ falsely marked as implemented here.
 | `test/baileys_ex/auth/key_store_test.exs` | ✅ |
 | `test/baileys_ex/auth/qr_test.exs` | ✅ |
 | `test/baileys_ex/auth/phone_test.exs` | ✅ |
+| `test/baileys_ex/auth/connection_validator_test.exs` | ✅ |
+| `test/baileys_ex/auth/connection_validator_runtime_test.exs` | ✅ |
+| `test/baileys_ex/connection/socket_test.exs` | ✅ |
 | `test/baileys_ex/connection/supervisor_test.exs` | ✅ |
 | `test/baileys_ex/signal/prekey_test.exs` | ✅ |
 

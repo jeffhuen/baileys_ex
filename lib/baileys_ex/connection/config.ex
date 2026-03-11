@@ -4,6 +4,7 @@ defmodule BaileysEx.Connection.Config do
   """
 
   @type browser :: {String.t(), String.t(), String.t()}
+  @type version :: [non_neg_integer()]
   @type platform ::
           :CHROME
           | :FIREFOX
@@ -27,6 +28,9 @@ defmodule BaileysEx.Connection.Config do
           fire_init_queries: boolean(),
           mark_online_on_connect: boolean(),
           browser: browser(),
+          version: version(),
+          country_code: String.t(),
+          sync_full_history: boolean(),
           print_qr_in_terminal: boolean()
         }
 
@@ -42,6 +46,21 @@ defmodule BaileysEx.Connection.Config do
     "Linux" => :LINUX
   }
 
+  @device_props_platform_types %{
+    "CHROME" => 1,
+    "FIREFOX" => 2,
+    "IE" => 3,
+    "OPERA" => 4,
+    "SAFARI" => 5,
+    "EDGE" => 6,
+    "DESKTOP" => 7
+  }
+
+  @web_sub_platforms %{
+    "Mac OS" => 3,
+    "Windows" => 4
+  }
+
   defstruct ws_url: "wss://web.whatsapp.com/ws/chat",
             keep_alive_interval_ms: 25_000,
             default_query_timeout_ms: 60_000,
@@ -51,7 +70,10 @@ defmodule BaileysEx.Connection.Config do
             connect_timeout_ms: 20_000,
             fire_init_queries: true,
             mark_online_on_connect: true,
-            browser: {"BaileysEx", "Chrome", "0.1.0"},
+            browser: {"Mac OS", "Chrome", "14.4.1"},
+            version: [2, 3000, 1_033_846_690],
+            country_code: "US",
+            sync_full_history: true,
             print_qr_in_terminal: false
 
   @spec new(keyword()) :: t()
@@ -61,4 +83,28 @@ defmodule BaileysEx.Connection.Config do
   def platform_type(browser_name) when is_binary(browser_name) do
     Map.get(@platforms, browser_name, :UNKNOWN)
   end
+
+  @spec platform_id(String.t()) :: String.t()
+  def platform_id(browser_name) when is_binary(browser_name) do
+    browser_name
+    |> device_props_platform_type()
+    |> Integer.to_string()
+  end
+
+  @spec device_props_platform_type(String.t()) :: non_neg_integer()
+  def device_props_platform_type(browser_name) when is_binary(browser_name) do
+    browser_name
+    |> String.upcase()
+    |> then(&Map.get(@device_props_platform_types, &1, 1))
+  end
+
+  @spec web_sub_platform(t()) :: non_neg_integer()
+  def web_sub_platform(%__MODULE__{
+        sync_full_history: true,
+        browser: {platform_name, "Desktop", _platform_version}
+      }) do
+    Map.get(@web_sub_platforms, platform_name, 0)
+  end
+
+  def web_sub_platform(%__MODULE__{}), do: 0
 end

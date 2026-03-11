@@ -25,7 +25,7 @@ defmodule BaileysEx.Auth.PhoneTest do
 
   test "build_pairing_request/4 creates the companion hello node and wraps the ephemeral key" do
     auth_state = State.new()
-    config = Config.new(browser: {"BaileysEx", "Chrome", "0.1.0"})
+    config = Config.new(browser: {"Mac OS", "Chrome", "14.4.1"})
     pairing_ephemeral_public = auth_state.pairing_ephemeral_key.public
     noise_public = auth_state.noise_key.public
 
@@ -66,7 +66,7 @@ defmodule BaileysEx.Auth.PhoneTest do
 
     assert %BinaryNode{content: "1"} = BinaryNodeUtil.child(reg_node, "companion_platform_id")
 
-    assert %BinaryNode{content: "Chrome (BaileysEx)"} =
+    assert %BinaryNode{content: "Chrome (Mac OS)"} =
              BinaryNodeUtil.child(reg_node, "companion_platform_display")
 
     assert %BinaryNode{content: "0"} = BinaryNodeUtil.child(reg_node, "link_code_pairing_nonce")

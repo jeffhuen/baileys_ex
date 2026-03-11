@@ -1,6 +1,7 @@
 defmodule BaileysEx.Auth.Pairing do
   @moduledoc false
 
+  alias BaileysEx.Auth.State
   alias BaileysEx.BinaryNode
   alias BaileysEx.Crypto
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
@@ -49,7 +50,8 @@ defmodule BaileysEx.Auth.Pairing do
           lid: fetch_attr!(pair_success_node, "device", "lid"),
           name: fetch_optional_attr(pair_success_node, "biz", "name")
         },
-        signal_identities: (auth_state[:signal_identities] || []) ++ [signal_identity],
+        signal_identities:
+          (State.get(auth_state, :signal_identities, []) || []) ++ [signal_identity],
         platform: fetch_optional_attr(pair_success_node, "platform", "name")
       }
 

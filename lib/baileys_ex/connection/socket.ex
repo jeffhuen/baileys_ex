@@ -10,6 +10,7 @@ defmodule BaileysEx.Connection.Socket do
   @behaviour :gen_statem
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Auth.ConnectionValidator
   alias BaileysEx.Auth.Pairing
   alias BaileysEx.Auth.Phone
   alias BaileysEx.Auth.QR
@@ -42,7 +43,6 @@ defmodule BaileysEx.Connection.Socket do
   @type t :: %__MODULE__{
           config: Config.t(),
           auth_state: term(),
-          client_payload: binary() | nil,
           event_emitter: GenServer.server() | nil,
           noise_opts: keyword(),
           noise: Noise.t() | nil,
@@ -67,7 +67,6 @@ defmodule BaileysEx.Connection.Socket do
   defstruct [
     :config,
     :auth_state,
-    :client_payload,
     :event_emitter,
     :noise,
     :transport_module,
@@ -176,7 +175,6 @@ defmodule BaileysEx.Connection.Socket do
     data = %__MODULE__{
       config: Keyword.get(opts, :config, Config.new()),
       auth_state: Keyword.get(opts, :auth_state),
-      client_payload: Keyword.get(opts, :client_payload),
       event_emitter: Keyword.get(opts, :event_emitter),
       noise_opts: Keyword.get(opts, :noise_opts, []),
       transport_module: transport_module,
@@ -481,7 +479,8 @@ defmodule BaileysEx.Connection.Socket do
 
   defp finish_noise_handshake(data, server_hello) do
     with {:ok, noise_key_pair} <- fetch_noise_key_pair(data.auth_state),
-         {:ok, client_payload} <- fetch_client_payload(data.client_payload),
+         {:ok, client_payload} <-
+           ConnectionValidator.generate_client_payload(data.auth_state, data.config),
          {:ok, noise} <- Noise.process_server_hello(data.noise, server_hello, noise_key_pair),
          {:ok, {noise, client_finish}} <- Noise.client_finish(noise, client_payload),
          {:ok, data} <- do_send_transport_binary(%{data | noise: noise}, client_finish) do
@@ -811,9 +810,6 @@ defmodule BaileysEx.Connection.Socket do
        do: {:ok, key_pair}
 
   defp fetch_noise_key_pair(_auth_state), do: {:error, :noise_key_not_configured}
-
-  defp fetch_client_payload(payload) when is_binary(payload), do: {:ok, payload}
-  defp fetch_client_payload(_payload), do: {:error, :client_payload_not_configured}
 
   defp connection_failure(data, reason) do
     {:next_state, :disconnected, close_connection(data, reason)}

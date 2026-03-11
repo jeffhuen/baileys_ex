@@ -408,6 +408,18 @@ defmodule BaileysEx.Connection.SupervisorTest do
            content: [%BinaryNode{tag: "count", attrs: %{"value" => "10"}, content: nil}]
          }}
 
+      %BinaryNode{
+        attrs: %{"xmlns" => "encrypt", "type" => "get"},
+        content: [%BinaryNode{tag: "digest"}]
+      },
+      _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "digest", attrs: %{}, content: nil}]
+         }}
+
       %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}} = node, _timeout ->
         send(test_pid, {:prekey_upload_query, node})
         {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
@@ -468,6 +480,64 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     assert is_binary(public)
     assert is_binary(private)
+  end
+
+  test "connection open runs encrypt digest validation after the initial pre-key checks" do
+    name = {:phase7_test, System.unique_integer([:positive])}
+    test_pid = self()
+
+    query_handler = fn
+      %BinaryNode{
+        attrs: %{"xmlns" => "encrypt", "type" => "get"},
+        content: [%BinaryNode{tag: "count"}]
+      },
+      _timeout ->
+        send(test_pid, :count_query_seen)
+
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "count", attrs: %{"value" => "10"}, content: nil}]
+         }}
+
+      %BinaryNode{
+        attrs: %{"xmlns" => "encrypt", "type" => "get"},
+        content: [%BinaryNode{tag: "digest"}]
+      },
+      _timeout ->
+        send(test_pid, :digest_query_seen)
+
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "digest", attrs: %{}, content: nil}]
+         }}
+
+      _node, _timeout ->
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state:
+                 State.new() |> Map.put(:me, %{id: "15551234567@s.whatsapp.net", name: "~"}),
+               socket_module: FakeSocket,
+               test_pid: self(),
+               query_handler: query_handler,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    assert :ok = EventEmitter.emit(emitter_pid, :connection_update, %{connection: :open})
+
+    assert_receive :count_query_seen
+    assert_receive :digest_query_seen
   end
 
   test "account sync dirty updates last_account_sync_timestamp and cleans from the previous timestamp" do

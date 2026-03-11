@@ -16,15 +16,6 @@ defmodule BaileysEx.Auth.Phone do
   @s_whatsapp_net "s.whatsapp.net"
   @pairing_bundle_info "link_code_pairing_key_bundle_encryption_key"
   @adv_secret_info "adv_secret"
-  @platform_ids %{
-    "Chrome" => "1",
-    "Firefox" => "2",
-    "IE" => "3",
-    "Opera" => "4",
-    "Safari" => "5",
-    "Edge" => "6",
-    "Desktop" => "7"
-  }
 
   @spec derive_pairing_code_key(binary(), binary()) :: {:ok, binary()} | {:error, term()}
   def derive_pairing_code_key(pairing_code, salt)
@@ -112,7 +103,7 @@ defmodule BaileysEx.Auth.Phone do
   end
 
   defp companion_hello_node(jid, wrapped_public_key, noise_public_key, %Config{
-         browser: {app, browser, _version}
+         browser: {platform_name, browser, _version}
        }) do
     %BinaryNode{
       tag: "iq",
@@ -139,12 +130,12 @@ defmodule BaileysEx.Auth.Phone do
             %BinaryNode{
               tag: "companion_platform_id",
               attrs: %{},
-              content: Map.get(@platform_ids, browser, "1")
+              content: Config.platform_id(browser)
             },
             %BinaryNode{
               tag: "companion_platform_display",
               attrs: %{},
-              content: "#{browser} (#{app})"
+              content: "#{browser} (#{platform_name})"
             },
             %BinaryNode{tag: "link_code_pairing_nonce", attrs: %{}, content: "0"}
           ]

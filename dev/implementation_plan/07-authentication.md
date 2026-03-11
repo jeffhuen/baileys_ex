@@ -241,7 +241,9 @@ end
 
 ### 7.8 Connection validation (login/registration nodes)
 
-File: `lib/baileys_ex/auth/connection_validator.ex`
+Files: `lib/baileys_ex/auth/connection_validator.ex`,
+`lib/baileys_ex/protocol/proto/client_payload_messages.ex`,
+`lib/baileys_ex/connection/config.ex`, `lib/baileys_ex/connection/socket.ex`
 
 Constructs login and registration payloads sent after the Noise handshake completes.
 These are the first application-level messages exchanged with WhatsApp servers.
@@ -252,70 +254,46 @@ defmodule BaileysEx.Auth.ConnectionValidator do
   Constructs login and registration payloads sent after Noise handshake.
   """
 
-  @doc "Build login payload for returning users (have credentials)"
-  def generate_login_node(me_jid, config) do
-    # ClientPayload protobuf with:
-    # - username (user part of JID)
-    # - device (device ID)
-    # - passive: true (for login)
-    # - user_agent: browser info + platform type + app version
-    # - web_info: web_sub_platform
-  end
-
-  @doc "Build registration payload for new devices"
-  def generate_registration_node(creds, config) do
-    # ClientPayload with:
-    # - reg_data: registration ID, identity key, signed pre-key, device props
-    # - passive: false
-    # - device_pairing_data: app version config
-    # - user_agent: platform type mapping
-    # - history sync config: storage quota, inline payloads, chunk tuning
-  end
-
-  @doc "Process pair-success response: verify HMAC + ADV signatures, create reply"
-  def configure_successful_pairing(stanza, creds) do
-    # Parse pair-success binary node
-    # Validate HMAC using adv_secret_key
-    # Verify account signature (ADV)
-    # Verify device signature
-    # Append new signal identity (identifier + account signature key)
-    # Preserve returned platform and LID/JID identity data
-    # Construct reply node
-    # encode_signed_device_identity/2 omits the account signature key unless
-    # the reply specifically needs it
-    # Return updated credentials
-  end
+  # Minimal WAProto coverage for rc.9 handshake payloads now lives in
+  # `Protocol.Proto.ClientPayload` and `Protocol.Proto.DeviceProps`.
+  #
+  # `generate_login_node/2`:
+  #   - parses JID user/device into ClientPayload.username/device
+  #   - sets passive/pull/lid_db_migrated exactly like rc.9
+  #   - builds UserAgent/WebInfo from config.version/country_code/browser
+  #
+  # `generate_registration_node/2`:
+  #   - md5 hashes config.version for devicePairingData.buildHash
+  #   - encodes DeviceProps with requireFullSync/historySyncConfig/platformType
+  #   - carries registration id, identity key, and signed pre-key bytes
+  #
+  # `generate_client_payload/2` selects login vs registration from auth_state.me
+  # and returns the encoded binary fed into Noise.client_finish/2.
 end
 ```
 
 ### 7.9 Pre-key management (advanced)
 
-File: `lib/baileys_ex/signal/prekey.ex` (extend)
+Files: `lib/baileys_ex/signal/prekey.ex`, `lib/baileys_ex/connection/coordinator.ex`
 
 Additional pre-key management functions beyond basic upload, covering automatic
 replenishment and rotation:
 
 ```elixir
-# Additional pre-key management functions (in BaileysEx.Signal.PreKey or new module):
-
-@doc "Check server pre-key count and upload if needed"
-def upload_if_required(conn) do
-  # Query server for remaining pre-key count
-  # If below threshold, generate and upload batch
-  # Minimum interval between uploads to prevent spam
-end
-
-@doc "Rotate signed pre-key"
-def rotate_signed_pre_key(conn) do
-  # Generate new signed pre-key
-  # Upload to server via IQ xmlns='encrypt'
-  # Emit :creds_update event
-end
-
-@doc "Send key bundle digest"
-def digest_key_bundle(conn) do
-  # IQ xmlns='encrypt' with digest of current key bundle
-end
+# `PreKey.digest_key_bundle/1`:
+#   - sends encrypt/get digest
+#   - treats a missing digest node as the rc.9 recovery case:
+#     upload pre-keys, then return an error
+#
+# `PreKey.rotate_signed_pre_key/1`:
+#   - increments the signed pre-key id
+#   - generates a fresh signed pre-key from signed_identity_key
+#   - sends encrypt/set rotate<skey>
+#   - emits creds_update with the new signed_pre_key
+#
+# `Connection.Coordinator` now runs digest validation after the open-path
+# pre-key upload check, preserving the rc.9 "upload then digest" flow while
+# keeping the wrapper/runtime layering established in Phase 6.
 ```
 
 ### 7.10 Tests
@@ -328,6 +306,10 @@ end
 - [x] Phone pairing companion-hello and companion-finish node coverage
 - [x] Pre-key upload node construction
 - [x] Connection-open pre-key upload trigger coverage
+- [x] Login payload generation and socket handshake coverage
+- [x] Registration payload generation and device-props coverage
+- [x] Open-path digest validation coverage
+- [x] Signed pre-key rotation coverage
 - [x] Transactional key-store persistence, rollback, and cache coverage
 - [x] Persistent key-store integration coverage through the connection supervisor
 
@@ -342,11 +324,11 @@ end
 - [x] Phone pairing key derivation matches Baileys output
 - [x] Pre-key upload constructs correct binary nodes
 - [x] Custom persistence backend can be swapped via behaviour
-- [ ] Login node constructed correctly for returning users
-- [ ] Registration node includes device props, history sync config, platform type
+- [x] Login node constructed correctly for returning users
+- [x] Registration node includes device props, history sync config, platform type
 - [x] Pair-success HMAC and ADV signature verification passes
 - [x] Pre-key upload triggered automatically when server count is low
-- [ ] Signed pre-key rotation works correctly
+- [x] Signed pre-key rotation works correctly
 - [x] Key store transactions serialize concurrent read/write bursts (GAP-44)
 - [x] Transaction commits roll back to the previous persisted snapshot on failure (GAP-44)
 - [x] Read-through cache prevents redundant persistence lookups during sync
@@ -360,8 +342,11 @@ end
 - `lib/baileys_ex/auth/pairing.ex`
 - `lib/baileys_ex/auth/qr.ex`
 - `lib/baileys_ex/auth/phone.ex`
+- `lib/baileys_ex/auth/connection_validator.ex`
 - `lib/baileys_ex/signal/prekey.ex` (extend)
+- `lib/baileys_ex/protocol/proto/client_payload_messages.ex`
 - `lib/baileys_ex/connection/socket.ex`
+- `lib/baileys_ex/connection/config.ex`
 - `lib/baileys_ex/connection/coordinator.ex`
 - `lib/baileys_ex/connection/supervisor.ex`
 - `test/baileys_ex/auth/state_test.exs`
@@ -369,7 +354,9 @@ end
 - `test/baileys_ex/auth/key_store_test.exs`
 - `test/baileys_ex/auth/qr_test.exs`
 - `test/baileys_ex/auth/phone_test.exs`
+- `test/baileys_ex/auth/connection_validator_test.exs`
+- `test/baileys_ex/auth/connection_validator_runtime_test.exs`
+- `test/baileys_ex/connection/socket_test.exs`
 - `test/baileys_ex/connection/supervisor_test.exs`
 - `test/baileys_ex/signal/prekey_test.exs`
-- `lib/baileys_ex/auth/connection_validator.ex`
 - `lib/baileys_ex/auth/key_store.ex`

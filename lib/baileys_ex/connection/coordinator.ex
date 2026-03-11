@@ -296,28 +296,33 @@ defmodule BaileysEx.Connection.Coordinator do
     _ =
       Task.Supervisor.start_child(state.task_supervisor, fn ->
         with {:ok, socket_pid} <- fetch_socket_pid(state) do
-          _ =
-            PreKey.upload_if_required(
-              store: state.signal_store,
-              auth_state: Store.get(state.store_ref, :auth_state, %{}),
-              query_fun: fn node ->
-                state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms)
-              end,
-              emit_creds_update: fn update ->
-                EventEmitter.emit(state.event_emitter, :creds_update, update)
-              end,
-              upload_key: {:prekey_upload, state.supervisor},
-              get_last_upload_at: fn ->
-                Store.get(state.store_ref, :last_pre_key_upload_at)
-              end,
-              put_last_upload_at: fn timestamp ->
-                Store.put(state.store, :last_pre_key_upload_at, timestamp)
-              end
-            )
+          prekey_opts = prekey_runtime_opts(state, socket_pid)
+          _ = PreKey.upload_if_required(prekey_opts)
+          _ = PreKey.digest_key_bundle(prekey_opts)
         end
       end)
 
     state
+  end
+
+  defp prekey_runtime_opts(%State{} = state, socket_pid) do
+    [
+      store: state.signal_store,
+      auth_state: Store.get(state.store_ref, :auth_state, %{}),
+      query_fun: fn node ->
+        state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms)
+      end,
+      emit_creds_update: fn update ->
+        EventEmitter.emit(state.event_emitter, :creds_update, update)
+      end,
+      upload_key: {:prekey_upload, state.supervisor},
+      get_last_upload_at: fn ->
+        Store.get(state.store_ref, :last_pre_key_upload_at)
+      end,
+      put_last_upload_at: fn timestamp ->
+        Store.put(state.store, :last_pre_key_upload_at, timestamp)
+      end
+    ]
   end
 
   defp init_query_work(%State{} = state) do

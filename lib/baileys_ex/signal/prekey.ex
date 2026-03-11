@@ -42,6 +42,43 @@ defmodule BaileysEx.Signal.PreKey do
     :global.trans({__MODULE__, upload_key}, fn -> do_upload_if_required(opts) end)
   end
 
+  @spec digest_key_bundle(keyword()) :: :ok | {:error, term()}
+  def digest_key_bundle(opts) when is_list(opts) do
+    query_fun = Keyword.fetch!(opts, :query_fun)
+
+    with {:ok, response} <- query_fun.(digest_key_bundle_node()),
+         %BinaryNode{} <- child_by_tag(response, "digest") do
+      :ok
+    else
+      nil ->
+        with :ok <- upload_if_required(opts) do
+          {:error, :missing_digest_node}
+        end
+
+      {:error, _reason} = error ->
+        error
+
+      _ ->
+        {:error, :missing_digest_node}
+    end
+  end
+
+  @spec rotate_signed_pre_key(keyword()) ::
+          {:ok, %{signed_pre_key: map()}} | {:error, term()}
+  def rotate_signed_pre_key(opts) when is_list(opts) do
+    auth_state = Keyword.fetch!(opts, :auth_state)
+    query_fun = Keyword.fetch!(opts, :query_fun)
+    emit_creds_update = Keyword.get(opts, :emit_creds_update, fn _update -> :ok end)
+
+    with {:ok, signed_identity_key} <- fetch_key_pair(auth_state, :signed_identity_key),
+         current_key_id <- current_signed_pre_key_id(auth_state),
+         {:ok, signed_pre_key} <- Curve.signed_key_pair(signed_identity_key, current_key_id + 1),
+         {:ok, _response} <- query_fun.(rotate_signed_pre_key_node(signed_pre_key)),
+         :ok <- emit_creds_update.(%{signed_pre_key: signed_pre_key}) do
+      {:ok, %{signed_pre_key: signed_pre_key}}
+    end
+  end
+
   defp do_upload_if_required(opts) do
     store = Keyword.fetch!(opts, :store)
     auth_state = Keyword.fetch!(opts, :auth_state)
@@ -189,6 +226,14 @@ defmodule BaileysEx.Signal.PreKey do
     }
   end
 
+  defp digest_key_bundle_node do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"to" => @s_whatsapp_net, "type" => "get", "xmlns" => "encrypt"},
+      content: [%BinaryNode{tag: "digest", attrs: %{}, content: nil}]
+    }
+  end
+
   defp prekey_upload_node(registration_id, signed_identity_public_key, signed_pre_key, prekeys) do
     %BinaryNode{
       tag: "iq",
@@ -237,6 +282,20 @@ defmodule BaileysEx.Signal.PreKey do
     }
   end
 
+  defp rotate_signed_pre_key_node(signed_pre_key) do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"xmlns" => "encrypt", "type" => "set", "to" => @s_whatsapp_net},
+      content: [
+        %BinaryNode{
+          tag: "rotate",
+          attrs: %{},
+          content: [xmpp_signed_prekey(signed_pre_key)]
+        }
+      ]
+    }
+  end
+
   defp encode_big_endian(integer, bytes) when is_integer(integer) and integer >= 0 do
     <<integer::unsigned-big-integer-size(bytes * 8)>>
   end
@@ -273,6 +332,13 @@ defmodule BaileysEx.Signal.PreKey do
 
       _ ->
         {:error, :missing_signed_pre_key}
+    end
+  end
+
+  defp current_signed_pre_key_id(auth_state) do
+    case State.get(auth_state, :signed_pre_key) do
+      %{key_id: key_id} when is_integer(key_id) and key_id >= 0 -> key_id
+      _ -> 0
     end
   end
 

@@ -4,6 +4,7 @@ defmodule BaileysEx.Connection.SocketTest do
   import Kernel, except: [send: 2]
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Auth.State
   alias BaileysEx.Crypto
   alias BaileysEx.Auth.QR
   alias BaileysEx.Connection.Config
@@ -11,6 +12,7 @@ defmodule BaileysEx.Connection.SocketTest do
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Noise
+  alias BaileysEx.Protocol.Proto.ClientPayload
   alias BaileysEx.Protocol.Proto.ADVDeviceIdentity
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentityHMAC
@@ -80,8 +82,10 @@ defmodule BaileysEx.Connection.SocketTest do
     assert {:ok, pid} =
              Socket.start_link(
                config: Config.new(),
-               auth_state: %{noise_key: client_noise_key_pair, creds: %{routing_info: nil}},
-               client_payload: "client-payload",
+               auth_state:
+                 State.new()
+                 |> Map.put(:noise_key, client_noise_key_pair)
+                 |> Map.put(:routing_info, nil),
                noise_opts: [trusted_cert: trusted_cert],
                transport: {ScriptedTransport, %{test_pid: self()}}
              )
@@ -107,8 +111,7 @@ defmodule BaileysEx.Connection.SocketTest do
     end)
   end
 
-  test "a valid server hello advances the socket into authenticating and sends client finish" do
-    client_payload = "client-payload"
+  test "a valid server hello sends the rc9 registration payload when no jid is present" do
     client_noise_key_pair = Crypto.generate_key_pair(:x25519)
     root_key_pair = Crypto.generate_key_pair(:x25519)
     intermediate_key_pair = Crypto.generate_key_pair(:x25519)
@@ -117,9 +120,12 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert {:ok, pid} =
              Socket.start_link(
-               config: Config.new(),
-               auth_state: %{noise_key: client_noise_key_pair, creds: %{routing_info: nil}},
-               client_payload: client_payload,
+               config:
+                 Config.new(version: [2, 24, 7], browser: {"Windows", "Edge", "10.0.22631"}),
+               auth_state:
+                 State.new()
+                 |> Map.put(:noise_key, client_noise_key_pair)
+                 |> Map.put(:routing_info, nil),
                noise_opts: [trusted_cert: trusted_cert],
                transport: {ScriptedTransport, %{test_pid: self()}}
              )
@@ -140,11 +146,63 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert_receive {:transport_sent, client_finish}
 
-    assert {:ok, %{client_payload: ^client_payload, client_static: client_static}} =
+    assert {:ok, %{client_payload: client_payload, client_static: client_static}} =
              NoiseServer.process_client_finish(server_state, client_finish)
 
     assert client_static == client_noise_key_pair.public
+    assert {:ok, decoded_payload} = ClientPayload.decode(client_payload)
+    assert decoded_payload.passive == false
+    assert decoded_payload.pull == false
+    assert decoded_payload.device_pairing_data != nil
     assert_eventually(fn -> Socket.state(pid) == :authenticating end)
+  end
+
+  test "a valid server hello sends the rc9 login payload when creds.me is present" do
+    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
+    root_key_pair = Crypto.generate_key_pair(:x25519)
+    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
+    server_static_key_pair = Crypto.generate_key_pair(:x25519)
+    trusted_cert = %{serial: 0, public_key: root_key_pair.public}
+
+    auth_state =
+      State.new()
+      |> Map.put(:noise_key, client_noise_key_pair)
+      |> Map.put(:me, %{id: "15551234567:3@s.whatsapp.net", name: "~"})
+      |> Map.put(:routing_info, nil)
+
+    assert {:ok, pid} =
+             Socket.start_link(
+               config: Config.new(version: [2, 24, 7], country_code: "GB"),
+               auth_state: auth_state,
+               noise_opts: [trusted_cert: trusted_cert],
+               transport: {ScriptedTransport, %{test_pid: self()}}
+             )
+
+    assert :ok = Socket.connect(pid)
+    Kernel.send(pid, {:scripted_transport, :connected})
+    assert_receive {:transport_sent, client_hello}
+
+    assert {:ok, server_hello, server_state} =
+             NoiseServer.build_server_hello(client_hello,
+               root_key_pair: root_key_pair,
+               intermediate_key_pair: intermediate_key_pair,
+               server_static_key_pair: server_static_key_pair,
+               issuer_serial: trusted_cert.serial
+             )
+
+    Kernel.send(pid, {:scripted_transport, {:binary, server_hello}})
+
+    assert_receive {:transport_sent, client_finish}
+
+    assert {:ok, %{client_payload: client_payload}} =
+             NoiseServer.process_client_finish(server_state, client_finish)
+
+    assert {:ok, decoded_payload} = ClientPayload.decode(client_payload)
+    assert decoded_payload.username == 15_551_234_567
+    assert decoded_payload.device == 3
+    assert decoded_payload.passive == true
+    assert decoded_payload.pull == true
+    assert decoded_payload.user_agent.locale_country_iso31661_alpha2 == "GB"
   end
 
   test "an invalid server hello returns the socket to disconnected and records the error" do
@@ -155,8 +213,10 @@ defmodule BaileysEx.Connection.SocketTest do
     assert {:ok, pid} =
              Socket.start_link(
                config: Config.new(),
-               auth_state: %{noise_key: client_noise_key_pair, creds: %{routing_info: nil}},
-               client_payload: "client-payload",
+               auth_state:
+                 State.new()
+                 |> Map.put(:noise_key, client_noise_key_pair)
+                 |> Map.put(:routing_info, nil),
                noise_opts: [trusted_cert: trusted_cert],
                transport: {ScriptedTransport, %{test_pid: self()}}
              )
@@ -181,7 +241,6 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   test "socket transitions through disconnected, connecting, noise_handshake, authenticating, connected, and disconnected" do
-    client_payload = "client-payload"
     client_noise_key_pair = Crypto.generate_key_pair(:x25519)
     root_key_pair = Crypto.generate_key_pair(:x25519)
     intermediate_key_pair = Crypto.generate_key_pair(:x25519)
@@ -191,8 +250,10 @@ defmodule BaileysEx.Connection.SocketTest do
     assert {:ok, pid} =
              Socket.start_link(
                config: Config.new(keep_alive_interval_ms: 5_000),
-               auth_state: %{noise_key: client_noise_key_pair, creds: %{routing_info: nil}},
-               client_payload: client_payload,
+               auth_state:
+                 State.new()
+                 |> Map.put(:noise_key, client_noise_key_pair)
+                 |> Map.put(:routing_info, nil),
                noise_opts: [trusted_cert: trusted_cert],
                transport: {ScriptedTransport, %{test_pid: self()}}
              )
@@ -900,7 +961,6 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   defp start_authenticated_socket(opts) do
-    client_payload = "client-payload"
     client_noise_key_pair = Crypto.generate_key_pair(:x25519)
     root_key_pair = Crypto.generate_key_pair(:x25519)
     intermediate_key_pair = Crypto.generate_key_pair(:x25519)
@@ -912,10 +972,9 @@ defmodule BaileysEx.Connection.SocketTest do
 
     auth_state =
       merge_maps(
-        %{
-          noise_key: client_noise_key_pair,
-          creds: %{routing_info: nil}
-        },
+        State.new()
+        |> Map.put(:noise_key, client_noise_key_pair)
+        |> Map.put(:routing_info, nil),
         Keyword.get(opts, :auth_state, %{})
       )
 
@@ -923,7 +982,6 @@ defmodule BaileysEx.Connection.SocketTest do
              Socket.start_link(
                config: config,
                auth_state: auth_state,
-               client_payload: client_payload,
                noise_opts: [trusted_cert: trusted_cert],
                event_emitter: event_emitter,
                transport: {ScriptedTransport, %{test_pid: self()}}

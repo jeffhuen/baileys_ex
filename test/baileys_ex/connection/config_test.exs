@@ -15,7 +15,10 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.initial_sync_timeout_ms == 20_000
     assert config.fire_init_queries == true
     assert config.mark_online_on_connect == true
-    assert config.browser == {"BaileysEx", "Chrome", "0.1.0"}
+    assert config.browser == {"Mac OS", "Chrome", "14.4.1"}
+    assert config.version == [2, 3000, 1_033_846_690]
+    assert config.country_code == "US"
+    assert config.sync_full_history == true
     assert config.print_qr_in_terminal == false
   end
 
@@ -28,7 +31,10 @@ defmodule BaileysEx.Connection.ConfigTest do
         initial_sync_timeout_ms: 10_000,
         fire_init_queries: false,
         mark_online_on_connect: false,
-        browser: {"BaileysEx", "Firefox", "1.2.3"}
+        browser: {"Ubuntu", "Firefox", "24.04"},
+        version: [2, 24, 7],
+        country_code: "GB",
+        sync_full_history: false
       )
 
     assert config.ws_url == "wss://example.test/ws"
@@ -37,7 +43,10 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.initial_sync_timeout_ms == 10_000
     assert config.fire_init_queries == false
     assert config.mark_online_on_connect == false
-    assert config.browser == {"BaileysEx", "Firefox", "1.2.3"}
+    assert config.browser == {"Ubuntu", "Firefox", "24.04"}
+    assert config.version == [2, 24, 7]
+    assert config.country_code == "GB"
+    assert config.sync_full_history == false
   end
 
   test "platform_type/1 maps browsers and host platforms to the expected atoms" do

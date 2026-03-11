@@ -98,7 +98,11 @@ defmodule BaileysEx.Auth.State do
 
   @spec get(t() | map(), atom(), term()) :: term()
   def get(%__MODULE__{} = state, key, default) when is_atom(key) do
-    Map.get(state, key, default)
+    case Map.fetch(state, key) do
+      {:ok, nil} -> nested_creds_get(state, key, default)
+      {:ok, value} -> value
+      :error -> nested_creds_get(state, key, default)
+    end
   end
 
   def get(%{} = state, key, default) when is_atom(key) do

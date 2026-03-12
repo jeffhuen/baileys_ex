@@ -13,7 +13,13 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  alias BaileysEx.Message.IdentityChangeHandler
+  alias BaileysEx.Message.NotificationHandler
+  alias BaileysEx.Message.Receipt
+  alias BaileysEx.Message.Receiver
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  alias BaileysEx.Signal.Repository
+  alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store, as: SignalStore
   alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
 
@@ -37,12 +43,20 @@ defmodule BaileysEx.Connection.Coordinator do
       :socket_module,
       :store,
       :signal_store,
+      :signal_repository,
       :store_ref,
       :supervisor,
       :task_supervisor,
       :unsubscribe,
+      :history_sync_download_fun,
+      :history_sync_inflate_fun,
+      :get_message_fun,
+      :handle_encrypt_notification_fun,
+      :device_notification_fun,
+      :resync_app_state_fun,
       :reconnect_timer,
       :initial_sync_timer,
+      identity_change_cache: %{},
       sync_state: :connecting
     ]
   end
@@ -66,27 +80,45 @@ defmodule BaileysEx.Connection.Coordinator do
       socket_module: Keyword.get(opts, :socket_module, Socket),
       store: Keyword.fetch!(opts, :store),
       signal_store: Keyword.fetch!(opts, :signal_store),
+      signal_repository: Keyword.get(opts, :signal_repository),
       supervisor: Keyword.fetch!(opts, :supervisor),
-      task_supervisor: Keyword.fetch!(opts, :task_supervisor)
+      task_supervisor: Keyword.fetch!(opts, :task_supervisor),
+      history_sync_download_fun: Keyword.get(opts, :history_sync_download_fun),
+      history_sync_inflate_fun: Keyword.get(opts, :history_sync_inflate_fun),
+      get_message_fun: Keyword.get(opts, :get_message_fun),
+      handle_encrypt_notification_fun: Keyword.get(opts, :handle_encrypt_notification_fun),
+      device_notification_fun: Keyword.get(opts, :device_notification_fun),
+      resync_app_state_fun: Keyword.get(opts, :resync_app_state_fun)
     }
 
-    {:ok, state, {:continue, :setup}}
-  end
-
-  @impl true
-  def handle_continue(:setup, %State{} = state) do
     coordinator_pid = self()
 
     unsubscribe =
       EventEmitter.tap(state.event_emitter, &Kernel.send(coordinator_pid, {:events, &1}))
 
+    wrapped_signal_store = wrap_signal_store(state.signal_store)
+
     state =
       state
       |> Map.put(:unsubscribe, unsubscribe)
       |> Map.put(:store_ref, Store.wrap(state.store))
-      |> Map.put(:signal_store, wrap_signal_store(state.signal_store))
+      |> Map.put(:signal_store, wrapped_signal_store)
+      |> Map.put(
+        :signal_repository,
+        build_signal_repository(
+          state.signal_repository,
+          Keyword.get(opts, :signal_repository_adapter),
+          Keyword.get(opts, :signal_repository_adapter_state, %{}),
+          wrapped_signal_store
+        )
+      )
       |> Map.put(:reconnect_timer, nil)
 
+    {:ok, state, {:continue, :connect_socket}}
+  end
+
+  @impl true
+  def handle_continue(:connect_socket, %State{} = state) do
     {:noreply, connect_socket(state)}
   end
 
@@ -96,6 +128,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
     state =
       state
+      |> handle_socket_node(events)
       |> persist_creds_update(events)
       |> maybe_send_push_name_presence_update(previous_creds, events)
       |> handle_connection_update(events)
@@ -134,6 +167,56 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def terminate(_reason, _state), do: :ok
+
+  defp handle_socket_node(
+         %State{signal_repository: %Repository{} = repository} = state,
+         %{socket_node: %{node: %BinaryNode{tag: "message"} = node}}
+       ) do
+    case Receiver.process_node(node, receiver_context(state, repository)) do
+      {:ok, _message, %{signal_repository: %Repository{} = updated_repository}} ->
+        %{state | signal_repository: updated_repository}
+
+      _ ->
+        state
+    end
+  end
+
+  defp handle_socket_node(%State{} = state, %{
+         socket_node: %{node: %BinaryNode{tag: "receipt"} = node}
+       }) do
+    :ok = Receipt.process_receipt(node, state.event_emitter)
+    state
+  end
+
+  defp handle_socket_node(%State{} = state, %{
+         socket_node: %{node: %BinaryNode{tag: "ack"} = node}
+       }) do
+    :ok = Receiver.handle_bad_ack(node, state.event_emitter)
+    state
+  end
+
+  defp handle_socket_node(
+         %State{} = state,
+         %{
+           socket_node: %{
+             node: %BinaryNode{tag: "notification", attrs: %{"type" => "encrypt"}} = node
+           }
+         }
+       ) do
+    state = maybe_handle_identity_change(state, node)
+    :ok = NotificationHandler.process_node(node, notification_context(state))
+    state
+  end
+
+  defp handle_socket_node(
+         %State{} = state,
+         %{socket_node: %{node: %BinaryNode{tag: "notification"} = node}}
+       ) do
+    :ok = NotificationHandler.process_node(node, notification_context(state))
+    state
+  end
+
+  defp handle_socket_node(%State{} = state, _events), do: state
 
   defp persist_creds_update(%State{} = state, %{creds_update: creds_update})
        when is_map(creds_update) do
@@ -492,9 +575,148 @@ defmodule BaileysEx.Connection.Coordinator do
     wrap_signal_store({SignalStoreMemory, server})
   end
 
+  defp build_signal_repository(
+         %Repository{} = repository,
+         _adapter,
+         _adapter_state,
+         _signal_store
+       ),
+       do: repository
+
+  defp build_signal_repository(nil, adapter, adapter_state, %SignalStore{} = signal_store)
+       when is_atom(adapter) do
+    Repository.new(
+      adapter: adapter,
+      adapter_state: adapter_state,
+      store: signal_store,
+      pn_to_lid_lookup: lid_lookup_fun(signal_store)
+    )
+  end
+
+  defp build_signal_repository(repository, _adapter, _adapter_state, _signal_store),
+    do: repository
+
+  defp receiver_context(%State{} = state, %Repository{} = repository) do
+    creds = Store.get(state.store_ref, :creds, %{})
+
+    %{
+      signal_repository: repository,
+      event_emitter: state.event_emitter,
+      me_id: nested_id(creds),
+      me_lid: nested_lid(creds),
+      store_ref: state.store_ref,
+      signal_store: state.signal_store
+    }
+    |> maybe_put_callback(:send_receipt_fun, receipt_sender_fun(state))
+    |> maybe_put_callback(:history_sync_download_fun, state.history_sync_download_fun)
+    |> maybe_put_callback(:inflate_fun, state.history_sync_inflate_fun)
+    |> maybe_put_callback(:get_message_fun, state.get_message_fun)
+  end
+
+  defp notification_context(%State{} = state) do
+    %{event_emitter: state.event_emitter}
+    |> maybe_put_callback(:store_privacy_token_fun, privacy_token_store_fun(state.signal_store))
+    |> maybe_put_callback(:handle_encrypt_notification_fun, state.handle_encrypt_notification_fun)
+    |> maybe_put_callback(:device_notification_fun, state.device_notification_fun)
+    |> maybe_put_callback(:resync_app_state_fun, state.resync_app_state_fun)
+  end
+
+  defp receipt_sender_fun(%State{} = state) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} -> fn node -> state.socket_module.send_node(socket_pid, node) end
+      :error -> nil
+    end
+  end
+
+  defp maybe_handle_identity_change(
+         %State{signal_repository: %Repository{}} = state,
+         %BinaryNode{} = node
+       ) do
+    if node.attrs["from"] == @s_whatsapp_net do
+      state
+    else
+      creds = Store.get(state.store_ref, :creds, %{})
+
+      context = %{
+        signal_repository: state.signal_repository,
+        me_id: nested_id(creds),
+        me_lid: nested_lid(creds),
+        assert_sessions_fun: fn ctx, jids, force? ->
+          assert_sessions(state, ctx, jids, force?)
+        end
+      }
+
+      case IdentityChangeHandler.handle(node, context, state.identity_change_cache) do
+        {:ok, _result, %{signal_repository: %Repository{} = repo}, cache} ->
+          %{state | signal_repository: repo, identity_change_cache: cache}
+
+        {:ok, _result, _context, cache} ->
+          %{state | identity_change_cache: cache}
+      end
+    end
+  end
+
+  defp maybe_handle_identity_change(%State{} = state, _node), do: state
+
+  defp assert_sessions(
+         %State{} = state,
+         %{signal_repository: %Repository{} = repository},
+         jids,
+         force?
+       ) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        Session.assert_sessions(
+          %{
+            signal_repository: repository,
+            query_fun: fn node ->
+              state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms)
+            end
+          },
+          jids,
+          force: force?
+        )
+
+      :error ->
+        {:error, :socket_not_available}
+    end
+  end
+
+  defp privacy_token_store_fun(%SignalStore{} = signal_store) do
+    fn jid, token, timestamp ->
+      SignalStore.set(signal_store, %{tctoken: %{jid => %{token: token, timestamp: timestamp}}})
+    end
+  end
+
+  defp privacy_token_store_fun(_signal_store), do: nil
+
+  defp lid_lookup_fun(%SignalStore{} = signal_store) do
+    fn pn ->
+      case SignalStore.get(signal_store, :"lid-mapping", [pn]) do
+        %{^pn => lid} when is_binary(lid) -> lid
+        _ -> nil
+      end
+    end
+  end
+
+  defp maybe_put_callback(map, _key, nil), do: map
+  defp maybe_put_callback(map, key, value), do: Map.put(map, key, value)
+
   defp nested_name(%{me: %{name: name}}) when is_binary(name), do: name
   defp nested_name(%{me: %{"name" => name}}) when is_binary(name), do: name
   defp nested_name(%{"me" => %{name: name}}) when is_binary(name), do: name
   defp nested_name(%{"me" => %{"name" => name}}) when is_binary(name), do: name
   defp nested_name(_creds), do: nil
+
+  defp nested_id(%{me: %{id: id}}) when is_binary(id), do: id
+  defp nested_id(%{me: %{"id" => id}}) when is_binary(id), do: id
+  defp nested_id(%{"me" => %{id: id}}) when is_binary(id), do: id
+  defp nested_id(%{"me" => %{"id" => id}}) when is_binary(id), do: id
+  defp nested_id(_creds), do: nil
+
+  defp nested_lid(%{me: %{lid: lid}}) when is_binary(lid), do: lid
+  defp nested_lid(%{me: %{"lid" => lid}}) when is_binary(lid), do: lid
+  defp nested_lid(%{"me" => %{lid: lid}}) when is_binary(lid), do: lid
+  defp nested_lid(%{"me" => %{"lid" => lid}}) when is_binary(lid), do: lid
+  defp nested_lid(_creds), do: nil
 end

@@ -4,7 +4,9 @@ defmodule BaileysEx.Protocol.Proto.Wire do
   import Bitwise
 
   @wire_varint 0
+  @wire_64bit 1
   @wire_bytes 2
+  @wire_32bit 5
 
   def encode_varint(int) when is_integer(int) and int >= 0 do
     do_encode_varint(int, <<>>)
@@ -49,6 +51,21 @@ defmodule BaileysEx.Protocol.Proto.Wire do
   def encode_uint(field_number, value) when is_integer(value) and value >= 0,
     do: encode_varint(field_number <<< 3 ||| @wire_varint) <> encode_varint(value)
 
+  def encode_fixed32(_field_number, nil), do: <<>>
+
+  def encode_fixed32(field_number, value) when is_integer(value) and value >= 0,
+    do: encode_key(field_number, @wire_32bit) <> <<value::unsigned-little-32>>
+
+  def encode_float(_field_number, nil), do: <<>>
+
+  def encode_float(field_number, value) when is_number(value),
+    do: encode_key(field_number, @wire_32bit) <> <<value::float-little-32>>
+
+  def encode_double(_field_number, nil), do: <<>>
+
+  def encode_double(field_number, value) when is_number(value),
+    do: encode_key(field_number, @wire_64bit) <> <<value::float-little-64>>
+
   def decode_key(binary) do
     with {:ok, key, rest} <- decode_varint(binary) do
       {:ok, key >>> 3, key &&& 0x07, rest}
@@ -66,6 +83,15 @@ defmodule BaileysEx.Protocol.Proto.Wire do
     end
   end
 
+  def decode_fixed32(<<value::unsigned-little-32, rest::binary>>), do: {:ok, value, rest}
+  def decode_fixed32(_binary), do: {:error, :unexpected_eof}
+
+  def decode_float(<<value::float-little-32, rest::binary>>), do: {:ok, value, rest}
+  def decode_float(_binary), do: {:error, :unexpected_eof}
+
+  def decode_double(<<value::float-little-64, rest::binary>>), do: {:ok, value, rest}
+  def decode_double(_binary), do: {:error, :unexpected_eof}
+
   def skip_field(@wire_varint, binary) do
     with {:ok, _value, rest} <- decode_varint(binary), do: {:ok, rest}
   end
@@ -73,6 +99,12 @@ defmodule BaileysEx.Protocol.Proto.Wire do
   def skip_field(@wire_bytes, binary) do
     with {:ok, _value, rest} <- decode_bytes(binary), do: {:ok, rest}
   end
+
+  def skip_field(@wire_64bit, <<_value::binary-size(8), rest::binary>>), do: {:ok, rest}
+  def skip_field(@wire_64bit, _binary), do: {:error, :unexpected_eof}
+
+  def skip_field(@wire_32bit, <<_value::binary-size(4), rest::binary>>), do: {:ok, rest}
+  def skip_field(@wire_32bit, _binary), do: {:error, :unexpected_eof}
 
   def skip_field(_, _binary), do: {:error, :unsupported_wire_type}
 
@@ -84,6 +116,24 @@ defmodule BaileysEx.Protocol.Proto.Wire do
 
   def continue_bytes(binary, state, updater, cont) do
     with {:ok, value, rest} <- decode_bytes(binary) do
+      cont.(rest, updater.(state, value))
+    end
+  end
+
+  def continue_fixed32(binary, state, updater, cont) do
+    with {:ok, value, rest} <- decode_fixed32(binary) do
+      cont.(rest, updater.(state, value))
+    end
+  end
+
+  def continue_float(binary, state, updater, cont) do
+    with {:ok, value, rest} <- decode_float(binary) do
+      cont.(rest, updater.(state, value))
+    end
+  end
+
+  def continue_double(binary, state, updater, cont) do
+    with {:ok, value, rest} <- decode_double(binary) do
       cont.(rest, updater.(state, value))
     end
   end

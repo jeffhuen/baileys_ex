@@ -9,6 +9,8 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.ws_url == "wss://web.whatsapp.com/ws/chat"
     assert config.keep_alive_interval_ms == 25_000
     assert config.default_query_timeout_ms == 60_000
+    assert config.retry_request_delay_ms == 250
+    assert config.max_msg_retry_count == 5
     assert config.retry_delay_ms == 2_000
     assert config.max_retries == 5
     assert config.connect_timeout_ms == 20_000
@@ -17,6 +19,8 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.pairing_qr_refresh_timeout_ms == 20_000
     assert config.fire_init_queries == true
     assert config.mark_online_on_connect == true
+    assert config.enable_auto_session_recreation == true
+    assert config.enable_recent_message_cache == true
     assert config.browser == {"Mac OS", "Chrome", "14.4.1"}
     assert config.version == [2, 3000, 1_033_846_690]
     assert config.country_code == "US"
@@ -33,8 +37,12 @@ defmodule BaileysEx.Connection.ConfigTest do
         initial_sync_timeout_ms: 10_000,
         pairing_qr_initial_timeout_ms: 45_000,
         pairing_qr_refresh_timeout_ms: 15_000,
+        retry_request_delay_ms: 500,
+        max_msg_retry_count: 7,
         fire_init_queries: false,
         mark_online_on_connect: false,
+        enable_auto_session_recreation: false,
+        enable_recent_message_cache: false,
         browser: {"Ubuntu", "Firefox", "24.04"},
         version: [2, 24, 7],
         country_code: "GB",
@@ -47,8 +55,12 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.initial_sync_timeout_ms == 10_000
     assert config.pairing_qr_initial_timeout_ms == 45_000
     assert config.pairing_qr_refresh_timeout_ms == 15_000
+    assert config.retry_request_delay_ms == 500
+    assert config.max_msg_retry_count == 7
     assert config.fire_init_queries == false
     assert config.mark_online_on_connect == false
+    assert config.enable_auto_session_recreation == false
+    assert config.enable_recent_message_cache == false
     assert config.browser == {"Ubuntu", "Firefox", "24.04"}
     assert config.version == [2, 24, 7]
     assert config.country_code == "GB"

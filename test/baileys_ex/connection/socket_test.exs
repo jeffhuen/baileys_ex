@@ -492,6 +492,96 @@ defmodule BaileysEx.Connection.SocketTest do
     refute_receive {:transport_sent, _unexpected_ack}, 50
   end
 
+  test "raw inbound message, receipt, ack, and notification nodes are surfaced as socket_node events" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000)
+      )
+
+    message_node =
+      %BinaryNode{
+        tag: "message",
+        attrs: %{"id" => "raw-msg-1", "from" => "15551234567@s.whatsapp.net", "t" => "1710000900"},
+        content: []
+      }
+
+    {server_transport, message_frame} = server_transport_frame(server_transport, message_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, message_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{tag: "message", attrs: %{"id" => "raw-msg-1"}}
+                      }
+                    }}
+
+    receipt_node =
+      %BinaryNode{
+        tag: "receipt",
+        attrs: %{"id" => "raw-receipt-1", "from" => "15551234567@s.whatsapp.net"},
+        content: nil
+      }
+
+    {server_transport, receipt_frame} = server_transport_frame(server_transport, receipt_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, receipt_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{tag: "receipt", attrs: %{"id" => "raw-receipt-1"}}
+                      }
+                    }}
+
+    ack_node =
+      %BinaryNode{
+        tag: "ack",
+        attrs: %{
+          "id" => "raw-ack-1",
+          "class" => "message",
+          "from" => "15551234567@s.whatsapp.net"
+        },
+        content: nil
+      }
+
+    {server_transport, ack_frame} = server_transport_frame(server_transport, ack_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, ack_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{tag: "ack", attrs: %{"id" => "raw-ack-1"}}
+                      }
+                    }}
+
+    notification_node =
+      %BinaryNode{
+        tag: "notification",
+        attrs: %{"type" => "picture", "from" => "12345-67890@g.us"},
+        content: [%BinaryNode{tag: "set", attrs: %{"id" => "pic-raw-1"}, content: nil}]
+      }
+
+    {_, notification_frame} = server_transport_frame(server_transport, notification_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, notification_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{tag: "notification", attrs: %{"type" => "picture"}}
+                      }
+                    }}
+  end
+
   test "logout/1 sends remove-companion-device and transitions the socket to disconnected" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)

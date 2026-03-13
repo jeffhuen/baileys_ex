@@ -42,14 +42,12 @@ missing:
 - `BaileysEx.Media.Crypto` implements single-pass encrypt-to-tempfile and media
   decrypt with MAC verification.
 - `BaileysEx.Media.Upload` implements `w:m` `media_conn` lookup and CDN upload.
-- `BaileysEx.Media.Download` implements media URL resolution plus decrypting
-  downloads back to plaintext or a file path.
+- `BaileysEx.Media.Download` implements media URL resolution, streaming decrypt
+  to a file, and Baileys-style aligned ranged downloads.
 
-This means `9.1`, `9.2`, and `9.4` are complete on branch. `9.3` has a working
-download/decrypt foundation, but remains open until the rest of the
-streaming/range-download behavior lands. The remaining phase scope is
-thumbnail/waveform generation, re-upload flow, media-conn caching/retry, and
-message-builder integration.
+This means `9.1` through `9.4` are complete on branch. The remaining phase
+scope is thumbnail/waveform generation, re-upload flow, media-conn
+caching/retry, and message-builder integration.
 
 ---
 
@@ -385,7 +383,7 @@ end
 - HKDF key expansion matches Baileys test vectors
 - MAC verification catches tampered data
 - Upload node construction
-- Download with mock HTTP server
+- Download with mock HTTP server and aligned range requests
 - Integration: encrypt → upload → download → decrypt roundtrip
 
 ---
@@ -395,7 +393,7 @@ end
 - [x] Media encrypt/decrypt roundtrip for all core media message types
 - [x] MAC verification works (pass and fail cases)
 - [x] Upload constructs correct HTTP request
-- [ ] Download handles streaming
+- [x] Download handles streaming
 - [ ] Message builder integrates media handling
 - [ ] Cross-validation with Baileys-encrypted media
 - [ ] Image thumbnails generated when `image` package available

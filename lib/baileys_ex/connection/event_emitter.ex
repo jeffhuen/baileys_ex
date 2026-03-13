@@ -66,6 +66,7 @@ defmodule BaileysEx.Connection.EventEmitter do
           | :newsletter_settings_update
           | :newsletter_view
           | :presence_update
+          | :socket_node
           | :settings_update
 
   @spec start_link(keyword()) :: GenServer.on_start()

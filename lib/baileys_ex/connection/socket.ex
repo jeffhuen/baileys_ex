@@ -571,6 +571,12 @@ defmodule BaileysEx.Connection.Socket do
   defp apply_binary_node(:connected, %BinaryNode{tag: "notification"} = node, data),
     do: apply_notification_node(:connected, node, data)
 
+  defp apply_binary_node(current_state, %BinaryNode{tag: tag} = node, data)
+       when tag in ["message", "receipt", "ack"] do
+    emit_event(data, :socket_node, %{node: node, state: current_state})
+    {:ok, current_state, data}
+  end
+
   defp apply_binary_node(current_state, %BinaryNode{tag: "iq"} = node, data) do
     {:ok, current_state, maybe_resolve_query(data, node)}
   end
@@ -871,17 +877,20 @@ defmodule BaileysEx.Connection.Socket do
   defp maybe_send_presence_unified_session(data, :unavailable), do: {:ok, data}
 
   defp apply_notification_node(current_state, %BinaryNode{} = node, %__MODULE__{} = data) do
-    cond do
-      BinaryNodeUtil.child(node, "link_code_companion_reg") ->
-        handle_phone_pairing_notification(node, data)
+    result =
+      cond do
+        BinaryNodeUtil.child(node, "link_code_companion_reg") ->
+          handle_phone_pairing_notification(node, data)
 
-      low_prekey_count = encrypt_notification_count(node) ->
-        _ = maybe_start_low_prekey_upload(data, low_prekey_count)
-        {:ok, current_state, data}
+        low_prekey_count = encrypt_notification_count(node) ->
+          _ = maybe_start_low_prekey_upload(data, low_prekey_count)
+          {:ok, current_state, data}
 
-      true ->
-        {:ok, current_state, data}
-    end
+        true ->
+          {:ok, current_state, data}
+      end
+
+    maybe_emit_socket_node(result, node)
   end
 
   defp handle_phone_pairing_finish_result({:ok, _response}, creds_update, %__MODULE__{} = data) do
@@ -1105,6 +1114,13 @@ defmodule BaileysEx.Connection.Socket do
   catch
     :exit, _reason -> :ok
   end
+
+  defp maybe_emit_socket_node({:ok, current_state, %__MODULE__{} = data}, %BinaryNode{} = node) do
+    emit_event(data, :socket_node, %{node: node, state: current_state})
+    {:ok, current_state, data}
+  end
+
+  defp maybe_emit_socket_node(result, _node), do: result
 
   defp maybe_update_lid(data, nil), do: data
 

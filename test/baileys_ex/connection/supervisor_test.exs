@@ -7,6 +7,9 @@ defmodule BaileysEx.Connection.SupervisorTest do
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
   alias BaileysEx.Connection.Supervisor
+  alias BaileysEx.Message.Builder
+  alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.TestHelpers.MessageSignalHelpers
 
   defmodule ReconnectTransport do
     @behaviour BaileysEx.Connection.Transport
@@ -463,6 +466,305 @@ defmodule BaileysEx.Connection.SupervisorTest do
                       attrs: %{"xmlns" => "urn:xmpp:whatsapp:dirty", "type" => "set"},
                       content: [%BinaryNode{tag: "clean", attrs: %{"type" => "groups"}}]
                     }}
+  end
+
+  test "socket_node message events are routed through the receiver and send delivery receipts" do
+    name = {:phase8_test, System.unique_integer([:positive])}
+    {signal_repository, _signal_store} = MessageSignalHelpers.new_repo()
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{
+                 creds: %{me: %{id: "15550001111@s.whatsapp.net", lid: "15550001111@lid"}}
+               },
+               socket_module: FakeSocket,
+               signal_repository: signal_repository,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:events, &1}))
+
+    message_node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "runtime-msg-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => "1710000800"
+      },
+      content: [
+        %BinaryNode{
+          tag: "plaintext",
+          attrs: %{},
+          content: Message.encode(Builder.build(%{text: "runtime hello"}))
+        }
+      ]
+    }
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{node: message_node, state: :connected})
+
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        messages: [%{key: %{id: "runtime-msg-1"}}]
+                      }
+                    }}
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "receipt",
+                      attrs: %{"to" => "15551234567@s.whatsapp.net", "id" => "runtime-msg-1"}
+                    }}
+
+    unsubscribe.()
+  end
+
+  test "socket_node receipt, ack, and notification events are routed through the messaging handlers" do
+    name = {:phase8_test, System.unique_integer([:positive])}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+
+    signal_store =
+      child_pid!(supervisor, BaileysEx.Signal.Store.Memory)
+      |> BaileysEx.Signal.Store.Memory.wrap()
+
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:events, &1}))
+
+    receipt_node = %BinaryNode{
+      tag: "receipt",
+      attrs: %{
+        "from" => "15551234567@s.whatsapp.net",
+        "id" => "receipt-msg-1",
+        "t" => "1710000801"
+      },
+      content: nil
+    }
+
+    ack_node = %BinaryNode{
+      tag: "ack",
+      attrs: %{
+        "class" => "message",
+        "from" => "15551234567@s.whatsapp.net",
+        "id" => "ack-msg-1",
+        "error" => "406"
+      },
+      content: nil
+    }
+
+    picture_notification = %BinaryNode{
+      tag: "notification",
+      attrs: %{
+        "type" => "picture",
+        "from" => "12345-67890@g.us",
+        "participant" => "15551234567@s.whatsapp.net",
+        "t" => "1710000802"
+      },
+      content: [
+        %BinaryNode{
+          tag: "set",
+          attrs: %{"id" => "pic-1", "author" => "15551234567@s.whatsapp.net"}
+        }
+      ]
+    }
+
+    privacy_token_notification = %BinaryNode{
+      tag: "notification",
+      attrs: %{"type" => "privacy_token", "from" => "15551234567@s.whatsapp.net"},
+      content: [
+        %BinaryNode{
+          tag: "tokens",
+          attrs: %{},
+          content: [
+            %BinaryNode{
+              tag: "token",
+              attrs: %{"type" => "trusted_contact", "t" => "1710000803"},
+              content: "trusted-token"
+            }
+          ]
+        }
+      ]
+    }
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{node: receipt_node, state: :connected})
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{node: ack_node, state: :connected})
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{
+               node: picture_notification,
+               state: :connected
+             })
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{
+               node: privacy_token_notification,
+               state: :connected
+             })
+
+    assert_receive {:events,
+                    %{
+                      messages_update: [
+                        %{key: %{id: "receipt-msg-1"}, update: %{status: :delivery_ack}}
+                      ]
+                    }}
+
+    assert_receive {:events,
+                    %{messages_update: [%{key: %{id: "ack-msg-1"}, update: %{status: :ERROR}}]}}
+
+    assert_receive {:events, %{contacts_update: [%{id: "12345-67890@g.us", img_url: :changed}]}}
+
+    assert_receive {:events,
+                    %{messages_upsert: %{messages: [%{message_stub_type: :GROUP_CHANGE_ICON}]}}}
+
+    assert_eventually(fn ->
+      BaileysEx.Signal.Store.Memory.get(signal_store, :tctoken, ["15551234567@s.whatsapp.net"])[
+        "15551234567@s.whatsapp.net"
+      ] == %{token: "trusted-token", timestamp: "1710000803"}
+    end)
+
+    unsubscribe.()
+  end
+
+  test "encrypt notifications from peers trigger session refresh through the coordinator runtime" do
+    name = {:phase8_test, System.unique_integer([:positive])}
+    {signal_repository, _signal_store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    assert {:ok, signal_repository} =
+             BaileysEx.Signal.Repository.inject_e2e_session(signal_repository, %{
+               jid: "15551234567@s.whatsapp.net",
+               session: session
+             })
+
+    key_bundle_response = fn
+      %BinaryNode{
+        attrs: %{"xmlns" => "encrypt", "type" => "get"},
+        content: [%BinaryNode{tag: "key", content: [%BinaryNode{tag: "user", attrs: user_attrs}]}]
+      },
+      _timeout ->
+        public_key = :crypto.strong_rand_bytes(32)
+
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "list",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "user",
+                   attrs: %{"jid" => user_attrs["jid"]},
+                   content: [
+                     %BinaryNode{
+                       tag: "registration",
+                       attrs: %{},
+                       content: {:binary, <<0, 0, 0, 42>>}
+                     },
+                     %BinaryNode{
+                       tag: "identity",
+                       attrs: %{},
+                       content: {:binary, public_key}
+                     },
+                     %BinaryNode{
+                       tag: "skey",
+                       attrs: %{},
+                       content: [
+                         %BinaryNode{tag: "id", attrs: %{}, content: {:binary, <<0, 0, 0, 7>>}},
+                         %BinaryNode{tag: "value", attrs: %{}, content: {:binary, public_key}},
+                         %BinaryNode{
+                           tag: "signature",
+                           attrs: %{},
+                           content: {:binary, :crypto.strong_rand_bytes(64)}
+                         }
+                       ]
+                     },
+                     %BinaryNode{
+                       tag: "key",
+                       attrs: %{},
+                       content: [
+                         %BinaryNode{tag: "id", attrs: %{}, content: {:binary, <<0, 0, 0, 8>>}},
+                         %BinaryNode{tag: "value", attrs: %{}, content: {:binary, public_key}}
+                       ]
+                     }
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:error, :unexpected_query}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               signal_repository: signal_repository,
+               test_pid: self(),
+               query_handler: key_bundle_response,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+
+    notification = %BinaryNode{
+      tag: "notification",
+      attrs: %{"type" => "encrypt", "from" => "15551234567@s.whatsapp.net"},
+      content: [%BinaryNode{tag: "identity", attrs: %{}, content: nil}]
+    }
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{node: notification, state: :connected})
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "encrypt", "type" => "get"},
+                      content: [
+                        %BinaryNode{
+                          tag: "key",
+                          content: [
+                            %BinaryNode{
+                              tag: "user",
+                              attrs: %{
+                                "jid" => "15551234567@s.whatsapp.net",
+                                "reason" => "identity"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }, _timeout}
   end
 
   defp child_pid!(supervisor, child_id) do

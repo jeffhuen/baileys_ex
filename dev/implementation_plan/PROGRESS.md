@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-10
+> Last updated: 2026-03-11
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -19,7 +19,7 @@
 | 5 | Signal Protocol | 8 | COMPLETE | 1, 2 | 7, 8 |
 | 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | COMPLETE | 5, 6 | 8 |
-| 8 | Messaging Core | 13 | NOT STARTED | 5, 6, 7 | 9, 10 |
+| 8 | Messaging Core | 13 | COMPLETE | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | NOT STARTED | 2, 8 | 12 |
 | 10 | Features | 17 | NOT STARTED | 8 | 11 |
 | 11 | Advanced Features | 5 | NOT STARTED | 10 | 12 |
@@ -408,98 +408,110 @@ falsely marked as implemented here.
 
 ## Phase 8: Messaging Core
 
-**Status:** NOT STARTED · **Depends on:** Phases 5, 6, 7 · **Blocks:** 9, 10
+**Status:** COMPLETE · **Depends on:** Phases 5, 6, 7 · **Blocks:** 9, 10
+
+Current branch progress:
+- Phase 8 is complete on `phase-08-messaging`.
+- The branch now includes the WAProto subset and runtime helpers required for the full rc.9 message path: builder/parser parity for the sendable content set, repo-threaded direct/group/status send fanout, USync-backed device discovery caching, padded message wire helpers, receive-side decrypt/decode/event emission, and end-to-end roundtrip tests.
+- The messaging runtime also now includes the remaining rc.9 support surfaces: offline FIFO batching, LID-aware envelope decoding, receipt send/process helpers, retry/PDO handling, history sync, bad-ack handling, verified-name extraction, identity-change refresh, normalization/decryption side effects, reporting tokens, and the raw node dispatch seam from `Connection.Socket` through `Connection.Coordinator`.
 
 ### Tasks
 
-- [ ] 8.1 Message builder (ALL message types)
-- [ ] 8.2 Message sender (build → encrypt → encode → send)
-- [ ] 8.3 Message receiver (decode → decrypt → parse → emit)
-- [ ] 8.3a Offline node processor (FIFO batching of offline nodes)
-- [ ] 8.4 Receipt handling (delivered, read, played)
-- [ ] 8.5 Retry logic (14 reason codes, MAC error cooldown)
-- [ ] 8.5a Peer Data Operations (history sync on-demand, placeholder resend transport)
-- [ ] 8.6 Device discovery (multi-device)
-- [ ] 8.7 Bad ACK handling (GAP-40)
-- [ ] 8.7a Verified Name Certificates (GAP-35)
-- [ ] 8.8 Notification handler (11 notification types)
-- [ ] 8.9 History sync (download, decompress, PN-LID fallback — GAP-45)
-- [ ] 8.10 Identity change handler
-- [ ] 8.11 Message normalization (JIDs, reactions, polls, LID/PN)
-- [ ] 8.12 Tests
+- [x] 8.1 Message builder (ALL message types)
+- [x] 8.2 Message sender (build → encrypt → encode → send)
+- [x] 8.3 Message receiver (decode → decrypt → parse → emit)
+- [x] 8.3a Offline node processor (FIFO batching of offline nodes)
+- [x] 8.3b Envelope decode and protocol-message side effects
+- [x] 8.4 Receipt handling (delivered, read, played)
+- [x] 8.5 Retry logic (14 reason codes, MAC error cooldown)
+- [x] 8.5a Peer Data Operations (history sync on-demand, placeholder resend transport)
+- [x] 8.6 Device discovery (multi-device)
+- [x] 8.7 Bad ACK handling (GAP-40)
+- [x] 8.7a Verified Name Certificates (GAP-35)
+- [x] 8.8 Notification handler (11 notification types)
+- [x] 8.9 History sync (download, decompress, PN-LID fallback — GAP-45)
+- [x] 8.10 Identity change handler
+- [x] 8.11 Message normalization (JIDs, reactions, polls, LID/PN)
+- [x] 8.12 Tests
 
 ### Acceptance Criteria
 
-- [ ] Text message send/receive pipeline works end-to-end
-- [ ] Signal encryption/decryption integrated into pipeline
-- [ ] Device discovery queries and caches device lists
-- [ ] Receipts sent correctly
-- [ ] Retry logic handles failed decryption
-- [ ] Builder covers ALL message types explicitly (no catch-all)
-- [ ] Events emitted for received messages
-- [ ] Reactions send/receive correctly
-- [ ] Polls create with message secret, correct version (V1/V2/V3)
-- [ ] Contacts: single → contactMessage, multiple → contactsArrayMessage
-- [ ] Location and live location produce correct proto
-- [ ] Message delete (revoke) constructs correct protocolMessage
-- [ ] Message edit constructs correct protocolMessage with :MESSAGE_EDIT
-- [ ] Disappearing messages toggle via protocolMessage
-- [ ] Pin/unpin in chat with duration
-- [ ] Forward increments forwarding_score, sets is_forwarded
-- [ ] Status/stories send to `status@broadcast` with viewer list
-- [ ] Parser unwraps ephemeral/viewOnce/template wrappers
-- [ ] Parser detects content type for all known message types
-- [ ] Inbound interactive messages parsed without crash
-- [ ] Notification handler processes all 11 notification types
-- [ ] Group notifications produce correct stub types (20+ types)
-- [ ] History sync downloads, decompresses, processes correctly
-- [ ] History sync emits correct events by sync type
-- [ ] DSM wrapper sent to own devices for 1:1 messages
-- [ ] Group messages distribute SKD to new devices
-- [ ] Sender key memory tracked per group
-- [ ] Message ID format matches Baileys (3EB0 + timestamp + random)
-- [ ] Participant hash V2 computed and sent as phash attribute
-- [ ] Retry manager handles 14 reason codes
-- [ ] MAC errors trigger immediate session recreation (1-hour cooldown)
-- [ ] Recent-message cache and scheduled phone requests match MessageRetryManager semantics when enabled
-- [ ] Identity change notifications trigger session refresh
-- [ ] Placeholder resend requests via PDO with dedup
-- [ ] Peer Data Operation requests sent to self with peer message attributes
-- [ ] ProtocolMessage side effects cover history sync, app-state key share, PDO responses, label-change, edit/revoke, and LID migration mapping sync
-- [ ] Decode path preserves alt addressing fields and uses LID mapping for decryption routing
-- [ ] Received messages normalized
-- [ ] Received event responses decrypt and update the source event message when the message secret is available
-- [ ] Reporting tokens attached to applicable types (GAP-32)
-- [ ] Bad ACK errors emit messages.update with ERROR status (GAP-40)
-- [ ] History sync extracts PN-LID mappings with fallback (GAP-45)
-- [ ] Offline node processor drains FIFO batches of 10 without long scheduler monopolization
+- [x] Text message send/receive pipeline works end-to-end
+- [x] Signal encryption/decryption integrated into pipeline
+- [x] Device discovery queries and caches device lists
+- [x] Receipts sent correctly
+- [x] Retry logic handles failed decryption
+- [x] Builder covers ALL message types explicitly (no catch-all)
+- [x] Events emitted for received messages
+- [x] Reactions send/receive correctly
+- [x] Polls create with message secret, correct version (V1/V2/V3)
+- [x] Contacts: single → contactMessage, multiple → contactsArrayMessage
+- [x] Location and live location produce correct proto
+- [x] Message delete (revoke) constructs correct protocolMessage
+- [x] Message edit constructs correct protocolMessage with :MESSAGE_EDIT
+- [x] Disappearing messages toggle via protocolMessage
+- [x] Pin/unpin in chat with duration
+- [x] Forward increments forwarding_score, sets is_forwarded
+- [x] Status/stories send to `status@broadcast` with viewer list
+- [x] Parser unwraps ephemeral/viewOnce/template wrappers
+- [x] Parser detects content type for all known message types
+- [x] Inbound interactive messages parsed without crash
+- [x] Notification handler processes all 11 notification types
+- [x] Group notifications produce correct stub types (20+ types)
+- [x] History sync downloads, decompresses, processes correctly
+- [x] History sync emits correct events by sync type
+- [x] DSM wrapper sent to own devices for 1:1 messages
+- [x] Group messages distribute SKD to new devices
+- [x] Sender key memory tracked per group
+- [x] Message ID format matches Baileys (3EB0 + timestamp + random)
+- [x] Participant hash V2 computed and sent as phash attribute
+- [x] Retry manager handles 14 reason codes
+- [x] MAC errors trigger immediate session recreation (1-hour cooldown)
+- [x] Recent-message cache and scheduled phone requests match MessageRetryManager semantics when enabled
+- [x] Identity change notifications trigger session refresh
+- [x] Placeholder resend requests via PDO with dedup
+- [x] Peer Data Operation requests sent to self with peer message attributes
+- [x] ProtocolMessage side effects cover history sync, app-state key share, PDO responses, label-change, edit/revoke, and LID migration mapping sync
+- [x] Decode path preserves alt addressing fields and uses LID mapping for decryption routing
+- [x] Received messages normalized
+- [x] Received event responses decrypt and update the source event message when the message secret is available
+- [x] Reporting tokens attached to applicable types (GAP-32)
+- [x] Bad ACK errors emit messages.update with ERROR status (GAP-40)
+- [x] History sync extracts PN-LID mappings with fallback (GAP-45)
+- [x] Offline node processor drains FIFO batches of 10 without long scheduler monopolization
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `lib/baileys_ex/message/builder.ex` | ⬜ |
-| `lib/baileys_ex/message/parser.ex` | ⬜ |
-| `lib/baileys_ex/message/sender.ex` | ⬜ |
-| `lib/baileys_ex/message/receiver.ex` | ⬜ |
-| `lib/baileys_ex/message/decode.ex` | ⬜ |
-| `lib/baileys_ex/message/receipt.ex` | ⬜ |
-| `lib/baileys_ex/message/retry.ex` | ⬜ |
-| `lib/baileys_ex/message/peer_data.ex` | ⬜ |
-| `lib/baileys_ex/message/notification_handler.ex` | ⬜ |
-| `lib/baileys_ex/message/history_sync.ex` | ⬜ |
-| `lib/baileys_ex/message/identity_change_handler.ex` | ⬜ |
-| `lib/baileys_ex/message/normalizer.ex` | ⬜ |
-| `lib/baileys_ex/signal/device.ex` | ⬜ |
-| `test/baileys_ex/message/builder_test.exs` | ⬜ |
-| `test/baileys_ex/message/parser_test.exs` | ⬜ |
-| `test/baileys_ex/message/sender_test.exs` | ⬜ |
-| `test/baileys_ex/message/receiver_test.exs` | ⬜ |
-| `test/baileys_ex/message/decode_test.exs` | ⬜ |
-| `test/baileys_ex/message/receipt_test.exs` | ⬜ |
-| `test/baileys_ex/message/peer_data_test.exs` | ⬜ |
-| `test/baileys_ex/message/notification_handler_test.exs` | ⬜ |
-| `test/baileys_ex/message/history_sync_test.exs` | ⬜ |
+| `lib/baileys_ex/message/builder.ex` | ✅ |
+| `lib/baileys_ex/message/parser.ex` | ✅ |
+| `lib/baileys_ex/message/sender.ex` | ✅ |
+| `lib/baileys_ex/message/receiver.ex` | ✅ |
+| `lib/baileys_ex/message/decode.ex` | ✅ |
+| `lib/baileys_ex/message/receipt.ex` | ✅ |
+| `lib/baileys_ex/message/retry.ex` | ✅ |
+| `lib/baileys_ex/message/peer_data.ex` | ✅ |
+| `lib/baileys_ex/message/notification_handler.ex` | ✅ |
+| `lib/baileys_ex/message/history_sync.ex` | ✅ |
+| `lib/baileys_ex/message/identity_change_handler.ex` | ✅ |
+| `lib/baileys_ex/message/normalizer.ex` | ✅ |
+| `lib/baileys_ex/message/reporting.ex` | ✅ |
+| `lib/baileys_ex/signal/device.ex` | ✅ |
+| `lib/baileys_ex/signal/session.ex` | ✅ |
+| `test/baileys_ex/message/builder_test.exs` | ✅ |
+| `test/baileys_ex/message/parser_test.exs` | ✅ |
+| `test/baileys_ex/message/sender_test.exs` | ✅ |
+| `test/baileys_ex/message/receiver_test.exs` | ✅ |
+| `test/baileys_ex/message/decode_test.exs` | ✅ |
+| `test/baileys_ex/message/receipt_test.exs` | ✅ |
+| `test/baileys_ex/message/retry_test.exs` | ✅ |
+| `test/baileys_ex/message/peer_data_test.exs` | ✅ |
+| `test/baileys_ex/message/notification_handler_test.exs` | ✅ |
+| `test/baileys_ex/message/history_sync_test.exs` | ✅ |
+| `test/baileys_ex/message/identity_change_handler_test.exs` | ✅ |
+| `test/baileys_ex/message/integration_test.exs` | ✅ |
+| `test/baileys_ex/signal/device_test.exs` | ✅ |
 
 ---
 

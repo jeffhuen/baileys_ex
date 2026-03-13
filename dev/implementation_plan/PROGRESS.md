@@ -523,14 +523,15 @@ Current branch progress:
 That includes the WAProto media-field expansion required by rc.9 media messages,
 `BaileysEx.Media.Types`, `BaileysEx.Media.Crypto.encrypt/3` + `decrypt/3`,
 `BaileysEx.Media.Upload.refresh_media_conn/2` + `upload/4`, and
-`BaileysEx.Media.Download.download/2` + `download_to_file/3`. Tasks `9.1`-`9.3`
-remain open until the rest of the streaming, retry, and builder integration work
-lands. `9.4` is complete.
+`BaileysEx.Media.Download.download/2` + `download_to_file/3`. Tasks `9.1`,
+`9.2`, and `9.4` are complete. `9.3` remains open until download is
+streaming/range-capable, and the rest of the phase still needs thumbnails,
+re-upload flow, caching/retry, and message-builder integration.
 
 ### Tasks
 
-- [ ] 9.1 Media crypto (single-pass streaming — GAP-46)
-- [ ] 9.2 Media upload (HTTP to WhatsApp CDN)
+- [x] 9.1 Media crypto (single-pass streaming — GAP-46)
+- [x] 9.2 Media upload (HTTP to WhatsApp CDN)
 - [ ] 9.3 Media download (streaming + decryption)
 - [x] 9.4 Media types (image, video, audio, doc, sticker)
 - [ ] 9.5 Thumbnail and waveform generation
@@ -541,9 +542,9 @@ lands. `9.4` is complete.
 
 ### Acceptance Criteria
 
-- [ ] Media encrypt/decrypt roundtrip for all types
-- [ ] MAC verification works (pass and fail cases)
-- [ ] Upload constructs correct HTTP request
+- [x] Media encrypt/decrypt roundtrip for all core media message types
+- [x] MAC verification works (pass and fail cases)
+- [x] Upload constructs correct HTTP request
 - [ ] Download handles streaming
 - [ ] Message builder integrates media handling
 - [ ] Cross-validation with Baileys-encrypted media
@@ -552,7 +553,7 @@ lands. `9.4` is complete.
 - [ ] Audio waveform computed (64 samples)
 - [ ] Media connection refreshed and cached
 - [ ] Media upload retry works for failed messages
-- [ ] Media encryption uses single-pass streaming (GAP-46)
+- [x] Media encryption uses single-pass streaming (GAP-46)
 - [ ] Media re-upload request sent for expired media (GAP-47)
 
 ### Files
@@ -569,6 +570,7 @@ lands. `9.4` is complete.
 | `test/baileys_ex/media/crypto_test.exs` | ✅ |
 | `test/baileys_ex/media/upload_test.exs` | ✅ |
 | `test/baileys_ex/media/download_test.exs` | ✅ |
+| `test/baileys_ex/media/types_test.exs` | ✅ |
 
 ---
 

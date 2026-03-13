@@ -51,6 +51,21 @@ defmodule BaileysEx.Media.CryptoTest do
     assert {:error, :mac_mismatch} = Crypto.decrypt(tampered, media_key, :audio)
   end
 
+  @tag :tmp_dir
+  test "encrypt/3 and decrypt/3 roundtrip the core media message types", %{tmp_dir: tmp_dir} do
+    plaintext = String.duplicate("core-media-roundtrip", 32)
+
+    for media_type <- [:image, :video, :audio, :document, :sticker] do
+      media_key = :crypto.strong_rand_bytes(32)
+
+      assert {:ok, %{encrypted_path: encrypted_path}} =
+               Crypto.encrypt(plaintext, media_type, media_key: media_key, tmp_dir: tmp_dir)
+
+      encrypted = File.read!(encrypted_path)
+      assert {:ok, ^plaintext} = Crypto.decrypt(encrypted, media_key, media_type)
+    end
+  end
+
   test "decrypt/3 rejects payloads without room for ciphertext and mac" do
     assert {:error, :invalid_media_payload} =
              Crypto.decrypt(<<1, 2, 3>>, :binary.copy(<<1>>, 32), :image)

@@ -45,9 +45,11 @@ missing:
 - `BaileysEx.Media.Download` implements media URL resolution plus decrypting
   downloads back to plaintext or a file path.
 
-This means `9.4` is complete and `9.1`-`9.3` have real foundations on branch,
-but those tasks remain open until the rest of the streaming/range-download,
-host-retry/cache, and message-builder integration work lands.
+This means `9.1`, `9.2`, and `9.4` are complete on branch. `9.3` has a working
+download/decrypt foundation, but remains open until the rest of the
+streaming/range-download behavior lands. The remaining phase scope is
+thumbnail/waveform generation, re-upload flow, media-conn caching/retry, and
+message-builder integration.
 
 ---
 
@@ -390,9 +392,9 @@ end
 
 ## Acceptance Criteria
 
-- [ ] Media encrypt/decrypt roundtrip for all types
-- [ ] MAC verification works (pass and fail cases)
-- [ ] Upload constructs correct HTTP request
+- [x] Media encrypt/decrypt roundtrip for all core media message types
+- [x] MAC verification works (pass and fail cases)
+- [x] Upload constructs correct HTTP request
 - [ ] Download handles streaming
 - [ ] Message builder integrates media handling
 - [ ] Cross-validation with Baileys-encrypted media
@@ -401,7 +403,7 @@ end
 - [ ] Audio waveform computed (64 samples)
 - [ ] Media connection refreshed and cached
 - [ ] Media upload retry works for failed messages
-- [ ] Media encryption uses single-pass streaming for large files (GAP-46)
+- [x] Media encryption uses single-pass streaming for large files (GAP-46)
 - [ ] Media re-upload request sent for expired media (GAP-47)
 
 ## Files Created/Modified
@@ -414,5 +416,6 @@ end
 - `test/baileys_ex/media/crypto_test.exs`
 - `test/baileys_ex/media/upload_test.exs`
 - `test/baileys_ex/media/download_test.exs`
+- `test/baileys_ex/media/types_test.exs`
 - `lib/baileys_ex/media/thumbnail.ex`
 - `lib/baileys_ex/media/retry.ex`

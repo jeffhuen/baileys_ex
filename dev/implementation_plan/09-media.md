@@ -49,6 +49,10 @@ This means `9.1` through `9.4` are complete on branch. The remaining phase
 scope is thumbnail/waveform generation, re-upload flow, media-conn
 caching/retry, and message-builder integration.
 
+The streamed download path intentionally mirrors Baileys rc.9 by decrypting
+aligned AES-CBC chunks without validating the trailing 10-byte media MAC. Full
+payload verification remains available through `BaileysEx.Media.Crypto.decrypt/3`.
+
 ---
 
 ## Tasks

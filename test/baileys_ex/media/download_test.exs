@@ -107,6 +107,44 @@ defmodule BaileysEx.Media.DownloadTest do
   end
 
   @tag :tmp_dir
+  test "download_to_file/3 removes partial plaintext files when streaming raises",
+       %{tmp_dir: tmp_dir} do
+    media_key = :binary.copy(<<8>>, 32)
+    plaintext = String.duplicate("partial-cleanup-", 32)
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+    [first_chunk | _rest] = chunk_binary(encrypted, 19)
+
+    request_fun = fn _request ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body:
+           Stream.concat(
+             [first_chunk],
+             Stream.map([:boom], fn _ -> raise "stream failed" end)
+           )
+       }}
+    end
+
+    message = %Message.ImageMessage{
+      media_key: media_key,
+      direct_path: "/mms/image/file-1"
+    }
+
+    output_path = Path.join(tmp_dir, "partial-output.bin")
+
+    assert_raise RuntimeError, "stream failed", fn ->
+      Download.download_to_file(message, output_path, request_fun: request_fun)
+    end
+
+    refute File.exists?(output_path)
+  end
+
+  @tag :tmp_dir
   test "download/2 supports Baileys-style ranged downloads with aligned encrypted fetches",
        %{tmp_dir: tmp_dir} do
     parent = self()
@@ -150,6 +188,85 @@ defmodule BaileysEx.Media.DownloadTest do
     assert_receive {:range_request, headers, :self}
     assert {"range", "bytes=0-48"} in headers
     assert {"origin", "https://web.whatsapp.com"} in headers
+  end
+
+  @tag :tmp_dir
+  test "download/2 uses the original IV when start_byte is smaller than one AES block",
+       %{tmp_dir: tmp_dir} do
+    parent = self()
+    media_key = :binary.copy(<<9>>, 32)
+    plaintext = Enum.map_join(0..63, fn idx -> <<rem(idx, 26) + ?a>> end)
+    start_byte = 5
+    end_byte = 20
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+    ranged_body = binary_part(encrypted, 0, 33)
+
+    request_fun = fn request ->
+      send(parent, {:small_range_request, List.wrap(request[:headers]), request[:into]})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: chunk_binary(ranged_body, 9)
+       }}
+    end
+
+    message = %Message.ImageMessage{
+      media_key: media_key,
+      direct_path: "/mms/image/file-1"
+    }
+
+    expected = binary_part(plaintext, start_byte, end_byte - start_byte)
+
+    assert {:ok, ^expected} =
+             Download.download(message,
+               start_byte: start_byte,
+               end_byte: end_byte,
+               request_fun: request_fun
+             )
+
+    assert_receive {:small_range_request, headers, :self}
+    assert {"range", "bytes=0-32"} in headers
+  end
+
+  @tag :tmp_dir
+  test "download/2 supports open-ended ranged downloads", %{tmp_dir: tmp_dir} do
+    parent = self()
+    media_key = :binary.copy(<<10>>, 32)
+    plaintext = Enum.map_join(0..95, fn idx -> <<rem(idx, 26) + ?a>> end)
+    start_byte = 20
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+
+    request_fun = fn request ->
+      send(parent, {:open_range_request, List.wrap(request[:headers]), request[:into]})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: chunk_binary(encrypted, 15)
+       }}
+    end
+
+    message = %Message.ImageMessage{
+      media_key: media_key,
+      direct_path: "/mms/image/file-1"
+    }
+
+    expected = binary_part(plaintext, start_byte, byte_size(plaintext) - start_byte)
+
+    assert {:ok, ^expected} =
+             Download.download(message, start_byte: start_byte, request_fun: request_fun)
+
+    assert_receive {:open_range_request, headers, :self}
+    refute Enum.any?(headers, fn {key, _value} -> key == "range" end)
   end
 
   test "download/2 returns explicit errors for missing media data and HTTP failures" do

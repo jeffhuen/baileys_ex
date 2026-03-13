@@ -3,6 +3,28 @@ defmodule BaileysEx.Media.CryptoTest do
 
   alias BaileysEx.Media.Crypto
 
+  @all_media_types [
+    :image,
+    :video,
+    :audio,
+    :document,
+    :sticker,
+    :gif,
+    :ptt,
+    :ptv,
+    :thumbnail_link,
+    :product_catalog_image,
+    :md_app_state,
+    :md_msg_hist,
+    :product,
+    :thumbnail_document,
+    :thumbnail_image,
+    :thumbnail_video,
+    :payment_bg_image,
+    :ppic,
+    :biz_cover_photo
+  ]
+
   @tag :tmp_dir
   test "encrypt/3 and decrypt/3 roundtrip image media with deterministic metadata", %{
     tmp_dir: tmp_dir
@@ -26,8 +48,12 @@ defmodule BaileysEx.Media.CryptoTest do
 
     encrypted = File.read!(encrypted_path)
 
-    assert file_sha256 == :crypto.hash(:sha256, plaintext)
-    assert file_enc_sha256 == :crypto.hash(:sha256, encrypted)
+    assert Base.encode16(file_sha256, case: :lower) ==
+             "0a5fd0e735bbb5781984c8e4f77772de2c332219a1eb04e400ea4632fff5458b"
+
+    assert Base.encode16(file_enc_sha256, case: :lower) ==
+             "e8017bb2a7f8e7ceb64ee59420ba02f5e331d4aa5fcc460324ee5a2c23b2a037"
+
     assert {:ok, ^plaintext} = Crypto.decrypt(encrypted, media_key, :image)
   end
 
@@ -39,7 +65,7 @@ defmodule BaileysEx.Media.CryptoTest do
     File.write!(plain_path, plaintext)
 
     assert {:ok, %{encrypted_path: encrypted_path}} =
-             Crypto.encrypt(File.stream!(plain_path, [], 17), :audio,
+             Crypto.encrypt(File.stream!(plain_path, 17), :audio,
                media_key: media_key,
                tmp_dir: tmp_dir
              )
@@ -56,6 +82,22 @@ defmodule BaileysEx.Media.CryptoTest do
     plaintext = String.duplicate("core-media-roundtrip", 32)
 
     for media_type <- [:image, :video, :audio, :document, :sticker] do
+      media_key = :crypto.strong_rand_bytes(32)
+
+      assert {:ok, %{encrypted_path: encrypted_path}} =
+               Crypto.encrypt(plaintext, media_type, media_key: media_key, tmp_dir: tmp_dir)
+
+      encrypted = File.read!(encrypted_path)
+      assert {:ok, ^plaintext} = Crypto.decrypt(encrypted, media_key, media_type)
+    end
+  end
+
+  @tag :tmp_dir
+  test "encrypt/3 and decrypt/3 roundtrip all supported media key derivation types",
+       %{tmp_dir: tmp_dir} do
+    plaintext = String.duplicate("all-media-types-roundtrip", 12)
+
+    for media_type <- @all_media_types do
       media_key = :crypto.strong_rand_bytes(32)
 
       assert {:ok, %{encrypted_path: encrypted_path}} =

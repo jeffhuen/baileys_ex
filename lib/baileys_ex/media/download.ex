@@ -9,12 +9,31 @@ defmodule BaileysEx.Media.Download do
   @mmg_host "https://mmg.whatsapp.net"
   @aes_chunk_size 16
 
-  @spec download(struct() | map(), keyword()) :: {:ok, binary()} | {:error, term()}
+  @type media_message :: %{
+          optional(:__struct__) => module(),
+          optional(:url) => binary(),
+          optional(:direct_path) => binary(),
+          optional(:media_key) => binary()
+        }
+
+  @type download_error ::
+          :missing_media_key
+          | :missing_media_url
+          | :unknown_media_type
+          | :invalid_media_payload
+          | :invalid_padding
+          | {:http_error, pos_integer(), term()}
+
+  @spec download(media_message(), keyword()) :: {:ok, binary()} | {:error, download_error()}
   @doc """
   Download and decrypt media referenced by a WhatsApp media message.
 
   Supports `:start_byte` and `:end_byte` options for Baileys-style ranged media
   downloads. `:end_byte` is an exclusive upper bound.
+
+  This streamed path matches Baileys rc.9: it decrypts aligned AES-CBC chunks
+  and does not validate the trailing 10-byte media MAC. For full-payload MAC
+  verification, use `BaileysEx.Media.Crypto.decrypt/3`.
   """
   def download(media_message, opts \\ []) do
     with {:ok, media_type} <- media_type(media_message, opts),
@@ -28,11 +47,14 @@ defmodule BaileysEx.Media.Download do
     end
   end
 
-  @spec download_to_file(struct() | map(), Path.t(), keyword()) ::
-          {:ok, Path.t()} | {:error, term()}
+  @spec download_to_file(media_message(), Path.t(), keyword()) ::
+          {:ok, Path.t()} | {:error, download_error()}
   @doc """
   Download and decrypt media directly to a file path without buffering the full
   media body in memory.
+
+  Like `download/2`, this follows Baileys rc.9 chunked decryption semantics and
+  does not verify the trailing media MAC while streaming.
   """
   def download_to_file(media_message, path, opts \\ []) do
     with {:ok, media_type} <- media_type(media_message, opts),
@@ -51,6 +73,14 @@ defmodule BaileysEx.Media.Download do
                 File.rm(path)
                 {:error, reason}
             end
+          rescue
+            error ->
+              File.rm(path)
+              reraise(error, __STACKTRACE__)
+          catch
+            kind, reason ->
+              File.rm(path)
+              :erlang.raise(kind, reason, __STACKTRACE__)
           after
             File.close(device)
           end

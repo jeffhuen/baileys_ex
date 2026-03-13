@@ -527,7 +527,9 @@ That includes the WAProto media-field expansion required by rc.9 media messages,
 `9.2`, `9.3`, and `9.4` are complete. The download path now supports
 streaming file output and Baileys-style aligned ranged fetches. The rest of the
 phase still needs thumbnails, re-upload flow, caching/retry, and
-message-builder integration.
+message-builder integration. Streamed download parity intentionally matches
+Baileys by skipping trailer MAC verification; full-payload verified decrypts
+still go through `BaileysEx.Media.Crypto.decrypt/3`.
 
 ### Tasks
 

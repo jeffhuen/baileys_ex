@@ -522,12 +522,14 @@ Current branch progress:
 **Current branch note:** The first Phase 9 tranche is landed on `phase-09-media`.
 That includes the WAProto media-field expansion required by rc.9 media messages,
 `BaileysEx.Media.Types`, `BaileysEx.Media.Crypto.encrypt/3` + `decrypt/3`,
-`BaileysEx.Media.Upload.refresh_media_conn/2` + `upload/4`, and
-`BaileysEx.Media.Download.download/2` + `download_to_file/3`. Tasks `9.1`,
-`9.2`, `9.3`, and `9.4` are complete. The download path now supports
-streaming file output and Baileys-style aligned ranged fetches. The rest of the
-phase still needs thumbnails, re-upload flow, caching/retry, and
-message-builder integration. Streamed download parity intentionally matches
+`BaileysEx.Media.Upload.refresh_media_conn/2` + `upload/4`,
+`BaileysEx.Media.Download.download/2` + `download_to_file/3`, and
+`BaileysEx.Media.Thumbnail`. Tasks `9.1`, `9.2`, `9.3`, `9.4`, and `9.5` are
+complete. The download path now supports streaming file output and
+Baileys-style aligned ranged fetches, and the derivative pipeline now provides
+image/video thumbnails plus 64-sample audio waveforms with explicit
+missing-dependency errors for `Image`/`ffmpeg`. The rest of the phase still
+needs re-upload flow, caching/retry, and message-builder integration. Streamed download parity intentionally matches
 Baileys by skipping trailer MAC verification; full-payload verified decrypts
 still go through `BaileysEx.Media.Crypto.decrypt/3`.
 
@@ -537,7 +539,7 @@ still go through `BaileysEx.Media.Crypto.decrypt/3`.
 - [x] 9.2 Media upload (HTTP to WhatsApp CDN)
 - [x] 9.3 Media download (streaming + decryption)
 - [x] 9.4 Media types (image, video, audio, doc, sticker)
-- [ ] 9.5 Thumbnail and waveform generation
+- [x] 9.5 Thumbnail and waveform generation
 - [ ] 9.5a Media Re-upload Flow (GAP-47)
 - [ ] 9.6 Media connection and retry
 - [ ] 9.7 Integrate with message builder
@@ -551,9 +553,9 @@ still go through `BaileysEx.Media.Crypto.decrypt/3`.
 - [x] Download handles streaming
 - [ ] Message builder integrates media handling
 - [ ] Cross-validation with Baileys-encrypted media
-- [ ] Image thumbnails generated when `image` package available
-- [ ] Video thumbnails via ffmpeg when available
-- [ ] Audio waveform computed (64 samples)
+- [x] Image thumbnails generated when `image` package available
+- [x] Video thumbnails via ffmpeg when available
+- [x] Audio waveform computed (64 samples)
 - [ ] Media connection refreshed and cached
 - [ ] Media upload retry works for failed messages
 - [x] Media encryption uses single-pass streaming (GAP-46)
@@ -567,13 +569,14 @@ still go through `BaileysEx.Media.Crypto.decrypt/3`.
 | `lib/baileys_ex/media/upload.ex` | ✅ |
 | `lib/baileys_ex/media/download.ex` | ✅ |
 | `lib/baileys_ex/media/types.ex` | ✅ |
-| `lib/baileys_ex/media/thumbnail.ex` | ⬜ |
+| `lib/baileys_ex/media/thumbnail.ex` | ✅ |
 | `lib/baileys_ex/media/retry.ex` | ⬜ |
 | `lib/baileys_ex/message/builder.ex` (extend) | ⬜ |
 | `test/baileys_ex/media/crypto_test.exs` | ✅ |
 | `test/baileys_ex/media/upload_test.exs` | ✅ |
 | `test/baileys_ex/media/download_test.exs` | ✅ |
 | `test/baileys_ex/media/types_test.exs` | ✅ |
+| `test/baileys_ex/media/thumbnail_test.exs` | ✅ |
 
 ---
 

@@ -45,9 +45,9 @@ missing:
 - `BaileysEx.Media.Download` implements media URL resolution, streaming decrypt
   to a file, and Baileys-style aligned ranged downloads.
 
-This means `9.1` through `9.4` are complete on branch. The remaining phase
-scope is thumbnail/waveform generation, re-upload flow, media-conn
-caching/retry, and message-builder integration.
+This means `9.1` through `9.5` are complete on branch. The remaining phase
+scope is media re-upload flow, media-conn caching/retry, and
+message-builder integration.
 
 The streamed download path intentionally mirrors Baileys rc.9 by decrypting
 aligned AES-CBC chunks without validating the trailing 10-byte media MAC. Full
@@ -248,37 +248,39 @@ end
 File: `lib/baileys_ex/media/thumbnail.ex`
 
 Thumbnail and audio waveform generation for media messages. These are optional
-but expected for a complete WhatsApp experience.
+runtime features, but the public API reports missing tooling explicitly instead
+of silently returning `nil`.
 
 ```elixir
 defmodule BaileysEx.Media.Thumbnail do
   @moduledoc """
   Generate thumbnails for images/videos and waveforms for audio.
-  Uses optional dependencies — gracefully degrades if not available.
+  Uses optional runtime tooling and returns explicit dependency errors when
+  tooling is unavailable.
   """
 
-  @doc "Generate JPEG thumbnail from image (default 32x32)"
+  @doc "Generate JPEG thumbnail from image data (default width 32)"
   def image_thumbnail(image_data, opts \\ []) do
-    # Options: width (default 32), height (default 32)
-    # Uses `image` hex package if available, otherwise returns nil
+    # Uses the optional `Image` package when available
+    # Returns %{jpeg_thumbnail, width, height} on success
+    # Returns {:error, {:missing_dependency, :image}} when unavailable
   end
 
   @doc "Generate thumbnail from video frame"
   def video_thumbnail(video_path, opts \\ []) do
-    # Uses System.cmd("ffmpeg", ...) if available
+    # Uses ffmpeg when available
     # Extracts frame at opts[:time] || "00:00:01"
+    # Returns {:error, {:missing_dependency, :ffmpeg}} when unavailable
   end
 
-  @doc "Generate audio waveform visualization (64 samples)"
+  @doc "Generate audio waveform visualization (64 samples as a binary)"
   def audio_waveform(audio_data) do
-    # Decode audio, sample 64 points for visualization
-    # Returns list of 64 integers (0-100 amplitude values)
+    # Uses ffmpeg to decode mono PCM and normalizes to 64 0..100 samples
   end
 
   @doc "Extract image dimensions from binary data"
   def image_dimensions(image_data) do
-    # Parse JPEG/PNG/WebP header for width/height
-    # Returns {width, height} or nil
+    # Parses JPEG/PNG/WebP headers for width/height
   end
 end
 ```
@@ -400,9 +402,9 @@ end
 - [x] Download handles streaming
 - [ ] Message builder integrates media handling
 - [ ] Cross-validation with Baileys-encrypted media
-- [ ] Image thumbnails generated when `image` package available
-- [ ] Video thumbnails via ffmpeg when available
-- [ ] Audio waveform computed (64 samples)
+- [x] Image thumbnails generated when `image` package available
+- [x] Video thumbnails via ffmpeg when available
+- [x] Audio waveform computed (64 samples)
 - [ ] Media connection refreshed and cached
 - [ ] Media upload retry works for failed messages
 - [x] Media encryption uses single-pass streaming for large files (GAP-46)
@@ -414,10 +416,11 @@ end
 - `lib/baileys_ex/media/upload.ex`
 - `lib/baileys_ex/media/download.ex`
 - `lib/baileys_ex/media/types.ex`
+- `lib/baileys_ex/media/thumbnail.ex`
 - `lib/baileys_ex/message/builder.ex` (extend)
 - `test/baileys_ex/media/crypto_test.exs`
 - `test/baileys_ex/media/upload_test.exs`
 - `test/baileys_ex/media/download_test.exs`
 - `test/baileys_ex/media/types_test.exs`
-- `lib/baileys_ex/media/thumbnail.ex`
+- `test/baileys_ex/media/thumbnail_test.exs`
 - `lib/baileys_ex/media/retry.ex`

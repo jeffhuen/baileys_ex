@@ -400,23 +400,111 @@ defmodule BaileysEx.Protocol.Proto.Message do
     alias BaileysEx.Protocol.Proto.Message.ContextInfo
     alias BaileysEx.Protocol.Proto.MessageSupport
 
-    defstruct caption: nil, context_info: nil
+    @media_key_domain_values %{
+      UNSET: 0,
+      E2EE_CHAT: 1,
+      STATUS: 2,
+      CAPI: 3,
+      BOT: 4
+    }
 
-    @type t :: %__MODULE__{caption: String.t() | nil, context_info: ContextInfo.t() | nil}
+    defstruct url: nil,
+              mimetype: nil,
+              caption: nil,
+              file_sha256: nil,
+              file_length: nil,
+              height: nil,
+              width: nil,
+              media_key: nil,
+              file_enc_sha256: nil,
+              direct_path: nil,
+              media_key_timestamp: nil,
+              jpeg_thumbnail: nil,
+              context_info: nil,
+              view_once: nil,
+              thumbnail_direct_path: nil,
+              thumbnail_sha256: nil,
+              thumbnail_enc_sha256: nil,
+              static_url: nil,
+              accessibility_label: nil,
+              qr_url: nil,
+              media_key_domain: nil
+
+    @type t :: %__MODULE__{
+            url: String.t() | nil,
+            mimetype: String.t() | nil,
+            caption: String.t() | nil,
+            file_sha256: binary() | nil,
+            file_length: non_neg_integer() | nil,
+            height: non_neg_integer() | nil,
+            width: non_neg_integer() | nil,
+            media_key: binary() | nil,
+            file_enc_sha256: binary() | nil,
+            direct_path: String.t() | nil,
+            media_key_timestamp: integer() | nil,
+            jpeg_thumbnail: binary() | nil,
+            context_info: ContextInfo.t() | nil,
+            view_once: boolean() | nil,
+            thumbnail_direct_path: String.t() | nil,
+            thumbnail_sha256: binary() | nil,
+            thumbnail_enc_sha256: binary() | nil,
+            static_url: String.t() | nil,
+            accessibility_label: String.t() | nil,
+            qr_url: String.t() | nil,
+            media_key_domain: atom() | integer() | nil
+          }
 
     @spec encode(t()) :: binary()
     def encode(%__MODULE__{} = image_message) do
       MessageSupport.encode_fields(image_message,
+        url: {:string, 1},
+        mimetype: {:string, 2},
         caption: {:string, 3},
-        context_info: {:message, 17, ContextInfo}
+        file_sha256: {:bytes, 4},
+        file_length: {:uint, 5},
+        height: {:uint, 6},
+        width: {:uint, 7},
+        media_key: {:bytes, 8},
+        file_enc_sha256: {:bytes, 9},
+        direct_path: {:string, 11},
+        media_key_timestamp: {:int64, 12},
+        jpeg_thumbnail: {:bytes, 16},
+        context_info: {:message, 17, ContextInfo},
+        view_once: {:bool, 25},
+        thumbnail_direct_path: {:string, 26},
+        thumbnail_sha256: {:bytes, 27},
+        thumbnail_enc_sha256: {:bytes, 28},
+        static_url: {:string, 29},
+        accessibility_label: {:string, 32},
+        media_key_domain: {:enum, 33, @media_key_domain_values},
+        qr_url: {:string, 34}
       )
     end
 
     @spec decode(binary()) :: {:ok, t()} | {:error, term()}
     def decode(binary) do
       MessageSupport.decode_fields(binary, %__MODULE__{},
+        url: {:string, 1},
+        mimetype: {:string, 2},
         caption: {:string, 3},
-        context_info: {:message, 17, ContextInfo}
+        file_sha256: {:bytes, 4},
+        file_length: {:uint, 5},
+        height: {:uint, 6},
+        width: {:uint, 7},
+        media_key: {:bytes, 8},
+        file_enc_sha256: {:bytes, 9},
+        direct_path: {:string, 11},
+        media_key_timestamp: {:int64, 12},
+        jpeg_thumbnail: {:bytes, 16},
+        context_info: {:message, 17, ContextInfo},
+        view_once: {:bool, 25},
+        thumbnail_direct_path: {:string, 26},
+        thumbnail_sha256: {:bytes, 27},
+        thumbnail_enc_sha256: {:bytes, 28},
+        static_url: {:string, 29},
+        accessibility_label: {:string, 32},
+        media_key_domain: {:enum, 33, @media_key_domain_values},
+        qr_url: {:string, 34}
       )
     end
   end
@@ -427,29 +515,119 @@ defmodule BaileysEx.Protocol.Proto.Message do
     alias BaileysEx.Protocol.Proto.Message.ContextInfo
     alias BaileysEx.Protocol.Proto.MessageSupport
 
-    defstruct caption: nil, gif_playback: nil, context_info: nil
+    @media_key_domain_values %{
+      UNSET: 0,
+      E2EE_CHAT: 1,
+      STATUS: 2,
+      CAPI: 3,
+      BOT: 4
+    }
+
+    defstruct url: nil,
+              mimetype: nil,
+              file_sha256: nil,
+              file_length: nil,
+              seconds: nil,
+              media_key: nil,
+              caption: nil,
+              gif_playback: nil,
+              height: nil,
+              width: nil,
+              file_enc_sha256: nil,
+              direct_path: nil,
+              media_key_timestamp: nil,
+              jpeg_thumbnail: nil,
+              context_info: nil,
+              streaming_sidecar: nil,
+              view_once: nil,
+              thumbnail_direct_path: nil,
+              thumbnail_sha256: nil,
+              thumbnail_enc_sha256: nil,
+              static_url: nil,
+              accessibility_label: nil,
+              media_key_domain: nil
 
     @type t :: %__MODULE__{
+            url: String.t() | nil,
+            mimetype: String.t() | nil,
+            file_sha256: binary() | nil,
+            file_length: non_neg_integer() | nil,
+            seconds: non_neg_integer() | nil,
+            media_key: binary() | nil,
             caption: String.t() | nil,
             gif_playback: boolean() | nil,
-            context_info: ContextInfo.t() | nil
+            height: non_neg_integer() | nil,
+            width: non_neg_integer() | nil,
+            file_enc_sha256: binary() | nil,
+            direct_path: String.t() | nil,
+            media_key_timestamp: integer() | nil,
+            jpeg_thumbnail: binary() | nil,
+            context_info: ContextInfo.t() | nil,
+            streaming_sidecar: binary() | nil,
+            view_once: boolean() | nil,
+            thumbnail_direct_path: String.t() | nil,
+            thumbnail_sha256: binary() | nil,
+            thumbnail_enc_sha256: binary() | nil,
+            static_url: String.t() | nil,
+            accessibility_label: String.t() | nil,
+            media_key_domain: atom() | integer() | nil
           }
 
     @spec encode(t()) :: binary()
     def encode(%__MODULE__{} = video_message) do
       MessageSupport.encode_fields(video_message,
+        url: {:string, 1},
+        mimetype: {:string, 2},
+        file_sha256: {:bytes, 3},
+        file_length: {:uint, 4},
+        seconds: {:uint, 5},
+        media_key: {:bytes, 6},
         caption: {:string, 7},
         gif_playback: {:bool, 8},
-        context_info: {:message, 17, ContextInfo}
+        height: {:uint, 9},
+        width: {:uint, 10},
+        file_enc_sha256: {:bytes, 11},
+        direct_path: {:string, 13},
+        media_key_timestamp: {:int64, 14},
+        jpeg_thumbnail: {:bytes, 16},
+        context_info: {:message, 17, ContextInfo},
+        streaming_sidecar: {:bytes, 18},
+        view_once: {:bool, 20},
+        thumbnail_direct_path: {:string, 21},
+        thumbnail_sha256: {:bytes, 22},
+        thumbnail_enc_sha256: {:bytes, 23},
+        static_url: {:string, 24},
+        accessibility_label: {:string, 26},
+        media_key_domain: {:enum, 32, @media_key_domain_values}
       )
     end
 
     @spec decode(binary()) :: {:ok, t()} | {:error, term()}
     def decode(binary) do
       MessageSupport.decode_fields(binary, %__MODULE__{},
+        url: {:string, 1},
+        mimetype: {:string, 2},
+        file_sha256: {:bytes, 3},
+        file_length: {:uint, 4},
+        seconds: {:uint, 5},
+        media_key: {:bytes, 6},
         caption: {:string, 7},
         gif_playback: {:bool, 8},
-        context_info: {:message, 17, ContextInfo}
+        height: {:uint, 9},
+        width: {:uint, 10},
+        file_enc_sha256: {:bytes, 11},
+        direct_path: {:string, 13},
+        media_key_timestamp: {:int64, 14},
+        jpeg_thumbnail: {:bytes, 16},
+        context_info: {:message, 17, ContextInfo},
+        streaming_sidecar: {:bytes, 18},
+        view_once: {:bool, 20},
+        thumbnail_direct_path: {:string, 21},
+        thumbnail_sha256: {:bytes, 22},
+        thumbnail_enc_sha256: {:bytes, 23},
+        static_url: {:string, 24},
+        accessibility_label: {:string, 26},
+        media_key_domain: {:enum, 32, @media_key_domain_values}
       )
     end
   end
@@ -460,29 +638,95 @@ defmodule BaileysEx.Protocol.Proto.Message do
     alias BaileysEx.Protocol.Proto.Message.ContextInfo
     alias BaileysEx.Protocol.Proto.MessageSupport
 
-    defstruct ptt: nil, seconds: nil, context_info: nil
+    @media_key_domain_values %{
+      UNSET: 0,
+      E2EE_CHAT: 1,
+      STATUS: 2,
+      CAPI: 3,
+      BOT: 4
+    }
+
+    defstruct url: nil,
+              mimetype: nil,
+              file_sha256: nil,
+              file_length: nil,
+              seconds: nil,
+              ptt: nil,
+              media_key: nil,
+              file_enc_sha256: nil,
+              direct_path: nil,
+              media_key_timestamp: nil,
+              context_info: nil,
+              streaming_sidecar: nil,
+              waveform: nil,
+              background_argb: nil,
+              view_once: nil,
+              accessibility_label: nil,
+              media_key_domain: nil
 
     @type t :: %__MODULE__{
+            url: String.t() | nil,
+            mimetype: String.t() | nil,
+            file_sha256: binary() | nil,
+            file_length: non_neg_integer() | nil,
             ptt: boolean() | nil,
             seconds: non_neg_integer() | nil,
-            context_info: ContextInfo.t() | nil
+            media_key: binary() | nil,
+            file_enc_sha256: binary() | nil,
+            direct_path: String.t() | nil,
+            media_key_timestamp: integer() | nil,
+            context_info: ContextInfo.t() | nil,
+            streaming_sidecar: binary() | nil,
+            waveform: binary() | nil,
+            background_argb: non_neg_integer() | nil,
+            view_once: boolean() | nil,
+            accessibility_label: String.t() | nil,
+            media_key_domain: atom() | integer() | nil
           }
 
     @spec encode(t()) :: binary()
     def encode(%__MODULE__{} = audio_message) do
       MessageSupport.encode_fields(audio_message,
+        url: {:string, 1},
+        mimetype: {:string, 2},
+        file_sha256: {:bytes, 3},
+        file_length: {:uint, 4},
         seconds: {:uint, 5},
-        ptt: {:bool, 8},
-        context_info: {:message, 17, ContextInfo}
+        ptt: {:bool, 6},
+        media_key: {:bytes, 7},
+        file_enc_sha256: {:bytes, 8},
+        direct_path: {:string, 9},
+        media_key_timestamp: {:int64, 10},
+        context_info: {:message, 17, ContextInfo},
+        streaming_sidecar: {:bytes, 18},
+        waveform: {:bytes, 19},
+        background_argb: {:fixed32, 20},
+        view_once: {:bool, 21},
+        accessibility_label: {:string, 22},
+        media_key_domain: {:enum, 23, @media_key_domain_values}
       )
     end
 
     @spec decode(binary()) :: {:ok, t()} | {:error, term()}
     def decode(binary) do
       MessageSupport.decode_fields(binary, %__MODULE__{},
+        url: {:string, 1},
+        mimetype: {:string, 2},
+        file_sha256: {:bytes, 3},
+        file_length: {:uint, 4},
         seconds: {:uint, 5},
-        ptt: {:bool, 8},
-        context_info: {:message, 17, ContextInfo}
+        ptt: {:bool, 6},
+        media_key: {:bytes, 7},
+        file_enc_sha256: {:bytes, 8},
+        direct_path: {:string, 9},
+        media_key_timestamp: {:int64, 10},
+        context_info: {:message, 17, ContextInfo},
+        streaming_sidecar: {:bytes, 18},
+        waveform: {:bytes, 19},
+        background_argb: {:fixed32, 20},
+        view_once: {:bool, 21},
+        accessibility_label: {:string, 22},
+        media_key_domain: {:enum, 23, @media_key_domain_values}
       )
     end
   end
@@ -493,32 +737,115 @@ defmodule BaileysEx.Protocol.Proto.Message do
     alias BaileysEx.Protocol.Proto.Message.ContextInfo
     alias BaileysEx.Protocol.Proto.MessageSupport
 
-    defstruct mimetype: nil, file_name: nil, caption: nil, context_info: nil
+    @media_key_domain_values %{
+      UNSET: 0,
+      E2EE_CHAT: 1,
+      STATUS: 2,
+      CAPI: 3,
+      BOT: 4
+    }
+
+    defstruct url: nil,
+              mimetype: nil,
+              title: nil,
+              file_sha256: nil,
+              file_length: nil,
+              page_count: nil,
+              media_key: nil,
+              file_name: nil,
+              file_enc_sha256: nil,
+              direct_path: nil,
+              media_key_timestamp: nil,
+              contact_vcard: nil,
+              thumbnail_direct_path: nil,
+              thumbnail_sha256: nil,
+              thumbnail_enc_sha256: nil,
+              jpeg_thumbnail: nil,
+              context_info: nil,
+              thumbnail_height: nil,
+              thumbnail_width: nil,
+              caption: nil,
+              accessibility_label: nil,
+              media_key_domain: nil
 
     @type t :: %__MODULE__{
+            url: String.t() | nil,
             mimetype: String.t() | nil,
+            title: String.t() | nil,
+            file_sha256: binary() | nil,
+            file_length: non_neg_integer() | nil,
+            page_count: non_neg_integer() | nil,
+            media_key: binary() | nil,
             file_name: String.t() | nil,
+            file_enc_sha256: binary() | nil,
+            direct_path: String.t() | nil,
+            media_key_timestamp: integer() | nil,
+            contact_vcard: boolean() | nil,
+            thumbnail_direct_path: String.t() | nil,
+            thumbnail_sha256: binary() | nil,
+            thumbnail_enc_sha256: binary() | nil,
+            jpeg_thumbnail: binary() | nil,
+            thumbnail_height: non_neg_integer() | nil,
+            thumbnail_width: non_neg_integer() | nil,
             caption: String.t() | nil,
-            context_info: ContextInfo.t() | nil
+            context_info: ContextInfo.t() | nil,
+            accessibility_label: String.t() | nil,
+            media_key_domain: atom() | integer() | nil
           }
 
     @spec encode(t()) :: binary()
     def encode(%__MODULE__{} = document_message) do
       MessageSupport.encode_fields(document_message,
+        url: {:string, 1},
         mimetype: {:string, 2},
-        file_name: {:string, 3},
-        caption: {:string, 6},
-        context_info: {:message, 17, ContextInfo}
+        title: {:string, 3},
+        file_sha256: {:bytes, 4},
+        file_length: {:uint, 5},
+        page_count: {:uint, 6},
+        media_key: {:bytes, 7},
+        file_name: {:string, 8},
+        file_enc_sha256: {:bytes, 9},
+        direct_path: {:string, 10},
+        media_key_timestamp: {:int64, 11},
+        contact_vcard: {:bool, 12},
+        thumbnail_direct_path: {:string, 13},
+        thumbnail_sha256: {:bytes, 14},
+        thumbnail_enc_sha256: {:bytes, 15},
+        jpeg_thumbnail: {:bytes, 16},
+        context_info: {:message, 17, ContextInfo},
+        thumbnail_height: {:uint, 18},
+        thumbnail_width: {:uint, 19},
+        caption: {:string, 20},
+        accessibility_label: {:string, 21},
+        media_key_domain: {:enum, 22, @media_key_domain_values}
       )
     end
 
     @spec decode(binary()) :: {:ok, t()} | {:error, term()}
     def decode(binary) do
       MessageSupport.decode_fields(binary, %__MODULE__{},
+        url: {:string, 1},
         mimetype: {:string, 2},
-        file_name: {:string, 3},
-        caption: {:string, 6},
-        context_info: {:message, 17, ContextInfo}
+        title: {:string, 3},
+        file_sha256: {:bytes, 4},
+        file_length: {:uint, 5},
+        page_count: {:uint, 6},
+        media_key: {:bytes, 7},
+        file_name: {:string, 8},
+        file_enc_sha256: {:bytes, 9},
+        direct_path: {:string, 10},
+        media_key_timestamp: {:int64, 11},
+        contact_vcard: {:bool, 12},
+        thumbnail_direct_path: {:string, 13},
+        thumbnail_sha256: {:bytes, 14},
+        thumbnail_enc_sha256: {:bytes, 15},
+        jpeg_thumbnail: {:bytes, 16},
+        context_info: {:message, 17, ContextInfo},
+        thumbnail_height: {:uint, 18},
+        thumbnail_width: {:uint, 19},
+        caption: {:string, 20},
+        accessibility_label: {:string, 21},
+        media_key_domain: {:enum, 22, @media_key_domain_values}
       )
     end
   end
@@ -529,23 +856,111 @@ defmodule BaileysEx.Protocol.Proto.Message do
     alias BaileysEx.Protocol.Proto.Message.ContextInfo
     alias BaileysEx.Protocol.Proto.MessageSupport
 
-    defstruct is_animated: nil, context_info: nil
+    @media_key_domain_values %{
+      UNSET: 0,
+      E2EE_CHAT: 1,
+      STATUS: 2,
+      CAPI: 3,
+      BOT: 4
+    }
 
-    @type t :: %__MODULE__{is_animated: boolean() | nil, context_info: ContextInfo.t() | nil}
+    defstruct url: nil,
+              file_sha256: nil,
+              file_enc_sha256: nil,
+              media_key: nil,
+              mimetype: nil,
+              height: nil,
+              width: nil,
+              direct_path: nil,
+              file_length: nil,
+              media_key_timestamp: nil,
+              first_frame_length: nil,
+              first_frame_sidecar: nil,
+              is_animated: nil,
+              png_thumbnail: nil,
+              context_info: nil,
+              sticker_sent_ts: nil,
+              is_avatar: nil,
+              is_ai_sticker: nil,
+              is_lottie: nil,
+              accessibility_label: nil,
+              media_key_domain: nil
+
+    @type t :: %__MODULE__{
+            url: String.t() | nil,
+            file_sha256: binary() | nil,
+            file_enc_sha256: binary() | nil,
+            media_key: binary() | nil,
+            mimetype: String.t() | nil,
+            height: non_neg_integer() | nil,
+            width: non_neg_integer() | nil,
+            direct_path: String.t() | nil,
+            file_length: non_neg_integer() | nil,
+            media_key_timestamp: integer() | nil,
+            first_frame_length: non_neg_integer() | nil,
+            first_frame_sidecar: binary() | nil,
+            is_animated: boolean() | nil,
+            png_thumbnail: binary() | nil,
+            context_info: ContextInfo.t() | nil,
+            sticker_sent_ts: integer() | nil,
+            is_avatar: boolean() | nil,
+            is_ai_sticker: boolean() | nil,
+            is_lottie: boolean() | nil,
+            accessibility_label: String.t() | nil,
+            media_key_domain: atom() | integer() | nil
+          }
 
     @spec encode(t()) :: binary()
     def encode(%__MODULE__{} = sticker_message) do
       MessageSupport.encode_fields(sticker_message,
+        url: {:string, 1},
+        file_sha256: {:bytes, 2},
+        file_enc_sha256: {:bytes, 3},
+        media_key: {:bytes, 4},
+        mimetype: {:string, 5},
+        height: {:uint, 6},
+        width: {:uint, 7},
+        direct_path: {:string, 8},
+        file_length: {:uint, 9},
+        media_key_timestamp: {:int64, 10},
+        first_frame_length: {:uint, 11},
+        first_frame_sidecar: {:bytes, 12},
         is_animated: {:bool, 13},
-        context_info: {:message, 17, ContextInfo}
+        png_thumbnail: {:bytes, 16},
+        context_info: {:message, 17, ContextInfo},
+        sticker_sent_ts: {:int64, 18},
+        is_avatar: {:bool, 19},
+        is_ai_sticker: {:bool, 20},
+        is_lottie: {:bool, 21},
+        accessibility_label: {:string, 22},
+        media_key_domain: {:enum, 23, @media_key_domain_values}
       )
     end
 
     @spec decode(binary()) :: {:ok, t()} | {:error, term()}
     def decode(binary) do
       MessageSupport.decode_fields(binary, %__MODULE__{},
+        url: {:string, 1},
+        file_sha256: {:bytes, 2},
+        file_enc_sha256: {:bytes, 3},
+        media_key: {:bytes, 4},
+        mimetype: {:string, 5},
+        height: {:uint, 6},
+        width: {:uint, 7},
+        direct_path: {:string, 8},
+        file_length: {:uint, 9},
+        media_key_timestamp: {:int64, 10},
+        first_frame_length: {:uint, 11},
+        first_frame_sidecar: {:bytes, 12},
         is_animated: {:bool, 13},
-        context_info: {:message, 17, ContextInfo}
+        png_thumbnail: {:bytes, 16},
+        context_info: {:message, 17, ContextInfo},
+        sticker_sent_ts: {:int64, 18},
+        is_avatar: {:bool, 19},
+        is_ai_sticker: {:bool, 20},
+        is_lottie: {:bool, 21},
+        accessibility_label: {:string, 22},
+        media_key_domain: {:enum, 23, @media_key_domain_values}
       )
     end
   end

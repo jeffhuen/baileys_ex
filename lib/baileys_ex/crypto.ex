@@ -281,7 +281,7 @@ defmodule BaileysEx.Crypto do
   """
   @spec expand_media_key(<<_::256>>, media_type()) :: media_keys()
   def expand_media_key(media_key, media_type) do
-    info = media_hkdf_info(media_type)
+    info = BaileysEx.Media.Types.hkdf_info(media_type)
     {:ok, expanded} = hkdf(media_key, info, 112)
 
     <<iv::binary-16, cipher_key::binary-32, mac_key::binary-32, ref_key::binary-32>> = expanded
@@ -344,27 +344,4 @@ defmodule BaileysEx.Crypto do
   # ============================================================================
   # Private helpers
   # ============================================================================
-
-  # Media HKDF info strings matching WhatsApp's MEDIA_HKDF_KEY_MAPPING.
-  # Format: "WhatsApp <Type> Keys"
-  @spec media_hkdf_info(media_type()) :: binary()
-  defp media_hkdf_info(:image), do: "WhatsApp Image Keys"
-  defp media_hkdf_info(:video), do: "WhatsApp Video Keys"
-  defp media_hkdf_info(:audio), do: "WhatsApp Audio Keys"
-  defp media_hkdf_info(:document), do: "WhatsApp Document Keys"
-  defp media_hkdf_info(:sticker), do: "WhatsApp Image Keys"
-  defp media_hkdf_info(:gif), do: "WhatsApp Video Keys"
-  defp media_hkdf_info(:ptt), do: "WhatsApp Audio Keys"
-  defp media_hkdf_info(:ptv), do: "WhatsApp Video Keys"
-  defp media_hkdf_info(:product), do: "WhatsApp Image Keys"
-  defp media_hkdf_info(:thumbnail_document), do: "WhatsApp Document Thumbnail Keys"
-  defp media_hkdf_info(:thumbnail_image), do: "WhatsApp Image Thumbnail Keys"
-  defp media_hkdf_info(:thumbnail_video), do: "WhatsApp Video Thumbnail Keys"
-  defp media_hkdf_info(:thumbnail_link), do: "WhatsApp Link Thumbnail Keys"
-  defp media_hkdf_info(:md_msg_hist), do: "WhatsApp History Keys"
-  defp media_hkdf_info(:md_app_state), do: "WhatsApp App State Keys"
-  defp media_hkdf_info(:product_catalog_image), do: "WhatsApp  Keys"
-  defp media_hkdf_info(:payment_bg_image), do: "WhatsApp Payment Background Keys"
-  defp media_hkdf_info(:ppic), do: "WhatsApp  Keys"
-  defp media_hkdf_info(:biz_cover_photo), do: "WhatsApp Image Keys"
 end

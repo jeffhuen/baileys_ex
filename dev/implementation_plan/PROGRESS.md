@@ -20,7 +20,7 @@
 | 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | COMPLETE | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | COMPLETE | 5, 6, 7 | 9, 10 |
-| 9 | Media | 9 | NOT STARTED | 2, 8 | 12 |
+| 9 | Media | 9 | IN PROGRESS | 2, 8 | 12 |
 | 10 | Features | 17 | NOT STARTED | 8 | 11 |
 | 11 | Advanced Features | 5 | NOT STARTED | 10 | 12 |
 | 12 | Polish | 7 | NOT STARTED | All | — |
@@ -517,14 +517,22 @@ Current branch progress:
 
 ## Phase 9: Media
 
-**Status:** NOT STARTED · **Depends on:** Phases 2, 8 · **Parallel with:** Phase 10
+**Status:** IN PROGRESS · **Depends on:** Phases 2, 8 · **Parallel with:** Phase 10
+
+**Current branch note:** The first Phase 9 tranche is landed on `phase-09-media`.
+That includes the WAProto media-field expansion required by rc.9 media messages,
+`BaileysEx.Media.Types`, `BaileysEx.Media.Crypto.encrypt/3` + `decrypt/3`,
+`BaileysEx.Media.Upload.refresh_media_conn/2` + `upload/4`, and
+`BaileysEx.Media.Download.download/2` + `download_to_file/3`. Tasks `9.1`-`9.3`
+remain open until the rest of the streaming, retry, and builder integration work
+lands. `9.4` is complete.
 
 ### Tasks
 
 - [ ] 9.1 Media crypto (single-pass streaming — GAP-46)
 - [ ] 9.2 Media upload (HTTP to WhatsApp CDN)
 - [ ] 9.3 Media download (streaming + decryption)
-- [ ] 9.4 Media types (image, video, audio, doc, sticker)
+- [x] 9.4 Media types (image, video, audio, doc, sticker)
 - [ ] 9.5 Thumbnail and waveform generation
 - [ ] 9.5a Media Re-upload Flow (GAP-47)
 - [ ] 9.6 Media connection and retry
@@ -551,16 +559,16 @@ Current branch progress:
 
 | File | Status |
 |------|--------|
-| `lib/baileys_ex/media/crypto.ex` | ⬜ |
-| `lib/baileys_ex/media/upload.ex` | ⬜ |
-| `lib/baileys_ex/media/download.ex` | ⬜ |
-| `lib/baileys_ex/media/types.ex` | ⬜ |
+| `lib/baileys_ex/media/crypto.ex` | ✅ |
+| `lib/baileys_ex/media/upload.ex` | ✅ |
+| `lib/baileys_ex/media/download.ex` | ✅ |
+| `lib/baileys_ex/media/types.ex` | ✅ |
 | `lib/baileys_ex/media/thumbnail.ex` | ⬜ |
 | `lib/baileys_ex/media/retry.ex` | ⬜ |
 | `lib/baileys_ex/message/builder.ex` (extend) | ⬜ |
-| `test/baileys_ex/media/crypto_test.exs` | ⬜ |
-| `test/baileys_ex/media/upload_test.exs` | ⬜ |
-| `test/baileys_ex/media/download_test.exs` | ⬜ |
+| `test/baileys_ex/media/crypto_test.exs` | ✅ |
+| `test/baileys_ex/media/upload_test.exs` | ✅ |
+| `test/baileys_ex/media/download_test.exs` | ✅ |
 
 ---
 

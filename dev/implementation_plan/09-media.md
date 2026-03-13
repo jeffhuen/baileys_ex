@@ -28,6 +28,27 @@ over the data, not a gratuitous media-specific NIF.
 Modern, composable HTTP client built on Mint/Finch. Supports streaming requests
 and responses natively.
 
+## Current Branch Status
+
+Phase 9 is now in progress on `phase-09-media`.
+
+The first landed tranche covers the rc.9 media foundation that the repo was
+missing:
+- WAProto media message structs now include the core upload/download metadata
+  fields used by rc.9 (`url`, `direct_path`, `media_key`, hashes, length, and
+  type-specific fields like thumbnails/waveform/background color).
+- `BaileysEx.Media.Types` now mirrors the current Baileys media-path and HKDF
+  mapping tables.
+- `BaileysEx.Media.Crypto` implements single-pass encrypt-to-tempfile and media
+  decrypt with MAC verification.
+- `BaileysEx.Media.Upload` implements `w:m` `media_conn` lookup and CDN upload.
+- `BaileysEx.Media.Download` implements media URL resolution plus decrypting
+  downloads back to plaintext or a file path.
+
+This means `9.4` is complete and `9.1`-`9.3` have real foundations on branch,
+but those tasks remain open until the rest of the streaming/range-download,
+host-retry/cache, and message-builder integration work lands.
+
 ---
 
 ## Tasks

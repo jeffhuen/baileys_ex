@@ -473,6 +473,42 @@ defmodule BaileysEx.Message.SenderTest do
     assert tc_token_index < additional_index
   end
 
+  test "send/4 skips trusted-contact tokens for retry-resend relays" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+    repo = inject_session!(repo, "15551234567:0@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => []},
+               tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}
+             })
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    assert {:ok, _sent, _context} =
+             Sender.send(
+               context,
+               jid,
+               %{text: "retry hello"},
+               participant: %{jid: "15551234567:0@s.whatsapp.net"}
+             )
+
+    assert_receive {:relay_node, %BinaryNode{content: content}}
+    refute Enum.any?(content, &match?(%BinaryNode{tag: "tctoken"}, &1))
+  end
+
   defp inject_session!(repo, jid, session) do
     assert {:ok, next_repo} = Repository.inject_e2e_session(repo, %{jid: jid, session: session})
     next_repo

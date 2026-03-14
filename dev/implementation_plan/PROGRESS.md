@@ -606,10 +606,11 @@ presence subscribe with explicit message tags, incoming presence/chatstate parsi
 and coordinator event emission. `BaileysEx.Feature.BotDirectory` now mirrors
 `getBotListV2`. `BaileysEx.Feature.TcToken` now covers direct-message relay
 attachment, presence-subscribe attachment, privacy-token fetch/storage, and
-notification handling; profile-picture query attachment remains open with the
-profile surface. Remaining open work after this batch is the broader Phase 10
-surface: privacy, full Syncd push/resync runtime, profile/labels/contacts, and
-quick replies.
+notification handling. `BaileysEx.Feature.Profile.picture_url/4` now covers the
+Baileys profile-picture URL query with TC-token attachment and response parsing.
+Remaining open work after this batch is the broader Phase 10 surface: privacy,
+full Syncd push/resync runtime, the rest of profile/labels/contacts, and quick
+replies.
 
 ### Tasks
 
@@ -617,7 +618,7 @@ quick replies.
 - [x] 10.1a Phone number validation (`on_whatsapp` via USync)
 - [x] 10.2 Chat operations (archive, mute, pin, star, clear, delete)
 - [x] 10.3 Presence (online/offline/composing/recording)
-- [ ] 10.3a Trusted Contact Tokens (GAP-23)
+- [x] 10.3a Trusted Contact Tokens (GAP-23)
 - [x] 10.3b Bot Directory (GAP-37)
 - [ ] 10.4 Privacy settings (8 categories + block list + disappearing)
 - [ ] 10.5a App state sync — key expansion + snapshot decode
@@ -643,7 +644,7 @@ quick replies.
 - [ ] LTHash verification matches Baileys
 - [ ] Sync actions emit contacts, LID mappings, labels, settings, and chat-lock updates correctly
 - [ ] Profile: update/remove picture constructs correct IQ
-- [ ] Profile: picture URL query and response parsing
+- [x] Profile: picture URL query and response parsing
 - [ ] Profile: update name via app state sync
 - [ ] Profile: update status text via IQ
 - [ ] Profile: fetch status via USync query
@@ -659,7 +660,7 @@ quick replies.
 - [x] V4 invite accept and revoke operations, including invite invalidation side effects
 - [x] Group dirty updates refetch participating groups, emit `groups.update`, and clean the `groups` bucket
 - [x] App-state patch timestamps live under `sync_action`, and last-message ranges are validated/normalized
-- [ ] TC tokens built and attached to presence/profile queries (GAP-23)
+- [x] TC tokens built and attached to presence/profile queries (GAP-23)
 - [x] Privacy token notifications stored correctly (GAP-23)
 - [x] Bot directory fetched via IQ query (GAP-37)
 - [x] Group member label update constructs correct protocol message (GAP-39)
@@ -674,19 +675,19 @@ quick replies.
 | `lib/baileys_ex/feature/presence.ex` | ✅ |
 | `lib/baileys_ex/feature/bot_directory.ex` | ✅ |
 | `lib/baileys_ex/feature/privacy.ex` | ⬜ |
-| `lib/baileys_ex/feature/profile.ex` | ⬜ |
+| `lib/baileys_ex/feature/profile.ex` | 🟡 |
 | `lib/baileys_ex/feature/label.ex` | ⬜ |
 | `lib/baileys_ex/feature/contact.ex` | ⬜ |
 | `lib/baileys_ex/feature/quick_reply.ex` | ⬜ |
 | `lib/baileys_ex/feature/app_state.ex` | 🟡 |
 | `lib/baileys_ex/feature/phone_validation.ex` | ✅ |
-| `lib/baileys_ex/feature/tc_token.ex` | 🟡 |
+| `lib/baileys_ex/feature/tc_token.ex` | ✅ |
 | `lib/baileys_ex/util/lt_hash.ex` | ⬜ |
 | `test/baileys_ex/feature/group_test.exs` | ✅ |
 | `test/baileys_ex/feature/presence_test.exs` | ✅ |
 | `test/baileys_ex/feature/bot_directory_test.exs` | ✅ |
 | `test/baileys_ex/feature/privacy_test.exs` | ⬜ |
-| `test/baileys_ex/feature/profile_test.exs` | ⬜ |
+| `test/baileys_ex/feature/profile_test.exs` | 🟡 |
 | `test/baileys_ex/feature/chat_test.exs` | ✅ |
 | `test/baileys_ex/feature/phone_validation_test.exs` | ✅ |
 | `test/baileys_ex/feature/tc_token_test.exs` | 🟡 |

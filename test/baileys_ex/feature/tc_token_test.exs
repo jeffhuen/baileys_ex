@@ -68,6 +68,35 @@ defmodule BaileysEx.Feature.TcTokenTest do
                     }, 60_000}
   end
 
+  test "get_privacy_tokens/3 includes every normalized jid in request order" do
+    parent = self()
+
+    query_fun = fn node, timeout ->
+      send(parent, {:query, node, timeout})
+      {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+    end
+
+    assert {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}}} =
+             TcToken.get_privacy_tokens(
+               query_fun,
+               ["15551234567:2@c.us", "15557654321@s.whatsapp.net"],
+               timestamp_fun: fn -> 1_710_000_900 end
+             )
+
+    assert_receive {:query,
+                    %BinaryNode{
+                      content: [
+                        %BinaryNode{
+                          tag: "tokens",
+                          content: [
+                            %BinaryNode{attrs: %{"jid" => "15551234567@s.whatsapp.net"}},
+                            %BinaryNode{attrs: %{"jid" => "15557654321@s.whatsapp.net"}}
+                          ]
+                        }
+                      ]
+                    }, 60_000}
+  end
+
   test "handle_notification/2 stores trusted-contact tokens via callback and signal store" do
     {:ok, store} = Store.start_link()
     parent = self()

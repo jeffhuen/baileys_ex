@@ -71,6 +71,15 @@ defmodule BaileysEx.Feature.PresenceTest do
                       },
                       content: [%BinaryNode{tag: "paused", attrs: %{}, content: nil}]
                     }}
+
+    assert :ok = Presence.send_update(sendable, :unavailable, nil, name: "Jeff@Bot")
+
+    assert_receive {:node,
+                    %BinaryNode{
+                      tag: "presence",
+                      attrs: %{"type" => "unavailable", "name" => "JeffBot"},
+                      content: nil
+                    }}
   end
 
   test "send_update/4 ignores available presence requests when the raw sendable lacks a name" do
@@ -173,6 +182,22 @@ defmodule BaileysEx.Feature.PresenceTest do
 
     assert {:ok,
             %{
+              id: "15551234567@s.whatsapp.net",
+              presences: %{
+                "15551234567@s.whatsapp.net" => %{last_known_presence: :available}
+              }
+            }} =
+             Presence.handle_update(%BinaryNode{
+               tag: "presence",
+               attrs: %{
+                 "from" => "15551234567@s.whatsapp.net",
+                 "type" => "available"
+               },
+               content: nil
+             })
+
+    assert {:ok,
+            %{
               id: "120363001234567890@g.us",
               presences: %{
                 "15557654321@s.whatsapp.net" => %{last_known_presence: :recording}
@@ -228,6 +253,13 @@ defmodule BaileysEx.Feature.PresenceTest do
                },
                should_ignore_jid_fun: fn _jid -> true end
              )
+
+    assert :ignore =
+             Presence.handle_update(%BinaryNode{
+               tag: "notification",
+               attrs: %{"type" => "privacy_token"},
+               content: nil
+             })
 
     assert :ok = unsubscribe.()
   end

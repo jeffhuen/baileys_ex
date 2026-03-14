@@ -62,4 +62,17 @@ defmodule BaileysEx.Feature.BotDirectoryTest do
                       content: [%BinaryNode{tag: "bot", attrs: %{"v" => "2"}}]
                     }, 60_000}
   end
+
+  test "list/2 returns an empty list when the bot node is absent or empty" do
+    query_fun = fn _node, _timeout ->
+      {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+    end
+
+    assert {:ok, []} = BotDirectory.list(query_fun)
+  end
+
+  test "list/2 propagates query errors" do
+    assert {:error, :timeout} =
+             BotDirectory.list(fn _node, _timeout -> {:error, :timeout} end)
+  end
 end

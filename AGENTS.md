@@ -201,6 +201,12 @@ This section adds behavioural expectations.
 
 - **Baileys is the spec.** When unsure what to build or how something should behave,
   read the Baileys source in `dev/reference/Baileys-master/`. Do not ask — look it up.
+- **Audit helper callsites, not just the obvious export.** When porting or fixing a
+  Baileys helper or behavior detail, grep the reference for every current callsite
+  of that helper/behavior and account for each one before signoff. If Baileys uses
+  the same helper in message relay, presence subscribe, and profile queries, the
+  port is not complete until every relevant callsite in scope is covered or a
+  concrete blocker is documented.
 - **Plan before building.** Enter plan mode for any non-trivial task (3+ steps or
   architectural decisions). If execution diverges from the plan, stop and re-plan —
   don't push through a broken approach.
@@ -256,6 +262,18 @@ This section adds behavioural expectations.
 - **Prove it works before claiming done.** Run all 11 delivery gates from
   `dev/implementation_plan/CLAUDE.md` § Delivery Gates. None are optional.
   Diff behaviour between main and your changes when relevant. Evidence before assertions.
+- **No unwarranted partials.** Do not leave a task "partial" or call a skip
+  "intentional" when the remaining gap is a small, adjacent, unblocked Baileys
+  callsite or query surface. Finish it in the same pass. A partial is only valid
+  when there is a concrete blocker: missing dependency, missing prerequisite phase,
+  or unresolved Baileys behavior.
+- **Document real blockers precisely.** If a task truly must remain partial, record
+  the blocker and the exact missing functions/callsites in both
+  `dev/implementation_plan/PROGRESS.md` and the active phase file. "Later" or
+  "out of scope" is not a blocker by itself.
+- **Keep trackers synchronized with the code.** Task checkboxes, acceptance criteria,
+  and file status tables are part of the delivery work. Do not land code and leave
+  the phase trackers stale.
 - **After any user correction:** update auto-memory (`.claude/projects/.../memory/`)
   with the pattern so the same mistake never repeats. Review memory at session start.
 - **Challenge your own work.** Before presenting: "Would this survive code review by

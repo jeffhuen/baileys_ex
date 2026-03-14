@@ -286,7 +286,7 @@ defmodule BaileysEx.Message.Sender do
         from_me: true
       })
 
-    tc_token_node = trusted_contact_token_node(context, jid)
+    tc_token_node = trusted_contact_token_node(context, jid, opts[:participant])
 
     %BinaryNode{
       tag: "message",
@@ -309,15 +309,18 @@ defmodule BaileysEx.Message.Sender do
     }
   end
 
-  defp trusted_contact_token_node(%{signal_store: %Store{} = store}, %JID{} = jid) do
-    if JIDUtil.group?(jid) or JIDUtil.status_broadcast?(jid) do
+  defp trusted_contact_token_node(%{signal_store: %Store{} = store}, %JID{} = jid, participant) do
+    if JIDUtil.group?(jid) or JIDUtil.status_broadcast?(jid) or retry_resend?(participant) do
       nil
     else
       TcToken.build_node(store, JIDUtil.to_string(jid))
     end
   end
 
-  defp trusted_contact_token_node(_context, _jid), do: nil
+  defp trusted_contact_token_node(_context, _jid, _participant), do: nil
+
+  defp retry_resend?(%{jid: jid}) when is_binary(jid), do: true
+  defp retry_resend?(_participant), do: false
 
   defp maybe_append_participants(children, []), do: children
 

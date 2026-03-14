@@ -28,8 +28,8 @@ into 4 sub-tasks (10.5a–10.5d) to manage complexity. The key reference files a
 exported function, and verify it has a home in this plan. The plan is the skeleton —
 the Baileys source is the spec for filling in the details.
 
-**Current status:** `10.1`, `10.1a`, `10.2`, `10.3`, and `10.3b` are complete, and
-`10.3a` is partially complete. The Phase 10 runtime now has the core group/query
+**Current status:** `10.1`, `10.1a`, `10.2`, `10.3`, `10.3a`, and `10.3b` are
+complete. The Phase 10 runtime now has the core group/query
 surface, the initial app-state patch layer, Baileys-style presence handling, and
 the bot-directory query surface. `BaileysEx.Feature.Group` covers the main
 `groups.ts` IQ/query helpers, metadata extraction, invite v3/v4 operations, v4
@@ -45,9 +45,10 @@ build Baileys-aligned chat-modification patches with timestamps nested inside
 covers availability/chatstate sends, presence subscribe, incoming presence parsing,
 and coordinator event emission. `BaileysEx.Feature.TcToken` covers direct-message
 relay attachment, presence-subscribe attachment, privacy-token fetch/storage, and
-notification handling; profile-picture query attachment remains open with the
-Phase 10 profile surface. `BaileysEx.Feature.BotDirectory` mirrors `getBotListV2`.
-Full Syncd encode/encrypt/send behavior remains the responsibility of `10.5a`-`10.5d`.
+notification handling. `BaileysEx.Feature.Profile.picture_url/4` now covers the
+Baileys profile-picture URL query with TC-token attachment and response parsing.
+`BaileysEx.Feature.BotDirectory` mirrors `getBotListV2`. Full Syncd
+encode/encrypt/send behavior remains the responsibility of `10.5a`-`10.5d`.
 
 ---
 
@@ -687,7 +688,7 @@ end
 - [ ] LTHash verification matches Baileys
 - [ ] Sync actions emit contacts, LID mappings, labels, settings, and chat-lock updates correctly
 - [ ] **Profile: update/remove picture** constructs correct IQ
-- [ ] **Profile: picture URL** query and response parsing
+- [x] **Profile: picture URL** query and response parsing
 - [ ] **Profile: update name** via app state sync
 - [ ] **Profile: update status text** via IQ
 - [ ] **Profile: fetch status** via USync query
@@ -702,7 +703,7 @@ end
 - [x] Pending join request list and approve/reject operations work
 - [x] V4 invite accept and revoke operations work
 - [x] Group dirty updates refetch participating groups, emit `groups.update`, and clean the `groups` bucket
-- [ ] TC tokens built and attached to presence/profile queries (GAP-23)
+- [x] TC tokens built and attached to presence/profile queries (GAP-23)
 - [x] Privacy token notifications stored correctly (GAP-23)
 - [x] Bot directory fetched via IQ query (GAP-37)
 - [x] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`

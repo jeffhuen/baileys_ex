@@ -4,6 +4,7 @@ defmodule BaileysEx.Message.Sender do
   """
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Feature.TcToken
   alias BaileysEx.JID
   alias BaileysEx.Media.MessageBuilder, as: MediaMessageBuilder
   alias BaileysEx.Message.Builder
@@ -68,7 +69,14 @@ defmodule BaileysEx.Message.Sender do
          :ok <-
            relay(
              updated_context,
-             build_relay_node(jid, message_id, proto_message, stanza_children, opts)
+             build_relay_node(
+               updated_context,
+               jid,
+               message_id,
+               proto_message,
+               stanza_children,
+               opts
+             )
            ) do
       {:ok,
        %{
@@ -108,7 +116,7 @@ defmodule BaileysEx.Message.Sender do
     end
   end
 
-  defp relay_direct_message(%{signal_store: store, me_id: me_id} = context, jid, message, opts) do
+  defp relay_direct_message(%{me_id: me_id} = context, jid, message, opts) do
     recipient_jid = JIDUtil.to_string(jid)
     me_user_jid = base_user_jid(me_id)
 
@@ -130,8 +138,6 @@ defmodule BaileysEx.Message.Sender do
              create_participant_nodes(context.signal_repository, own_devices, dsm, phash),
            {:ok, repo, other_nodes, other_include_identity?} <-
              create_participant_nodes(repo, recipient_devices, message, phash) do
-        trusted_contact_token = trusted_contact_token(store, recipient_jid)
-
         children =
           []
           |> maybe_append_participants(me_nodes ++ other_nodes)
@@ -140,7 +146,6 @@ defmodule BaileysEx.Message.Sender do
               Map.has_key?(context, :device_identity),
             context[:device_identity]
           )
-          |> maybe_append_tctoken(trusted_contact_token)
 
         {:ok, %{context | signal_repository: repo}, children}
       end
@@ -264,7 +269,7 @@ defmodule BaileysEx.Message.Sender do
 
   defp relay(_context, %BinaryNode{} = _node), do: {:error, :send_node_not_configured}
 
-  defp build_relay_node(jid, message_id, %Message{} = message, content, opts) do
+  defp build_relay_node(context, jid, message_id, %Message{} = message, content, opts) do
     attrs =
       %{
         "id" => message_id,
@@ -281,10 +286,16 @@ defmodule BaileysEx.Message.Sender do
         from_me: true
       })
 
+    tc_token_node = trusted_contact_token_node(context, jid)
+
     %BinaryNode{
       tag: "message",
       attrs: attrs,
-      content: content ++ List.wrap(reporting_node) ++ List.wrap(opts[:additional_nodes])
+      content:
+        content ++
+          List.wrap(reporting_node) ++
+          List.wrap(tc_token_node) ++
+          List.wrap(opts[:additional_nodes])
     }
   end
 
@@ -298,12 +309,15 @@ defmodule BaileysEx.Message.Sender do
     }
   end
 
-  defp trusted_contact_token(%Store{} = store, destination_jid) do
-    case Store.get(store, :tctoken, [destination_jid]) do
-      %{^destination_jid => %{token: token}} -> token
-      _ -> nil
+  defp trusted_contact_token_node(%{signal_store: %Store{} = store}, %JID{} = jid) do
+    if JIDUtil.group?(jid) or JIDUtil.status_broadcast?(jid) do
+      nil
+    else
+      TcToken.build_node(store, JIDUtil.to_string(jid))
     end
   end
+
+  defp trusted_contact_token_node(_context, _jid), do: nil
 
   defp maybe_append_participants(children, []), do: children
 
@@ -318,11 +332,6 @@ defmodule BaileysEx.Message.Sender do
     children ++
       [%BinaryNode{tag: "device-identity", attrs: %{}, content: {:binary, device_identity}}]
   end
-
-  defp maybe_append_tctoken(children, nil), do: children
-
-  defp maybe_append_tctoken(children, token),
-    do: children ++ [%BinaryNode{tag: "tctoken", attrs: %{}, content: token}]
 
   defp generate_message_id(%{me_id: me_id}, opts) do
     case opts[:message_id_fun] do

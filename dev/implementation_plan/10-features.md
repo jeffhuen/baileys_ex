@@ -28,6 +28,27 @@ into 4 sub-tasks (10.5a–10.5d) to manage complexity. The key reference files a
 exported function, and verify it has a home in this plan. The plan is the skeleton —
 the Baileys source is the spec for filling in the details.
 
+**Current status:** `10.1`, `10.1a`, `10.2`, `10.3`, and `10.3b` are complete, and
+`10.3a` is partially complete. The Phase 10 runtime now has the core group/query
+surface, the initial app-state patch layer, Baileys-style presence handling, and
+the bot-directory query surface. `BaileysEx.Feature.Group` covers the main
+`groups.ts` IQ/query helpers, metadata extraction, invite v3/v4 operations, v4
+invite invalidation plus synthetic `GROUP_PARTICIPANT_ADD` side effects when
+callback hooks are provided, and the relay-backed `GROUP_MEMBER_LABEL_CHANGE`
+path with `member_tag` meta nodes, participating-group fetch, and coordinator-
+driven dirty-group refetch + clean behavior. `BaileysEx.Feature.PhoneValidation`
+implements `on_whatsapp/3` through the USync contact protocol, supports
+deterministic `sid` injection for tests, and returns only confirmed contacts.
+`BaileysEx.Feature.Chat` and the initial `BaileysEx.Feature.AppState` module now
+build Baileys-aligned chat-modification patches with timestamps nested inside
+`sync_action` and validated last-message ranges. `BaileysEx.Feature.Presence`
+covers availability/chatstate sends, presence subscribe, incoming presence parsing,
+and coordinator event emission. `BaileysEx.Feature.TcToken` covers direct-message
+relay attachment, presence-subscribe attachment, privacy-token fetch/storage, and
+notification handling; profile-picture query attachment remains open with the
+Phase 10 profile surface. `BaileysEx.Feature.BotDirectory` mirrors `getBotListV2`.
+Full Syncd encode/encrypt/send behavior remains the responsibility of `10.5a`-`10.5d`.
+
 ---
 
 ## Tasks
@@ -73,12 +94,12 @@ defmodule BaileysEx.Feature.Group do
   def join_approval_mode(conn, group_jid, mode) when mode in [:on, :off], do: ...
   def request_participants_list(conn, group_jid), do: ...
   def request_participants_update(conn, group_jid, jids, action) when action in [:approve, :reject], do: ...
-  def accept_invite_v4(conn, key, invite_message), do: ...
+  def accept_invite_v4(conn, key, invite_message, opts \\ []), do: ...
   def revoke_invite_v4(conn, group_jid, invited_jid), do: ...
 
   @doc "Set custom label/tag on a group member"
   def update_member_label(conn, group_jid, member_label) do
-    # Sends ProtocolMessage.GROUP_MEMBER_LABEL_CHANGE
+    # Relays ProtocolMessage.GROUP_MEMBER_LABEL_CHANGE
     # with meta node: tag_reason='user_update', appdata='member_tag'
   end
 
@@ -101,9 +122,11 @@ defmodule BaileysEx.Feature.PhoneValidation do
   @moduledoc "Check if phone numbers are registered on WhatsApp."
 
   @doc "Check one or more phone numbers. Returns [{exists?, jid}]"
-  def on_whatsapp(conn, phone_numbers) when is_list(phone_numbers) do
+  def on_whatsapp(conn, phone_numbers, opts \\ []) when is_list(phone_numbers) do
     query = USync.build_query([:contact], phone_numbers, context: :interactive)
-    {:ok, response} = Connection.Socket.query(conn, query)
+    sid = Keyword.get(opts, :sid, Integer.to_string(System.unique_integer([:positive])))
+    {:ok, node} = USync.to_node(query, sid)
+    {:ok, response} = Connection.Socket.query(conn, node)
     USync.parse_response(response, :contact)
     # Returns [%{exists: true, jid: "1234@s.whatsapp.net"}, ...]
     # v7 note: this is PN/contact discovery, not a source of truth for LIDs
@@ -119,7 +142,7 @@ File: `lib/baileys_ex/feature/chat.ex`
 defmodule BaileysEx.Feature.Chat do
   @moduledoc """
   Chat-level operations. All use app state sync patches (Syncd protocol)
-  via AppState.push_patch/4. Maps 1:1 to Baileys chatModify types.
+  via AppState.push_patch/5. Maps 1:1 to Baileys chatModify types.
   """
 
   @doc "Archive or unarchive a chat. Requires last_messages for sync."
@@ -654,9 +677,9 @@ end
 
 ## Acceptance Criteria
 
-- [ ] Group operations construct correct binary nodes
-- [ ] Presence updates send and receive correctly
-- [ ] Chat operations integrate with app state sync
+- [x] Group operations construct correct binary nodes
+- [x] Presence updates send and receive correctly
+- [x] Chat operations integrate with app state sync
 - [ ] **Privacy: all 8 categories** query and update via IQ nodes
 - [ ] **Privacy: default disappearing mode** set/fetch
 - [ ] **Privacy: block list** fetch/block/unblock
@@ -673,22 +696,23 @@ end
 - [ ] **Labels: chat/message association** via app state patches
 - [ ] **Contacts: add/edit/remove** via app state patches
 - [ ] **Quick replies: add/edit/remove** via app state patches
-- [ ] `on_whatsapp` validates phone numbers via USync contact protocol
-- [ ] Group setting update (announcement/locked toggles) constructs correct IQ
-- [ ] Group member add mode and join approval mode supported
-- [ ] Pending join request list and approve/reject operations work
-- [ ] V4 invite accept and revoke operations work
-- [ ] Group dirty updates refetch participating groups, emit `groups.update`, and clean the `groups` bucket
+- [x] `on_whatsapp` validates phone numbers via USync contact protocol
+- [x] Group setting update (announcement/locked toggles) constructs correct IQ
+- [x] Group member add mode and join approval mode supported
+- [x] Pending join request list and approve/reject operations work
+- [x] V4 invite accept and revoke operations work
+- [x] Group dirty updates refetch participating groups, emit `groups.update`, and clean the `groups` bucket
 - [ ] TC tokens built and attached to presence/profile queries (GAP-23)
-- [ ] Privacy token notifications stored correctly (GAP-23)
-- [ ] Bot directory fetched via IQ query (GAP-37)
-- [ ] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`
-- [ ] Group member label update constructs correct protocol message (GAP-39)
+- [x] Privacy token notifications stored correctly (GAP-23)
+- [x] Bot directory fetched via IQ query (GAP-37)
+- [x] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`
+- [x] Group member label update constructs correct protocol message (GAP-39)
 
 ## Files Created/Modified
 
 - `lib/baileys_ex/feature/group.ex`
 - `lib/baileys_ex/feature/chat.ex`
+- `lib/baileys_ex/feature/bot_directory.ex`
 - `lib/baileys_ex/feature/presence.ex`
 - `lib/baileys_ex/feature/privacy.ex`
 - `lib/baileys_ex/feature/profile.ex`
@@ -698,7 +722,11 @@ end
 - `lib/baileys_ex/feature/app_state.ex`
 - `lib/baileys_ex/util/lt_hash.ex`
 - `test/baileys_ex/feature/group_test.exs`
+- `test/baileys_ex/feature/chat_test.exs`
+- `test/baileys_ex/feature/bot_directory_test.exs`
+- `test/baileys_ex/feature/phone_validation_test.exs`
 - `test/baileys_ex/feature/presence_test.exs`
+- `test/baileys_ex/feature/tc_token_test.exs`
 - `test/baileys_ex/feature/privacy_test.exs`
 - `test/baileys_ex/feature/profile_test.exs`
 - `test/baileys_ex/feature/app_state_test.exs`

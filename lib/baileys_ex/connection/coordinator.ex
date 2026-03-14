@@ -13,6 +13,8 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  alias BaileysEx.Feature.Group
+  alias BaileysEx.Feature.Presence
   alias BaileysEx.Message.IdentityChangeHandler
   alias BaileysEx.Message.NotificationHandler
   alias BaileysEx.Message.Receipt
@@ -210,6 +212,15 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp handle_socket_node(
          %State{} = state,
+         %{socket_node: %{node: %BinaryNode{tag: tag} = node}}
+       )
+       when tag in ["presence", "chatstate"] do
+    _ = Presence.handle_update(node, event_emitter: state.event_emitter)
+    state
+  end
+
+  defp handle_socket_node(
+         %State{} = state,
          %{socket_node: %{node: %BinaryNode{tag: "notification"} = node}}
        ) do
     :ok = NotificationHandler.process_node(node, notification_context(state))
@@ -310,7 +321,18 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp handle_dirty_update(%State{} = state, %{dirty_update: %{type: type}})
        when type in ["groups", "communities"] do
-    send_clean_dirty_bits(state, "groups")
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        _ =
+          Group.handle_dirty_update({state.socket_module, socket_pid}, %{type: type},
+            event_emitter: state.event_emitter,
+            sendable: {state.socket_module, socket_pid}
+          )
+
+      :error ->
+        send_clean_dirty_bits(state, "groups")
+    end
+
     state
   end
 

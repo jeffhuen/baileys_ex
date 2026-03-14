@@ -446,19 +446,41 @@ defmodule BaileysEx.Connection.SupervisorTest do
   test "community dirty notifications reuse the groups clean bucket" do
     name = {:phase6_test, System.unique_integer([:positive])}
 
+    query_handler = fn
+      %BinaryNode{content: [%BinaryNode{tag: "participating"}]}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "groups", attrs: %{}, content: []}]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
     assert {:ok, supervisor} =
              Supervisor.start_link(
                name: name,
                config: Config.new(),
                auth_state: %{creds: %{}},
                socket_module: FakeSocket,
+               query_handler: query_handler,
                test_pid: self(),
                transport: {NoopTransport, %{}}
              )
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
+    assert_receive :fake_socket_connect
 
     assert :ok = EventEmitter.emit(emitter_pid, :dirty_update, %{type: "communities"})
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{"to" => "@g.us", "type" => "get", "xmlns" => "w:g2"},
+                      content: [%BinaryNode{tag: "participating"}]
+                    }, 60_000}
 
     assert_receive {:fake_socket_send_node,
                     %BinaryNode{
@@ -466,6 +488,132 @@ defmodule BaileysEx.Connection.SupervisorTest do
                       attrs: %{"xmlns" => "urn:xmpp:whatsapp:dirty", "type" => "set"},
                       content: [%BinaryNode{tag: "clean", attrs: %{"type" => "groups"}}]
                     }}
+  end
+
+  test "group dirty notifications refetch participating groups, emit groups_update, and clean the groups bucket" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+    parent = self()
+
+    query_handler = fn
+      %BinaryNode{content: [%BinaryNode{tag: "participating"}]}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "groups",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "group",
+                   attrs: %{
+                     "id" => "1234567890",
+                     "subject" => "Phase 10",
+                     "s_t" => "1710000000",
+                     "creation" => "1709999999",
+                     "size" => "1"
+                   },
+                   content: [
+                     %BinaryNode{
+                       tag: "participant",
+                       attrs: %{"jid" => "15550001111@s.whatsapp.net"}
+                     }
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{}},
+               socket_module: FakeSocket,
+               query_handler: query_handler,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    unsubscribe = EventEmitter.process(emitter_pid, &Kernel.send(parent, {:processed_events, &1}))
+
+    assert :ok = EventEmitter.emit(emitter_pid, :dirty_update, %{type: "groups"})
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{"to" => "@g.us", "type" => "get", "xmlns" => "w:g2"},
+                      content: [%BinaryNode{tag: "participating"}]
+                    }, 60_000}
+
+    assert_receive {:processed_events,
+                    %{
+                      groups_update: [
+                        %{id: "1234567890@g.us", subject: "Phase 10"}
+                      ]
+                    }}
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{"xmlns" => "urn:xmpp:whatsapp:dirty", "type" => "set"},
+                      content: [%BinaryNode{tag: "clean", attrs: %{"type" => "groups"}}]
+                    }}
+
+    assert :ok = unsubscribe.()
+  end
+
+  test "socket presence nodes are translated into presence_update events" do
+    name = {:phase10_presence_test, System.unique_integer([:positive])}
+    parent = self()
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{}},
+               transport: {NoopTransport, %{}}
+             )
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    unsubscribe = EventEmitter.process(emitter_pid, &Kernel.send(parent, {:processed_events, &1}))
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{
+               node: %BinaryNode{
+                 tag: "chatstate",
+                 attrs: %{
+                   "from" => "120363001234567890@g.us",
+                   "participant" => "15557654321@s.whatsapp.net"
+                 },
+                 content: [
+                   %BinaryNode{
+                     tag: "composing",
+                     attrs: %{"media" => "audio"},
+                     content: nil
+                   }
+                 ]
+               }
+             })
+
+    assert_receive {:processed_events,
+                    %{
+                      presence_update: %{
+                        id: "120363001234567890@g.us",
+                        presences: %{
+                          "15557654321@s.whatsapp.net" => %{last_known_presence: :recording}
+                        }
+                      }
+                    }}
+
+    assert :ok = unsubscribe.()
   end
 
   test "socket_node message events are routed through the receiver and send delivery receipts" do

@@ -8,6 +8,7 @@ defmodule BaileysEx.Message.NotificationHandler do
 
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
+  alias BaileysEx.Feature.TcToken
   alias BaileysEx.Media.Retry, as: MediaRetry
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID, as: JIDUtil
@@ -57,7 +58,7 @@ defmodule BaileysEx.Message.NotificationHandler do
   defp dispatch_notification("link_code_companion_reg", _node, _context), do: :ok
 
   defp dispatch_notification("privacy_token", node, context),
-    do: handle_privacy_token_notification(node, context)
+    do: TcToken.handle_notification(node, context)
 
   defp dispatch_notification(_type, _node, _context), do: :ok
 
@@ -284,34 +285,6 @@ defmodule BaileysEx.Message.NotificationHandler do
 
       _ ->
         :ok
-    end
-  end
-
-  defp handle_privacy_token_notification(%BinaryNode{attrs: attrs} = node, context) do
-    with fun when is_function(fun, 3) <- context[:store_privacy_token_fun],
-         %BinaryNode{content: token_nodes} <- BinaryNodeUtil.child(node, "tokens"),
-         true <- is_list(token_nodes) do
-      Enum.each(token_nodes, fn
-        %BinaryNode{
-          tag: "token",
-          attrs: %{"type" => "trusted_contact", "t" => timestamp},
-          content: {:binary, token}
-        } ->
-          _ = fun.(attrs["from"], token, timestamp)
-
-        %BinaryNode{
-          tag: "token",
-          attrs: %{"type" => "trusted_contact", "t" => timestamp},
-          content: token
-        }
-        when is_binary(token) ->
-          _ = fun.(attrs["from"], token, timestamp)
-
-        _other ->
-          :ok
-      end)
-    else
-      _ -> :ok
     end
   end
 

@@ -418,6 +418,61 @@ defmodule BaileysEx.Message.SenderTest do
     refute Enum.any?(reaction_content, &match?(%BinaryNode{tag: "reporting"}, &1))
   end
 
+  test "send/4 appends tc tokens after reporting nodes and before additional nodes" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+    repo = inject_session!(repo, "15551234567:0@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => []},
+               tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}
+             })
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    additional_node = %BinaryNode{tag: "meta", attrs: %{"marker" => "after"}, content: nil}
+
+    assert {:ok, _sent, _context} =
+             Sender.send(
+               context,
+               jid,
+               %{
+                 poll: %{
+                   name: "Phase 10 Review",
+                   values: ["yes", "no"],
+                   selectable_count: 1,
+                   message_secret: <<44::256>>
+                 }
+               },
+               additional_nodes: [additional_node]
+             )
+
+    assert_receive {:relay_node, %BinaryNode{content: content}}
+
+    tags = Enum.map(content, & &1.tag)
+    reporting_index = Enum.find_index(tags, &(&1 == "reporting"))
+    tc_token_index = Enum.find_index(tags, &(&1 == "tctoken"))
+    additional_index = Enum.find_index(tags, &(&1 == "meta"))
+
+    assert is_integer(reporting_index)
+    assert is_integer(tc_token_index)
+    assert is_integer(additional_index)
+    assert reporting_index < tc_token_index
+    assert tc_token_index < additional_index
+  end
+
   defp inject_session!(repo, jid, session) do
     assert {:ok, next_repo} = Repository.inject_e2e_session(repo, %{jid: jid, session: session})
     next_repo

@@ -26,7 +26,7 @@ defmodule BaileysEx.Message.Builder do
         key: build_message_key(key),
         type: :MESSAGE_EDIT,
         edited_message: inner,
-        timestamp_ms: Map.get(content, :timestamp_ms, now_ms(opts))
+        timestamp_ms: map_get_lazy(content, :timestamp_ms, fn -> now_ms(opts) end)
       }
     }
   end

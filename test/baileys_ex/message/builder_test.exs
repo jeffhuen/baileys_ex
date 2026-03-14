@@ -236,6 +236,21 @@ defmodule BaileysEx.Message.BuilderTest do
                now_ms: fn -> timestamp_ms end
              )
 
+    # Explicit timestamp_ms in content bypasses the clock entirely
+    explicit_ts = 1_710_999_999_999
+
+    assert %Message{
+             protocol_message: %ProtocolMessage{timestamp_ms: ^explicit_ts}
+           } =
+             Builder.build(
+               %{
+                 edit: %{id: "msg-2", remote_jid: "15551234567@s.whatsapp.net"},
+                 timestamp_ms: explicit_ts,
+                 text: "edited again"
+               },
+               now_ms: fn -> flunk("clock should not be called when timestamp_ms is explicit") end
+             )
+
     assert %Message{
              poll_creation_message_v3: %Message.PollCreationMessage{enc_key: ^poll_enc_key},
              message_context_info: %MessageContextInfo{message_secret: ^poll_secret}

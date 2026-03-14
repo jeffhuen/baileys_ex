@@ -181,7 +181,7 @@ defmodule BaileysEx.Message.Retry do
     if get_placeholder_resend(store_ref, message_id) do
       {:ok, nil}
     else
-      :ok = put_placeholder_resend(store_ref, message_id, msg_data || true)
+      :ok = put_placeholder_resend(store_ref, message_id, msg_data || true, opts)
       Process.sleep(delay_ms)
 
       if get_placeholder_resend(store_ref, message_id) do
@@ -192,15 +192,15 @@ defmodule BaileysEx.Message.Retry do
     end
   end
 
-  @spec put_placeholder_resend(Store.Ref.t(), String.t(), map() | boolean()) :: :ok
-  def put_placeholder_resend(%Store.Ref{} = store_ref, message_id, data)
-      when is_binary(message_id) do
+  @spec put_placeholder_resend(Store.Ref.t(), String.t(), map() | boolean(), keyword()) :: :ok
+  def put_placeholder_resend(%Store.Ref{} = store_ref, message_id, data, opts \\ [])
+      when is_binary(message_id) and is_list(opts) do
     cache =
       Store.get(store_ref, @placeholder_cache_key, %{})
       |> Map.put(message_id, %{
         data: data,
         timer_ref: nil,
-        inserted_at: System.system_time(:millisecond)
+        inserted_at: now_ms(opts)
       })
 
     Store.put(store_ref, @placeholder_cache_key, cache)
@@ -287,7 +287,7 @@ defmodule BaileysEx.Message.Retry do
                 attrs: %{
                   "count" => Integer.to_string(retry_count),
                   "id" => message_id,
-                  "t" => attrs["t"] || Integer.to_string(System.os_time(:second)),
+                  "t" => attrs["t"] || Integer.to_string(now_seconds(opts)),
                   "v" => "1",
                   "error" => Integer.to_string(Keyword.get(opts, :error_code, 0))
                 },
@@ -479,6 +479,14 @@ defmodule BaileysEx.Message.Retry do
     case opts[:now_ms] do
       fun when is_function(fun, 0) -> fun.()
       nil -> System.monotonic_time(:millisecond)
+    end
+  end
+
+  defp now_seconds(opts) do
+    case opts[:now_ms] do
+      fun when is_function(fun, 0) -> div(fun.(), 1_000)
+      value when is_integer(value) -> div(value, 1_000)
+      _ -> System.os_time(:second)
     end
   end
 

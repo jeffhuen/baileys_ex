@@ -15,6 +15,25 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     unsubscribe.()
   end
 
+  test "process/2 and tap/2 accept injected refs for deterministic subscriptions" do
+    {:ok, ref_store} = Agent.start_link(fn -> [:process_ref, :tap_ref] end)
+
+    ref_fun = fn ->
+      Agent.get_and_update(ref_store, fn [next | rest] -> {next, rest} end)
+    end
+
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50, ref_fun: ref_fun)
+    unsubscribe = EventEmitter.process(emitter, fn _events -> :ok end)
+    untap = EventEmitter.tap(emitter, fn _events -> :ok end)
+
+    state = :sys.get_state(emitter)
+    assert Map.has_key?(state.subscribers, :process_ref)
+    assert Map.has_key?(state.taps, :tap_ref)
+
+    unsubscribe.()
+    untap.()
+  end
+
   test "buffer/flush buffers bufferable events and flushes them as a batch" do
     test_pid = self()
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)

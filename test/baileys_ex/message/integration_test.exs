@@ -107,13 +107,13 @@ defmodule BaileysEx.Message.IntegrationTest do
 
     session = %{
       registration_id: 42,
-      identity_key: :crypto.strong_rand_bytes(32),
+      identity_key: <<21::256>>,
       signed_pre_key: %{
         key_id: 7,
-        public_key: :crypto.strong_rand_bytes(32),
-        signature: :crypto.strong_rand_bytes(64)
+        public_key: <<22::256>>,
+        signature: :binary.copy(<<23>>, 64)
       },
-      pre_key: %{key_id: 8, public_key: :crypto.strong_rand_bytes(32)}
+      pre_key: %{key_id: 8, public_key: <<24::256>>}
     }
 
     sender_repo =
@@ -214,13 +214,13 @@ defmodule BaileysEx.Message.IntegrationTest do
 
     session = %{
       registration_id: 42,
-      identity_key: :crypto.strong_rand_bytes(32),
+      identity_key: <<25::256>>,
       signed_pre_key: %{
         key_id: 7,
-        public_key: :crypto.strong_rand_bytes(32),
-        signature: :crypto.strong_rand_bytes(64)
+        public_key: <<26::256>>,
+        signature: :binary.copy(<<27>>, 64)
       },
-      pre_key: %{key_id: 8, public_key: :crypto.strong_rand_bytes(32)}
+      pre_key: %{key_id: 8, public_key: <<28::256>>}
     }
 
     sender_repo =

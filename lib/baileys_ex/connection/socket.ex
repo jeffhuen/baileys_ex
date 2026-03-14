@@ -64,7 +64,10 @@ defmodule BaileysEx.Connection.Socket do
           qr_refs: [binary()],
           next_qr_timeout_ms: pos_integer(),
           pending_queries: %{optional(binary()) => {pid(), reference(), reference()}},
-          server_time_offset_ms: integer()
+          server_time_offset_ms: integer(),
+          clock_ms_fun: (-> integer()),
+          monotonic_ms_fun: (-> integer()),
+          message_tag_fun: (-> binary())
         }
 
   @enforce_keys [:config, :auth_state, :transport_module, :transport_options]
@@ -89,6 +92,9 @@ defmodule BaileysEx.Connection.Socket do
     next_qr_timeout_ms: 20_000,
     pending_queries: %{},
     server_time_offset_ms: 0,
+    clock_ms_fun: nil,
+    monotonic_ms_fun: nil,
+    message_tag_fun: nil,
     retry_count: 0,
     epoch: 0
   ]
@@ -186,7 +192,14 @@ defmodule BaileysEx.Connection.Socket do
       task_supervisor: Keyword.get(opts, :task_supervisor),
       noise_opts: Keyword.get(opts, :noise_opts, []),
       transport_module: transport_module,
-      transport_options: transport_options
+      transport_options: transport_options,
+      clock_ms_fun: Keyword.get(opts, :clock_ms_fun, fn -> System.os_time(:millisecond) end),
+      monotonic_ms_fun:
+        Keyword.get(opts, :monotonic_ms_fun, fn -> System.monotonic_time(:millisecond) end),
+      message_tag_fun:
+        Keyword.get(opts, :message_tag_fun, fn ->
+          System.unique_integer([:positive, :monotonic]) |> Integer.to_string()
+        end)
     }
 
     {:ok, :disconnected, data}
@@ -325,7 +338,7 @@ defmodule BaileysEx.Connection.Socket do
   defp handle_call(current_state, from, {:query, %BinaryNode{} = node, reply_to, timeout}, data)
        when current_state in [:authenticating, :connected] and is_integer(timeout) and
               timeout > 0 do
-    {node, query_id} = ensure_query_id(node, data.pending_queries)
+    {node, query_id} = ensure_query_id(node, data)
 
     case send_node_internal(data, node) do
       {:ok, data} ->
@@ -470,7 +483,7 @@ defmodule BaileysEx.Connection.Socket do
        when current_state in [:authenticating, :connected] do
     case Noise.decode_frames(noise, payload) do
       {:ok, {noise, frames}} ->
-        data = %{data | noise: noise, last_date_recv_at: System.monotonic_time(:millisecond)}
+        data = %{data | noise: noise, last_date_recv_at: monotonic_ms(data)}
         apply_protocol_frames(current_state, frames, data)
 
       {:error, reason} ->
@@ -506,7 +519,7 @@ defmodule BaileysEx.Connection.Socket do
          {:ok, noise} <- Noise.process_server_hello(data.noise, server_hello, noise_key_pair),
          {:ok, {noise, client_finish}} <- Noise.client_finish(noise, client_payload),
          {:ok, data} <- do_send_transport_binary(%{data | noise: noise}, client_finish) do
-      {:ok, %{data | last_date_recv_at: System.monotonic_time(:millisecond)}}
+      {:ok, %{data | last_date_recv_at: monotonic_ms(data)}}
     else
       {:error, reason, data} -> {:error, reason, data}
       {:error, reason} -> {:error, reason, data}
@@ -619,8 +632,8 @@ defmodule BaileysEx.Connection.Socket do
 
   defp send_keep_alive(%__MODULE__{} = data) do
     interval = data.config.keep_alive_interval_ms
-    last_date_recv_at = data.last_date_recv_at || System.monotonic_time(:millisecond)
-    diff = System.monotonic_time(:millisecond) - last_date_recv_at
+    last_date_recv_at = data.last_date_recv_at || monotonic_ms(data)
+    diff = monotonic_ms(data) - last_date_recv_at
 
     if diff > interval + 5_000 do
       connection_failure(%{data | last_date_recv_at: last_date_recv_at}, :connection_lost)
@@ -654,7 +667,7 @@ defmodule BaileysEx.Connection.Socket do
   defp logout_connection(%__MODULE__{} = data) do
     case me_id(data.auth_state) do
       jid when is_binary(jid) ->
-        case send_node_internal(data, logout_node(jid)) do
+        case send_node_internal(data, logout_node(jid, data)) do
           {:ok, data} ->
             data = close_connection(data, :logged_out, increment_retry?: false)
             {:ok, data}
@@ -847,7 +860,7 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp send_keep_alive_ping(data) do
-    send_node_internal(data, keep_alive_node())
+    send_node_internal(data, keep_alive_node(data))
   end
 
   defp send_unified_session(data) do
@@ -930,7 +943,11 @@ defmodule BaileysEx.Connection.Socket do
       result =
         with :ok <- maybe_upload_post_auth_prekeys(data, socket_pid),
              {:ok, _response} <-
-               query(socket_pid, passive_iq_node(:active), data.config.default_query_timeout_ms) do
+               query(
+                 socket_pid,
+                 passive_iq_node(:active, data),
+                 data.config.default_query_timeout_ms
+               ) do
           maybe_digest_post_auth_prekeys(data, socket_pid)
         end
 
@@ -1167,7 +1184,7 @@ defmodule BaileysEx.Connection.Socket do
   defp maybe_update_server_time_offset(%__MODULE__{} = data, server_timestamp) do
     case Integer.parse(server_timestamp) do
       {parsed, ""} when parsed > 0 ->
-        %{data | server_time_offset_ms: parsed * 1_000 - System.os_time(:millisecond)}
+        %{data | server_time_offset_ms: parsed * 1_000 - clock_ms(data)}
 
       _ ->
         data
@@ -1182,15 +1199,15 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
-  defp ensure_query_id(%BinaryNode{} = node, pending_queries) do
+  defp ensure_query_id(%BinaryNode{} = node, %__MODULE__{} = data) do
     existing_id = node.attrs["id"]
 
     query_id =
       if is_binary(existing_id) and existing_id != "" and
-           not Map.has_key?(pending_queries, existing_id) do
+           not Map.has_key?(data.pending_queries, existing_id) do
         existing_id
       else
-        generate_message_tag()
+        generate_message_tag(data)
       end
 
     {%{node | attrs: Map.put(node.attrs, "id", query_id)}, query_id}
@@ -1244,7 +1261,7 @@ defmodule BaileysEx.Connection.Socket do
   defp unified_session_node(data) do
     session_id =
       data.server_time_offset_ms
-      |> unified_session_id()
+      |> unified_session_id(data)
       |> Integer.to_string()
 
     %BinaryNode{
@@ -1254,17 +1271,17 @@ defmodule BaileysEx.Connection.Socket do
     }
   end
 
-  defp unified_session_id(server_time_offset_ms) do
+  defp unified_session_id(server_time_offset_ms, data) do
     three_days_ms = 3 * 24 * 60 * 60 * 1_000
     week_ms = 7 * 24 * 60 * 60 * 1_000
-    rem(System.os_time(:millisecond) + server_time_offset_ms + three_days_ms, week_ms)
+    rem(clock_ms(data) + server_time_offset_ms + three_days_ms, week_ms)
   end
 
-  defp keep_alive_node do
+  defp keep_alive_node(data) do
     %BinaryNode{
       tag: "iq",
       attrs: %{
-        "id" => generate_message_tag(),
+        "id" => generate_message_tag(data),
         "to" => @s_whatsapp_net,
         "type" => "get",
         "xmlns" => "w:p"
@@ -1281,7 +1298,7 @@ defmodule BaileysEx.Connection.Socket do
     }
   end
 
-  defp passive_iq_node(tag) do
+  defp passive_iq_node(tag, _data) do
     %BinaryNode{
       tag: "iq",
       attrs: %{
@@ -1301,13 +1318,13 @@ defmodule BaileysEx.Connection.Socket do
     }
   end
 
-  defp logout_node(jid) do
+  defp logout_node(jid, data) do
     %BinaryNode{
       tag: "iq",
       attrs: %{
         "to" => @s_whatsapp_net,
         "type" => "set",
-        "id" => generate_message_tag(),
+        "id" => generate_message_tag(data),
         "xmlns" => "md"
       },
       content: [
@@ -1328,7 +1345,7 @@ defmodule BaileysEx.Connection.Socket do
     }
   end
 
-  defp generate_message_tag do
-    System.unique_integer([:positive, :monotonic]) |> Integer.to_string()
-  end
+  defp generate_message_tag(data), do: data.message_tag_fun.()
+  defp clock_ms(data), do: data.clock_ms_fun.()
+  defp monotonic_ms(data), do: data.monotonic_ms_fun.()
 end

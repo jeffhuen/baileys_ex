@@ -104,7 +104,9 @@ defmodule BaileysEx.Protocol.Noise do
     header = Keyword.get(opts, :header, @noise_wa_header)
     routing_info = Keyword.get(opts, :routing_info)
     trusted_cert = Keyword.get(opts, :trusted_cert, @default_trusted_cert)
-    ephemeral_key_pair = Keyword.get(opts, :ephemeral_key_pair, Crypto.generate_key_pair(:x25519))
+
+    ephemeral_key_pair =
+      Keyword.get_lazy(opts, :ephemeral_key_pair, fn -> Crypto.generate_key_pair(:x25519) end)
 
     hash = initial_hash()
 

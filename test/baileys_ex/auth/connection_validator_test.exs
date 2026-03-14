@@ -2,10 +2,10 @@ defmodule BaileysEx.Auth.ConnectionValidatorTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Auth.ConnectionValidator
-  alias BaileysEx.Auth.State
   alias BaileysEx.Connection.Config
   alias BaileysEx.Protocol.Proto.ClientPayload
   alias BaileysEx.Protocol.Proto.DeviceProps
+  alias BaileysEx.TestSupport.DeterministicAuth
 
   test "generate_login_node/2 builds the rc9 passive login payload" do
     config =
@@ -53,7 +53,7 @@ defmodule BaileysEx.Auth.ConnectionValidatorTest do
   end
 
   test "generate_registration_node/2 includes device props and pairing registration data" do
-    state = State.new()
+    state = DeterministicAuth.state(80)
 
     config =
       Config.new(
@@ -73,7 +73,7 @@ defmodule BaileysEx.Auth.ConnectionValidatorTest do
     assert decoded.connect_reason == 1
 
     assert reg = decoded.device_pairing_data
-    assert reg.build_hash == :crypto.hash(:md5, "2.24.7")
+    assert reg.build_hash == Base.decode16!("E726C7196348EDD7C96653D52DC55933")
     assert reg.e_regid == <<state.registration_id::unsigned-big-integer-size(32)>>
     assert reg.e_keytype == <<5>>
     assert reg.e_ident == state.signed_identity_key.public

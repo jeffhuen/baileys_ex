@@ -3,6 +3,7 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
 
   alias BaileysEx.Auth.FilePersistence
   alias BaileysEx.Auth.State
+  alias BaileysEx.TestSupport.DeterministicAuth
 
   @tag :tmp_dir
   test "load_credentials/1 initializes fresh credentials when creds.json is missing", %{
@@ -19,7 +20,7 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
     tmp_dir: tmp_dir
   } do
     state =
-      State.new()
+      DeterministicAuth.state(50)
       |> Map.put(:platform, "macOS")
       |> Map.put(:routing_info, <<1, 2, 3, 4>>)
       |> Map.put(:pairing_code, "123-456")
@@ -57,8 +58,8 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
 
   @tag :tmp_dir
   test "concurrent writes to the same creds file remain decodable", %{tmp_dir: tmp_dir} do
-    first_state = State.new() |> Map.put(:platform, "alpha")
-    second_state = State.new() |> Map.put(:platform, "beta")
+    first_state = DeterministicAuth.state(60) |> Map.put(:platform, "alpha")
+    second_state = DeterministicAuth.state(70) |> Map.put(:platform, "beta")
 
     tasks = [
       Task.async(fn -> FilePersistence.save_credentials(tmp_dir, first_state) end),

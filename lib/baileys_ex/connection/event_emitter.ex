@@ -25,6 +25,7 @@ defmodule BaileysEx.Connection.EventEmitter do
 
     defstruct subscribers: %{},
               taps: %{},
+              ref_fun: nil,
               buffer_timeout_ms: 30_000,
               buffer_timer: nil,
               flush_pending_timer: nil,
@@ -122,17 +123,21 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   @impl true
   def init(opts) do
-    {:ok, %State{buffer_timeout_ms: Keyword.get(opts, :buffer_timeout_ms, 30_000)}}
+    {:ok,
+     %State{
+       buffer_timeout_ms: Keyword.get(opts, :buffer_timeout_ms, 30_000),
+       ref_fun: Keyword.get(opts, :ref_fun, &make_ref/0)
+     }}
   end
 
   @impl true
   def handle_call({:process, handler}, _from, %State{} = state) do
-    ref = make_ref()
+    ref = state.ref_fun.()
     {:reply, ref, %{state | subscribers: Map.put(state.subscribers, ref, handler)}}
   end
 
   def handle_call({:tap, handler}, _from, %State{} = state) do
-    ref = make_ref()
+    ref = state.ref_fun.()
     {:reply, ref, %{state | taps: Map.put(state.taps, ref, handler)}}
   end
 

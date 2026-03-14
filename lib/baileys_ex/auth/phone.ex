@@ -34,7 +34,7 @@ defmodule BaileysEx.Auth.Phone do
          {:ok, pairing_ephemeral_key} <- fetch_key_pair(auth_state, :pairing_ephemeral_key),
          {:ok, noise_key} <- fetch_key_pair(auth_state, :noise_key),
          {:ok, wrapped_public_key} <-
-           generate_pairing_key(pairing_code, pairing_ephemeral_key.public) do
+           generate_pairing_key(pairing_code, pairing_ephemeral_key.public, opts) do
       me = %{id: JID.jid_encode(phone_number, @s_whatsapp_net), name: "~"}
 
       {:ok,
@@ -46,9 +46,10 @@ defmodule BaileysEx.Auth.Phone do
     end
   end
 
-  @spec complete_pairing(BinaryNode.t(), map()) ::
+  @spec complete_pairing(BinaryNode.t(), map(), keyword()) ::
           {:ok, %{creds_update: map(), node: BinaryNode.t()}} | {:error, term()}
-  def complete_pairing(%BinaryNode{} = node, auth_state) when is_map(auth_state) do
+  def complete_pairing(%BinaryNode{} = node, auth_state, opts \\ [])
+      when is_map(auth_state) and is_list(opts) do
     with {:ok, reg_node} <- fetch_reg_node(node),
          {:ok, ref} <- fetch_child_content(reg_node, "link_code_pairing_ref"),
          {:ok, primary_identity_public_key} <-
@@ -67,7 +68,8 @@ defmodule BaileysEx.Auth.Phone do
            build_finish_payload(
              companion_shared_key,
              signed_identity_key,
-             primary_identity_public_key
+             primary_identity_public_key,
+             opts
            ) do
       {:ok,
        %{
@@ -91,9 +93,9 @@ defmodule BaileysEx.Auth.Phone do
     end
   end
 
-  defp generate_pairing_key(pairing_code, companion_ephemeral_public_key) do
-    salt = Crypto.random_bytes(32)
-    iv = Crypto.random_bytes(16)
+  defp generate_pairing_key(pairing_code, companion_ephemeral_public_key, opts) do
+    salt = random_bytes(opts, :pairing_key_salt, 32)
+    iv = random_bytes(opts, :pairing_key_iv, 16)
 
     with {:ok, key} <- derive_pairing_code_key(pairing_code, salt),
          {:ok, encrypted_public_key} <-
@@ -147,11 +149,12 @@ defmodule BaileysEx.Auth.Phone do
   defp build_finish_payload(
          companion_shared_key,
          signed_identity_key,
-         primary_identity_public_key
+         primary_identity_public_key,
+         opts
        ) do
-    random = Crypto.random_bytes(32)
-    link_code_salt = Crypto.random_bytes(32)
-    encrypt_iv = Crypto.random_bytes(12)
+    random = random_bytes(opts, :finish_random, 32)
+    link_code_salt = random_bytes(opts, :link_code_salt, 32)
+    encrypt_iv = random_bytes(opts, :encrypt_iv, 12)
 
     with {:ok, link_code_pairing_key} <-
            Crypto.hkdf(companion_shared_key, @pairing_bundle_info, 32, link_code_salt),
@@ -211,6 +214,13 @@ defmodule BaileysEx.Auth.Phone do
 
   defp decipher_link_public_key(_wrapped_public_key, _pairing_code),
     do: {:error, :invalid_wrapped_primary_ephemeral_public_key}
+
+  defp random_bytes(opts, key, size) do
+    case opts[key] do
+      binary when is_binary(binary) and byte_size(binary) == size -> binary
+      _ -> Crypto.random_bytes(size)
+    end
+  end
 
   defp fetch_reg_node(%BinaryNode{tag: "link_code_companion_reg"} = node), do: {:ok, node}
 

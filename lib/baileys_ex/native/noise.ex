@@ -34,8 +34,14 @@ defmodule BaileysEx.Native.Noise do
 
   Returns an opaque session reference for use with `handshake_write/2`.
   """
-  @spec init(binary()) :: session()
-  def init(prologue), do: Native.noise_init(prologue)
+  @spec init(binary(), keyword()) :: session()
+  def init(prologue, opts \\ []) do
+    Native.noise_init(
+      prologue,
+      Keyword.get(opts, :private_key),
+      Keyword.get(opts, :ephemeral_private_key)
+    )
+  end
 
   @doc """
   Initialize a Noise XX responder session.
@@ -43,8 +49,14 @@ defmodule BaileysEx.Native.Noise do
   Used for testing full handshake flows. Production WhatsApp connections
   only use the initiator side -- the server is the responder.
   """
-  @spec init_responder(binary()) :: session()
-  def init_responder(prologue), do: Native.noise_init_responder(prologue)
+  @spec init_responder(binary(), keyword()) :: session()
+  def init_responder(prologue, opts \\ []) do
+    Native.noise_init_responder(
+      prologue,
+      Keyword.get(opts, :private_key),
+      Keyword.get(opts, :ephemeral_private_key)
+    )
+  end
 
   @doc """
   Write the next handshake message.

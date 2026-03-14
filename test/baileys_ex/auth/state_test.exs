@@ -2,6 +2,8 @@ defmodule BaileysEx.Auth.StateTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Auth.State
+  alias BaileysEx.Signal.Curve
+  alias BaileysEx.TestSupport.DeterministicAuth
 
   test "new/0 builds rc9-shaped default credentials" do
     state = State.new()
@@ -38,6 +40,7 @@ defmodule BaileysEx.Auth.StateTest do
     assert byte_size(signed_pre_public) == 32
     assert byte_size(signed_pre_private) == 32
     assert is_binary(signed_pre_signature)
+    assert Curve.verify(identity_public, <<5, signed_pre_public::binary>>, signed_pre_signature)
 
     assert registration_id >= 0
     assert registration_id <= 16_383
@@ -47,7 +50,7 @@ defmodule BaileysEx.Auth.StateTest do
   end
 
   test "merge_updates/2 preserves the Auth.State struct shape for flat creds updates" do
-    state = State.new()
+    state = DeterministicAuth.state(110)
 
     assert %State{
              me: %{id: "15551234567@s.whatsapp.net", lid: "12345678901234@lid"},
@@ -77,5 +80,34 @@ defmodule BaileysEx.Auth.StateTest do
                me: %{lid: "12345678901234@lid"},
                pairing_code: "ABCDEFGH"
              })
+  end
+
+  test "new/1 accepts deterministic overrides for generated credential material" do
+    noise_key = %{public: <<1::256>>, private: <<2::256>>}
+    pairing_ephemeral_key = %{public: <<3::256>>, private: <<4::256>>}
+    signed_identity_key = %{public: <<5::256>>, private: <<6::256>>}
+
+    signed_pre_key = %{
+      key_pair: %{public: <<7::256>>, private: <<8::256>>},
+      key_id: 9,
+      signature: :binary.copy(<<10>>, 64)
+    }
+
+    assert %State{
+             noise_key: ^noise_key,
+             pairing_ephemeral_key: ^pairing_ephemeral_key,
+             signed_identity_key: ^signed_identity_key,
+             signed_pre_key: ^signed_pre_key,
+             registration_id: 4_242,
+             adv_secret_key: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+           } =
+             State.new(
+               noise_key: noise_key,
+               pairing_ephemeral_key: pairing_ephemeral_key,
+               signed_identity_key: signed_identity_key,
+               signed_pre_key: signed_pre_key,
+               registration_id: 4_242,
+               adv_secret_key: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+             )
   end
 end

@@ -4,8 +4,20 @@ defmodule BaileysEx.Native do
   use Rustler, otp_app: :baileys_ex, crate: "baileys_nif"
 
   # Noise NIFs
-  def noise_init(_prologue), do: :erlang.nif_error(:nif_not_loaded)
-  def noise_init_responder(_prologue), do: :erlang.nif_error(:nif_not_loaded)
+  def noise_init(prologue), do: noise_init(prologue, nil, nil)
+  def noise_init(prologue, private_key), do: noise_init(prologue, private_key, nil)
+
+  def noise_init(_prologue, _private_key, _ephemeral_private_key),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def noise_init_responder(prologue), do: noise_init_responder(prologue, nil, nil)
+
+  def noise_init_responder(prologue, private_key),
+    do: noise_init_responder(prologue, private_key, nil)
+
+  def noise_init_responder(_prologue, _private_key, _ephemeral_private_key),
+    do: :erlang.nif_error(:nif_not_loaded)
+
   def noise_handshake_write(_session, _payload), do: :erlang.nif_error(:nif_not_loaded)
   def noise_handshake_read(_session, _message), do: :erlang.nif_error(:nif_not_loaded)
   def noise_finish(_session), do: :erlang.nif_error(:nif_not_loaded)

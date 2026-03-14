@@ -22,8 +22,8 @@ defmodule BaileysEx.Signal.Curve do
   @doc """
   Generate a Curve25519 key pair for Signal session and pre-key usage.
   """
-  @spec generate_key_pair() :: key_pair()
-  def generate_key_pair, do: Crypto.generate_key_pair(:x25519)
+  @spec generate_key_pair(keyword()) :: key_pair()
+  def generate_key_pair(opts \\ []), do: Crypto.generate_key_pair(:x25519, opts)
 
   @doc """
   Derive a shared X25519 secret from a private key and peer public key.
@@ -78,19 +78,23 @@ defmodule BaileysEx.Signal.Curve do
   @doc """
   Generate a signed pre-key payload matching Baileys `signedKeyPair`.
   """
-  @spec signed_key_pair(map(), non_neg_integer()) ::
+  @spec signed_key_pair(map(), non_neg_integer(), keyword()) ::
           {:ok, signed_key_pair()} | {:error, key_error()}
-  def signed_key_pair(%{private: private_key}, key_id)
-      when is_integer(key_id) and key_id >= 0 do
+  def signed_key_pair(identity_key_pair, key_id, opts \\ [])
+
+  def signed_key_pair(%{private: private_key}, key_id, opts)
+      when is_integer(key_id) and key_id >= 0 and is_list(opts) do
+    key_pair =
+      Keyword.get(opts, :key_pair) || generate_key_pair(Keyword.get(opts, :key_pair_opts, []))
+
     with {:ok, private_key} <- normalize_private_key(private_key),
-         key_pair <- generate_key_pair(),
          {:ok, signal_public_key} <- generate_signal_pub_key(key_pair.public),
          {:ok, signature} <- sign(private_key, signal_public_key) do
       {:ok, %{key_pair: key_pair, signature: signature, key_id: key_id}}
     end
   end
 
-  def signed_key_pair(_identity_key_pair, _key_id), do: {:error, :invalid_identity_key}
+  def signed_key_pair(_identity_key_pair, _key_id, _opts), do: {:error, :invalid_identity_key}
 
   @spec normalize_private_key(binary()) :: {:ok, binary()} | {:error, :invalid_private_key}
   defp normalize_private_key(<<private_key::binary-size(32)>>), do: {:ok, private_key}

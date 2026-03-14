@@ -134,9 +134,13 @@ defmodule BaileysEx.CryptoPropertyTest do
   # ============================================================================
 
   property "Curve25519 ECDH shared secret is symmetric (A*B == B*A)" do
-    check all(_ <- constant(:ok), max_runs: 20) do
-      alice = Crypto.generate_key_pair(:x25519)
-      bob = Crypto.generate_key_pair(:x25519)
+    check all(
+            alice_private <- binary(length: 32),
+            bob_private <- binary(length: 32),
+            max_runs: 20
+          ) do
+      alice = Crypto.generate_key_pair(:x25519, private_key: alice_private)
+      bob = Crypto.generate_key_pair(:x25519, private_key: bob_private)
 
       {:ok, shared_ab} = Crypto.shared_secret(alice.private, bob.public)
       {:ok, shared_ba} = Crypto.shared_secret(bob.private, alice.public)
@@ -175,8 +179,12 @@ defmodule BaileysEx.CryptoPropertyTest do
   # ============================================================================
 
   property "Ed25519 sign/verify roundtrip for arbitrary messages" do
-    check all(message <- binary(min_length: 0, max_length: 1_000), max_runs: 20) do
-      pair = Crypto.generate_key_pair(:ed25519)
+    check all(
+            message <- binary(min_length: 0, max_length: 1_000),
+            private_key <- binary(length: 32),
+            max_runs: 20
+          ) do
+      pair = Crypto.generate_key_pair(:ed25519, private_key: private_key)
       signature = Crypto.ed25519_sign(pair.private, message)
       assert byte_size(signature) == 64
       assert Crypto.ed25519_verify(pair.public, message, signature)

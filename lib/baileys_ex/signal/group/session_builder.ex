@@ -9,14 +9,14 @@ defmodule BaileysEx.Signal.Group.SessionBuilder do
 
   @max_sender_key_id 2_147_483_647
 
-  @spec create(SenderKeyRecord.t()) ::
+  @spec create(SenderKeyRecord.t(), keyword()) ::
           {:ok, SenderKeyRecord.t(), binary()} | {:error, term()}
-  def create(%SenderKeyRecord{} = record) do
+  def create(%SenderKeyRecord{} = record, opts \\ []) when is_list(opts) do
     record =
       if SenderKeyRecord.empty?(record) do
-        key_id = :rand.uniform(@max_sender_key_id) - 1
-        sender_key = Crypto.random_bytes(32)
-        signing_key = Curve.generate_key_pair()
+        key_id = Keyword.get_lazy(opts, :key_id, fn -> :rand.uniform(@max_sender_key_id) - 1 end)
+        sender_key = Keyword.get_lazy(opts, :sender_key, fn -> Crypto.random_bytes(32) end)
+        signing_key = Keyword.get_lazy(opts, :signing_key, &Curve.generate_key_pair/0)
         SenderKeyRecord.set_state(record, key_id, 0, sender_key, signing_key)
       else
         record

@@ -2,12 +2,12 @@ defmodule BaileysEx.Auth.PhoneTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Auth.Phone
-  alias BaileysEx.Auth.State
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Config
   alias BaileysEx.Crypto
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Signal.Curve
+  alias BaileysEx.TestSupport.DeterministicAuth
 
   test "derive_pairing_code_key/2 matches the rc9 PBKDF2 output" do
     salt =
@@ -24,7 +24,7 @@ defmodule BaileysEx.Auth.PhoneTest do
   end
 
   test "build_pairing_request/4 creates the companion hello node and wraps the ephemeral key" do
-    auth_state = State.new()
+    auth_state = DeterministicAuth.state(10)
     config = Config.new(browser: {"Mac OS", "Chrome", "14.4.1"})
     pairing_ephemeral_public = auth_state.pairing_ephemeral_key.public
     noise_public = auth_state.noise_key.public
@@ -74,21 +74,44 @@ defmodule BaileysEx.Auth.PhoneTest do
 
   test "build_pairing_request/4 rejects custom pairing codes that are not exactly eight characters" do
     assert {:error, :invalid_custom_pairing_code} =
-             Phone.build_pairing_request("15551234567", State.new(), Config.new(),
+             Phone.build_pairing_request("15551234567", DeterministicAuth.state(20), Config.new(),
                custom_pairing_code: "SHORT"
              )
   end
 
-  test "complete_pairing/2 builds the companion finish node and updates creds" do
+  test "build_pairing_request/4 uses injected salt and iv for deterministic wrapping" do
+    auth_state = DeterministicAuth.state(30)
+    config = Config.new(browser: {"Mac OS", "Chrome", "14.4.1"})
+    salt = :binary.copy(<<17>>, 32)
+    iv = :binary.copy(<<29>>, 16)
+
+    assert {:ok, %{node: node}} =
+             Phone.build_pairing_request("15551234567", auth_state, config,
+               custom_pairing_code: "ABCDEFGH",
+               pairing_key_salt: salt,
+               pairing_key_iv: iv
+             )
+
+    wrapped_ephemeral_public =
+      node
+      |> BinaryNodeUtil.child("link_code_companion_reg")
+      |> binary_child_content("link_code_pairing_wrapped_companion_ephemeral_pub")
+
+    assert <<^salt::binary-size(32), ^iv::binary-size(16), _ciphertext::binary-size(32)>> =
+             wrapped_ephemeral_public
+  end
+
+  test "complete_pairing/3 builds the companion finish node and updates creds deterministically" do
     auth_state =
-      State.new()
-      |> Map.put(:pairing_code, "ABCDEFGH")
-      |> Map.put(:me, %{id: "15551234567@s.whatsapp.net", name: "~"})
+      DeterministicAuth.state(40, %{
+        pairing_code: "ABCDEFGH",
+        me: %{id: "15551234567@s.whatsapp.net", name: "~"}
+      })
 
     signed_identity_public = auth_state.signed_identity_key.public
 
-    primary_identity_key = Curve.generate_key_pair()
-    code_pairing_key = Curve.generate_key_pair()
+    primary_identity_key = Curve.generate_key_pair(private_key: <<27::256>>)
+    code_pairing_key = Curve.generate_key_pair(private_key: <<28::256>>)
 
     salt =
       <<17::8, 18::8, 19::8, 20::8, 21::8, 22::8, 23::8, 24::8, 25::8, 26::8, 27::8, 28::8, 29::8,
@@ -100,6 +123,10 @@ defmodule BaileysEx.Auth.PhoneTest do
 
     assert {:ok, wrapped_public_key} =
              Crypto.aes_ctr_encrypt(pairing_key, iv, code_pairing_key.public)
+
+    finish_random = :binary.copy(<<51>>, 32)
+    link_code_salt = :binary.copy(<<68>>, 32)
+    encrypt_iv = :binary.copy(<<85>>, 12)
 
     node =
       %BinaryNode{
@@ -127,7 +154,11 @@ defmodule BaileysEx.Auth.PhoneTest do
       }
 
     assert {:ok, %{creds_update: creds_update, node: finish_node}} =
-             Phone.complete_pairing(node, auth_state)
+             Phone.complete_pairing(node, auth_state,
+               finish_random: finish_random,
+               link_code_salt: link_code_salt,
+               encrypt_iv: encrypt_iv
+             )
 
     assert %{registered: true, adv_secret_key: adv_secret_key} = creds_update
     assert {:ok, decoded_adv_secret_key} = Base.decode64(adv_secret_key)
@@ -153,6 +184,26 @@ defmodule BaileysEx.Auth.PhoneTest do
              binary_child_content(reg_node, "link_code_pairing_wrapped_key_bundle")
 
     assert byte_size(wrapped_key_bundle) == 156
+
+    assert <<^link_code_salt::binary-size(32), ^encrypt_iv::binary-size(12), ciphertext::binary>> =
+             wrapped_key_bundle
+
+    assert {:ok, companion_shared_key} =
+             Curve.shared_key(auth_state.pairing_ephemeral_key.private, code_pairing_key.public)
+
+    assert {:ok, link_code_pairing_key} =
+             Crypto.hkdf(
+               companion_shared_key,
+               "link_code_pairing_key_bundle_encryption_key",
+               32,
+               link_code_salt
+             )
+
+    assert {:ok, decrypted_payload} =
+             Crypto.aes_gcm_decrypt(link_code_pairing_key, encrypt_iv, ciphertext, <<>>)
+
+    assert decrypted_payload ==
+             auth_state.signed_identity_key.public <> primary_identity_key.public <> finish_random
   end
 
   defp binary_child_content(node, tag) do

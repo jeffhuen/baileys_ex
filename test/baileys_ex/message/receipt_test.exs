@@ -7,6 +7,7 @@ defmodule BaileysEx.Message.ReceiptTest do
 
   test "read_messages/3 chooses read-self when privacy disables read receipts and aggregates ids" do
     parent = self()
+    timestamp = 1_710_000_900
 
     keys = [
       %{remote_jid: "15551234567@s.whatsapp.net", id: "a", from_me: false},
@@ -20,7 +21,8 @@ defmodule BaileysEx.Message.ReceiptTest do
                  :ok
                end,
                keys,
-               %{readreceipts: "none"}
+               %{readreceipts: "none"},
+               timestamp: timestamp
              )
 
     assert_receive {:receipt,
@@ -30,7 +32,7 @@ defmodule BaileysEx.Message.ReceiptTest do
                         "id" => "a",
                         "to" => "15551234567@s.whatsapp.net",
                         "type" => "read-self",
-                        "t" => _
+                        "t" => "1710000900"
                       },
                       content: [
                         %BinaryNode{
@@ -39,6 +41,27 @@ defmodule BaileysEx.Message.ReceiptTest do
                         }
                       ]
                     }}
+  end
+
+  test "read_messages/4 accepts a deterministic receipt timestamp" do
+    parent = self()
+
+    keys = [
+      %{remote_jid: "15551234567@s.whatsapp.net", id: "a", from_me: false}
+    ]
+
+    assert :ok =
+             Receipt.read_messages(
+               fn node ->
+                 send(parent, {:receipt, node})
+                 :ok
+               end,
+               keys,
+               %{readreceipts: "none"},
+               timestamp: 1_710_000_900
+             )
+
+    assert_receive {:receipt, %BinaryNode{attrs: %{"t" => "1710000900"}}}
   end
 
   test "process_receipt/2 emits messages_update for direct receipts and message_receipt_update for group receipts" do

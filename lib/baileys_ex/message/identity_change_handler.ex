@@ -25,7 +25,7 @@ defmodule BaileysEx.Message.IdentityChangeHandler do
   @spec handle(BinaryNode.t(), map(), map(), keyword()) ::
           {:ok, result(), map(), map()} | {:error, term()}
   def handle(%BinaryNode{} = node, %{} = context, cache \\ %{}, opts \\ []) do
-    now_ms = Keyword.get(opts, :now_ms, System.monotonic_time(:millisecond))
+    now_ms = Keyword.get_lazy(opts, :now_ms, fn -> System.monotonic_time(:millisecond) end)
     debounce_ms = Keyword.get(opts, :debounce_ms, @debounce_ms)
     cache = prune_cache(cache, now_ms, debounce_ms)
     from = node.attrs["from"]

@@ -52,6 +52,35 @@ defmodule BaileysEx.Native.NoiseTest do
     assert true
   end
 
+  test "fixed private keys produce pinned handshake messages" do
+    initiator =
+      Noise.init(@wa_header, private_key: <<1::256>>, ephemeral_private_key: <<3::256>>)
+
+    responder =
+      Noise.init_responder(@wa_header, private_key: <<2::256>>, ephemeral_private_key: <<4::256>>)
+
+    msg1 = Noise.handshake_write(initiator, <<>>)
+
+    assert Base.decode16!(
+             "9952FB7E5383C522C954DE94F2E4620D3E08CD9E7248AD23207F9EF55C904144",
+             case: :mixed
+           ) == msg1
+
+    assert Noise.handshake_read(responder, msg1) == <<>>
+
+    msg2 = Noise.handshake_write(responder, "server-payload")
+
+    assert Base.decode16!(
+             "EC13D23A17DAF174750DF7AD67A86A1D4EABEC8F517636605281C1DB18C66649" <>
+               "C2F0F9CB372084D28245BF139E4438D999A6151D15EE77E60ADFE3D952A48BAB" <>
+               "37FA7B1F53760482CEB93D94E91B9E965CBEEC403BC0DFBCC4AEA65526ABD284" <>
+               "315B259D606332D3416161AE5CFE",
+             case: :mixed
+           ) == msg2
+
+    assert Noise.handshake_read(initiator, msg2) == "server-payload"
+  end
+
   defp complete_raw_handshake do
     initiator = Noise.init(@wa_header)
     responder = Noise.init_responder(@wa_header)

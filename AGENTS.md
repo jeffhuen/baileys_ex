@@ -233,6 +233,24 @@ This section adds behavioural expectations.
 - **Root causes only.** No temporary fixes, no workarounds, no suppressing symptoms.
   Senior developer standards — find and fix the actual problem.
 
+### Deterministic by Default
+
+- **Same input, same output.** Every function must produce identical output for
+  identical input. This is non-negotiable — it's what makes code testable, debuggable,
+  and trustworthy.
+- **Inject all non-determinism.** Sources of randomness (`:crypto.strong_rand_bytes`,
+  timestamps, UUIDs, PIDs) must be injectable via function options with sensible
+  production defaults. If a function generates a random key internally, it must also
+  accept a `key:` option so tests can supply a deterministic one.
+- **Pin known-answer test vectors.** Tests must assert against pre-computed literal
+  values, not recomputed expected values. Asserting
+  `file_sha256 == :crypto.hash(:sha256, plaintext)` proves only that SHA-256 is
+  consistent with itself — it does not prove your code computed the hash correctly.
+  Instead, pin the hex digest: `assert file_sha256 == <<0xAB, 0xCD, ...>>`.
+- **Property tests complement, not replace, vectors.** StreamData properties prove
+  invariants (encrypt/decrypt roundtrip, idempotency). Pinned vectors prove
+  correctness against an external reference.
+
 ### Verification and Learning
 
 - **Prove it works before claiming done.** Run all 11 delivery gates from

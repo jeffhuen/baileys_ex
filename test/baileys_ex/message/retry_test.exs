@@ -133,6 +133,20 @@ defmodule BaileysEx.Message.RetryTest do
     assert {:ok, "RESOLVED"} = Task.await(task, 100)
   end
 
+  test "put_placeholder_resend/4 stores an injected inserted_at timestamp" do
+    {:ok, store} = Store.start_link()
+    ref = Store.wrap(store)
+
+    assert :ok =
+             Retry.put_placeholder_resend(ref, "placeholder-ts", %{message_timestamp: 123},
+               now_ms: fn -> 456_789 end
+             )
+
+    assert %{
+             "placeholder-ts" => %{inserted_at: 456_789, data: %{message_timestamp: 123}}
+           } = Store.get(ref, :message_retry_placeholder_resends, %{})
+  end
+
   test "handle_retry_receipt/3 resends cached messages and enforces the max retry count" do
     {:ok, store} = Store.start_link()
     ref = Store.wrap(store)
@@ -226,5 +240,26 @@ defmodule BaileysEx.Message.RetryTest do
     assert_receive {:placeholder_resend,
                     %{id: "retry-out-1", remote_jid: "15551234567@s.whatsapp.net"},
                     %{key: %{id: "retry-out-1"}}}
+  end
+
+  test "send_retry_request/3 falls back to an injected now_ms timestamp when t is absent" do
+    {:ok, store} = Store.start_link()
+    ref = Store.wrap(store)
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "retry-out-2",
+        "from" => "15551234567@s.whatsapp.net"
+      },
+      content: []
+    }
+
+    assert {:ok, %BinaryNode{content: [%BinaryNode{attrs: %{"t" => "1710000800"}}]}} =
+             Retry.send_retry_request(ref, node,
+               now_ms: fn -> 1_710_000_800_000 end,
+               send_node_fun: fn _receipt -> :ok end,
+               request_placeholder_resend_fun: fn _message_key, _msg_data -> :ok end
+             )
   end
 end

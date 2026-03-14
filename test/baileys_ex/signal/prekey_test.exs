@@ -1,11 +1,11 @@
 defmodule BaileysEx.Signal.PreKeyTest do
   use ExUnit.Case, async: true
 
-  alias BaileysEx.Auth.State
   alias BaileysEx.BinaryNode
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Signal.PreKey
   alias BaileysEx.Signal.Store
+  alias BaileysEx.TestSupport.DeterministicAuth
 
   setup do
     {:ok, store} = Store.start_link()
@@ -15,7 +15,7 @@ defmodule BaileysEx.Signal.PreKeyTest do
   test "next_pre_keys_node/3 generates upload keys, persists them, and builds the encrypt IQ", %{
     store: store
   } do
-    state = State.new()
+    state = DeterministicAuth.state(120)
 
     assert {:ok, %{update: update, node: node}} = PreKey.next_pre_keys_node(store, state, 3)
 
@@ -42,9 +42,31 @@ defmodule BaileysEx.Signal.PreKeyTest do
     assert Map.keys(Store.get(store, :"pre-key", ["1", "2", "3"])) == ["1", "2", "3"]
   end
 
+  test "next_pre_keys_node/4 accepts a deterministic key pair generator", %{store: store} do
+    state = DeterministicAuth.state(130)
+
+    key_pair_fun = fn id ->
+      %{
+        public: <<id::unsigned-big-256>>,
+        private: <<id + 100::unsigned-big-256>>
+      }
+    end
+
+    assert {:ok, %{update: %{next_pre_key_id: 3}, node: %BinaryNode{}}} =
+             PreKey.next_pre_keys_node(store, state, 2, key_pair_fun: key_pair_fun)
+
+    assert %{
+             "1" => %{public: <<1::unsigned-big-256>>, private: <<101::unsigned-big-256>>},
+             "2" => %{public: <<2::unsigned-big-256>>, private: <<102::unsigned-big-256>>}
+           } = Store.get(store, :"pre-key", ["1", "2"])
+  end
+
   test "upload_if_required/1 uploads a fresh bundle when the server count is low", %{store: store} do
     parent = self()
-    state = State.new() |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
+
+    state =
+      DeterministicAuth.state(140)
+      |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
 
     query_fun = fn
       %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "get"}} = node ->
@@ -71,7 +93,7 @@ defmodule BaileysEx.Signal.PreKeyTest do
                  send(parent, {:creds_update, update})
                  :ok
                end,
-               upload_key: {"test-upload", System.unique_integer([:positive])},
+               upload_key: {"test-upload", "seed-140"},
                initial_prekey_count: 3,
                min_prekey_count: 2,
                now_ms: fn -> 10_000 end,
@@ -95,7 +117,10 @@ defmodule BaileysEx.Signal.PreKeyTest do
     store: store
   } do
     parent = self()
-    state = State.new() |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
+
+    state =
+      DeterministicAuth.state(150)
+      |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
 
     assert :ok =
              PreKey.digest_key_bundle(
@@ -128,7 +153,10 @@ defmodule BaileysEx.Signal.PreKeyTest do
     store: store
   } do
     parent = self()
-    state = State.new() |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
+
+    state =
+      DeterministicAuth.state(160)
+      |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
 
     assert {:error, :missing_digest_node} =
              PreKey.digest_key_bundle(
@@ -163,7 +191,7 @@ defmodule BaileysEx.Signal.PreKeyTest do
                  send(parent, {:creds_update, update})
                  :ok
                end,
-               upload_key: {"digest-upload", System.unique_integer([:positive])},
+               upload_key: {"digest-upload", "seed-160"},
                initial_prekey_count: 2,
                min_prekey_count: 2,
                now_ms: fn -> 10_000 end,
@@ -179,7 +207,7 @@ defmodule BaileysEx.Signal.PreKeyTest do
 
   test "rotate_signed_pre_key/1 uploads a rotated signed pre-key and emits creds updates" do
     parent = self()
-    state = State.new()
+    state = DeterministicAuth.state(170)
 
     assert {:ok, %{signed_pre_key: signed_pre_key}} =
              PreKey.rotate_signed_pre_key(
@@ -207,7 +235,9 @@ defmodule BaileysEx.Signal.PreKeyTest do
        %{
          store: store
        } do
-    state = State.new() |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
+    state =
+      DeterministicAuth.state(180)
+      |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
 
     assert {:error, :upload_timeout} =
              PreKey.upload_if_required(
@@ -230,7 +260,7 @@ defmodule BaileysEx.Signal.PreKeyTest do
                    {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
                end,
                emit_creds_update: fn _update -> :ok end,
-               upload_key: {"timed-upload", System.unique_integer([:positive])},
+               upload_key: {"timed-upload", "seed-180"},
                initial_prekey_count: 2,
                min_prekey_count: 2,
                upload_timeout_ms: 5

@@ -34,6 +34,23 @@ defmodule BaileysEx.Protocol.ProtoTest do
             }} = HandshakeMessage.decode(encoded)
   end
 
+  test "HandshakeMessage client hello encoding matches pinned bytes" do
+    message = %HandshakeMessage{
+      client_hello: %ClientHello{
+        ephemeral: <<1, 2, 3, 4>>,
+        static: <<5, 6>>,
+        payload: "payload",
+        use_extended: true,
+        extended_ciphertext: <<7, 8, 9>>
+      }
+    }
+
+    assert Base.decode16!("121A0A0401020304120205061A077061796C6F616420012A03070809",
+             case: :mixed
+           ) ==
+             HandshakeMessage.encode(message)
+  end
+
   test "HandshakeMessage roundtrips server hello and client finish fields" do
     message = %HandshakeMessage{
       server_hello: %ServerHello{

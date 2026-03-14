@@ -23,7 +23,9 @@ defmodule BaileysEx.TestSupport.Connection.NoiseServer do
     issuer_serial = Keyword.fetch!(opts, :issuer_serial)
 
     server_ephemeral_key_pair =
-      Keyword.get(opts, :server_ephemeral_key_pair, Crypto.generate_key_pair(:x25519))
+      Keyword.get_lazy(opts, :server_ephemeral_key_pair, fn ->
+        Crypto.generate_key_pair(:x25519, private_key: <<91::256>>)
+      end)
 
     {:ok, %HandshakeMessage{client_hello: %ClientHello{ephemeral: client_ephemeral}}} =
       HandshakeMessage.decode(client_hello_binary)

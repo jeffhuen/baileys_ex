@@ -189,8 +189,8 @@ defmodule BaileysEx.Message.ReceiverTest do
     unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
 
     {repo, store} = MessageSignalHelpers.new_repo()
-    key_id = :crypto.strong_rand_bytes(8)
-    key_data = :crypto.strong_rand_bytes(32)
+    key_id = <<1, 2, 3, 4, 5, 6, 7, 8>>
+    key_data = <<29::256>>
 
     proto_message = %Message{
       protocol_message: %Message.ProtocolMessage{
@@ -901,7 +901,7 @@ defmodule BaileysEx.Message.ReceiverTest do
 
     {repo, _store} = MessageSignalHelpers.new_repo()
 
-    poll_secret = :crypto.strong_rand_bytes(32)
+    poll_secret = <<30::256>>
 
     poll_key = %MessageKey{
       remote_jid: "15551234567@s.whatsapp.net",
@@ -992,7 +992,7 @@ defmodule BaileysEx.Message.ReceiverTest do
                %{lid: "12345@lid", pn: "15551234567@s.whatsapp.net"}
              ])
 
-    event_secret = :crypto.strong_rand_bytes(32)
+    event_secret = <<31::256>>
 
     creation_key = %MessageKey{
       remote_jid: "12345@lid",
@@ -1111,7 +1111,7 @@ defmodule BaileysEx.Message.ReceiverTest do
     sign = IO.iodata_to_binary(sign_parts)
     key0 = :crypto.mac(:hmac, :sha256, <<0::256>>, secret)
     dec_key = :crypto.mac(:hmac, :sha256, key0, sign)
-    iv = :crypto.strong_rand_bytes(12)
+    iv = :binary.copy(<<32>>, 12)
     {:ok, ciphertext} = BaileysEx.Crypto.aes_gcm_encrypt(dec_key, iv, payload, aad)
     {ciphertext, iv}
   end

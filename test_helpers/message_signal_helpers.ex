@@ -157,15 +157,15 @@ defmodule BaileysEx.TestHelpers.MessageSignalHelpers do
   def session_fixture do
     %{
       registration_id: 42,
-      identity_key: :crypto.strong_rand_bytes(32),
+      identity_key: <<1::256>>,
       signed_pre_key: %{
         key_id: 7,
-        public_key: :crypto.strong_rand_bytes(32),
-        signature: :crypto.strong_rand_bytes(64)
+        public_key: <<2::256>>,
+        signature: :binary.copy(<<3>>, 64)
       },
       pre_key: %{
         key_id: 8,
-        public_key: :crypto.strong_rand_bytes(32)
+        public_key: <<4::256>>
       }
     }
   end

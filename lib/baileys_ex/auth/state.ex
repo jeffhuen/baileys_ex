@@ -69,18 +69,27 @@ defmodule BaileysEx.Auth.State do
     next_pre_key_id: 1
   ]
 
-  @spec new() :: t()
-  def new do
-    identity_key = Curve.generate_key_pair()
-    {:ok, signed_pre_key} = Curve.signed_key_pair(identity_key, 1)
+  @spec new(keyword()) :: t()
+  def new(opts \\ []) when is_list(opts) do
+    identity_key = Keyword.get_lazy(opts, :signed_identity_key, &Curve.generate_key_pair/0)
+
+    signed_pre_key =
+      Keyword.get_lazy(opts, :signed_pre_key, fn ->
+        {:ok, signed_pre_key} = Curve.signed_key_pair(identity_key, 1)
+        signed_pre_key
+      end)
 
     %__MODULE__{
-      noise_key: Curve.generate_key_pair(),
-      pairing_ephemeral_key: Curve.generate_key_pair(),
+      noise_key: Keyword.get_lazy(opts, :noise_key, &Curve.generate_key_pair/0),
+      pairing_ephemeral_key:
+        Keyword.get_lazy(opts, :pairing_ephemeral_key, &Curve.generate_key_pair/0),
       signed_identity_key: identity_key,
       signed_pre_key: signed_pre_key,
-      registration_id: generate_registration_id(),
-      adv_secret_key: Crypto.random_bytes(32) |> Base.encode64(),
+      registration_id: Keyword.get_lazy(opts, :registration_id, &generate_registration_id/0),
+      adv_secret_key:
+        Keyword.get_lazy(opts, :adv_secret_key, fn ->
+          Crypto.random_bytes(32) |> Base.encode64()
+        end),
       processed_history_messages: [],
       next_pre_key_id: 1,
       first_unuploaded_pre_key_id: 1,

@@ -8,11 +8,11 @@ defmodule BaileysEx.Message.Wire do
 
   @type proto_message :: struct()
 
-  @spec encode(proto_message()) :: binary()
-  def encode(%Message{} = message) do
+  @spec encode(proto_message(), keyword()) :: binary()
+  def encode(%Message{} = message, opts \\ []) do
     message
     |> Message.encode()
-    |> write_random_pad_max16()
+    |> write_random_pad_max16(opts)
   end
 
   @spec decode(binary()) :: {:ok, proto_message()} | {:error, term()}
@@ -29,15 +29,15 @@ defmodule BaileysEx.Message.Wire do
     end
   end
 
-  @spec generate_message_id(String.t() | nil) :: String.t()
-  def generate_message_id(user_id \\ nil) do
+  @spec generate_message_id(String.t() | nil, keyword()) :: String.t()
+  def generate_message_id(user_id \\ nil, opts \\ []) do
     buffer = :binary.copy(<<0>>, 44)
-    timestamp = System.system_time(:second)
+    timestamp = Keyword.get_lazy(opts, :timestamp, fn -> System.system_time(:second) end)
     buffer = <<timestamp::unsigned-big-64, binary_part(buffer, 8, 36)::binary>>
 
     buffer = maybe_seed_user_id(buffer, user_id)
 
-    random = :crypto.strong_rand_bytes(16)
+    random = Keyword.get_lazy(opts, :random_bytes, fn -> :crypto.strong_rand_bytes(16) end)
     buffer = binary_part(buffer, 0, 28) <> random
 
     hash =
@@ -78,9 +78,21 @@ defmodule BaileysEx.Message.Wire do
     "2:" <> binary_part(hash, 0, 6)
   end
 
-  @spec write_random_pad_max16(binary()) :: binary()
-  def write_random_pad_max16(binary) when is_binary(binary) do
-    <<random>> = :crypto.strong_rand_bytes(1)
+  @spec write_random_pad_max16(binary(), keyword()) :: binary()
+  def write_random_pad_max16(binary, opts \\ []) when is_binary(binary) do
+    random =
+      case Keyword.get(opts, :random_byte) do
+        nil ->
+          <<random>> = :crypto.strong_rand_bytes(1)
+          random
+
+        value when is_integer(value) and value >= 0 and value <= 255 ->
+          value
+
+        <<value>> ->
+          value
+      end
+
     pad_length = Bitwise.band(random, 0x0F) + 1
     binary <> :binary.copy(<<pad_length>>, pad_length)
   end

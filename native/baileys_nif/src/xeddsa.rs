@@ -1,7 +1,5 @@
 use curve25519_dalek::{
-    constants::ED25519_BASEPOINT_POINT,
-    edwards::CompressedEdwardsY,
-    montgomery::MontgomeryPoint,
+    constants::ED25519_BASEPOINT_POINT, edwards::CompressedEdwardsY, montgomery::MontgomeryPoint,
     scalar::Scalar,
 };
 use rustler::{Binary, Env, NewBinary, NifResult};

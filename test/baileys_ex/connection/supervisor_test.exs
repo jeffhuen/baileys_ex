@@ -665,7 +665,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
         content: [%BinaryNode{tag: "key", content: [%BinaryNode{tag: "user", attrs: user_attrs}]}]
       },
       _timeout ->
-        public_key = :crypto.strong_rand_bytes(32)
+        public_key = <<12::256>>
 
         {:ok,
          %BinaryNode{
@@ -699,7 +699,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                          %BinaryNode{
                            tag: "signature",
                            attrs: %{},
-                           content: {:binary, :crypto.strong_rand_bytes(64)}
+                           content: {:binary, :binary.copy(<<13>>, 64)}
                          }
                        ]
                      },

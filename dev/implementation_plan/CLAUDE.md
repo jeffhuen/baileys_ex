@@ -35,6 +35,10 @@ The branch name tells you which phase you are on. Cross-check it against the fir
   the behaviour faithfully, implement idiomatically in Elixir. The goal is a drop-in
   replacement for Elixir apps currently using Baileys (Node.js) as a sidecar.
 - **Sequential by default; parallel only when safe.** See § Task Dispatch Modes below.
+- **Deterministic by default.** Every function must produce identical output for
+  identical input. All sources of non-determinism (random bytes, timestamps, UUIDs)
+  must be injectable via options with sensible production defaults. See root `CLAUDE.md`
+  § Deterministic by Default for the full policy including test vector requirements.
 
 ---
 
@@ -115,6 +119,16 @@ Every task must pass these gates before committing.
 
 **Gate 3 — Tests:** `mix test`
 - All tests pass. Assertions must test actual values, not just shapes (`{:ok, _}` is not acceptable when the value is knowable).
+- **Deterministic tests with pinned vectors:** All sources of non-determinism (random
+  bytes, timestamps, UUIDs) must be injectable via function options. Tests must inject
+  deterministic values and assert against pinned known-answer vectors — pre-computed
+  literal binaries or hex digests, not recomputed expected values. Recomputing the
+  expected value with the same algorithm you're testing (e.g.,
+  `assert hash == :crypto.hash(:sha256, input)`) only proves consistency, not
+  correctness. Pin the actual bytes: `assert hash == <<0xAB, 0xCD, ...>>`.
+- **Property tests complement vectors:** Use StreamData properties to prove invariants
+  (roundtrip, idempotency, bit-flip detection). Use pinned vectors to prove correctness
+  against an external reference.
 
 **Gate 4 — Static analysis:** `mix credo --all`
 - Code and architecture must not violate the rules documented in `ANTIPATTERNS.md` and `elixir-antipatterns.md`.

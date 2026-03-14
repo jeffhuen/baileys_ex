@@ -14,14 +14,14 @@ defmodule BaileysEx.Signal.PreKey do
   @default_min_upload_interval_ms 5_000
   @default_upload_timeout_ms 30_000
 
-  @spec next_pre_keys_node(Store.t(), map(), pos_integer()) ::
+  @spec next_pre_keys_node(Store.t(), map(), pos_integer(), keyword()) ::
           {:ok, %{update: map(), node: BinaryNode.t()}} | {:error, term()}
-  def next_pre_keys_node(%Store{} = store, auth_state, count)
-      when is_map(auth_state) and is_integer(count) and count > 0 do
+  def next_pre_keys_node(%Store{} = store, auth_state, count, opts \\ [])
+      when is_map(auth_state) and is_integer(count) and count > 0 and is_list(opts) do
     with {:ok, registration_id} <- fetch_integer(auth_state, :registration_id),
          {:ok, signed_identity_key} <- fetch_key_pair(auth_state, :signed_identity_key),
          {:ok, signed_pre_key} <- fetch_signed_pre_key(auth_state) do
-      {update, pre_keys} = generate_next_pre_keys(store, auth_state, count)
+      {update, pre_keys} = generate_next_pre_keys(store, auth_state, count, opts)
 
       {:ok,
        %{
@@ -90,7 +90,12 @@ defmodule BaileysEx.Signal.PreKey do
 
     with {:ok, signed_identity_key} <- fetch_key_pair(auth_state, :signed_identity_key),
          current_key_id <- current_signed_pre_key_id(auth_state),
-         {:ok, signed_pre_key} <- Curve.signed_key_pair(signed_identity_key, current_key_id + 1),
+         {:ok, signed_pre_key} <-
+           Curve.signed_key_pair(
+             signed_identity_key,
+             current_key_id + 1,
+             Keyword.get(opts, :signed_key_pair_opts, [])
+           ),
          {:ok, _response} <- query_fun.(rotate_signed_pre_key_node(signed_pre_key)),
          :ok <- emit_creds_update.(%{signed_pre_key: signed_pre_key}) do
       {:ok, %{signed_pre_key: signed_pre_key}}
@@ -174,6 +179,7 @@ defmodule BaileysEx.Signal.PreKey do
       store: Keyword.fetch!(opts, :store),
       query_fun: Keyword.fetch!(opts, :query_fun),
       emit_creds_update: Keyword.get(opts, :emit_creds_update, fn _update -> :ok end),
+      next_pre_keys_opts: Keyword.take(opts, [:key_pair_fun, :key_pair_opts]),
       now_ms: Keyword.get(opts, :now_ms, fn -> System.os_time(:millisecond) end),
       get_last_upload_at: Keyword.get(opts, :get_last_upload_at, fn -> nil end),
       put_last_upload_at: Keyword.get(opts, :put_last_upload_at, fn _timestamp -> :ok end),
@@ -192,7 +198,9 @@ defmodule BaileysEx.Signal.PreKey do
 
   defp generate_upload_node(context, auth_state, count) do
     Store.transaction(context.store, transaction_key(auth_state), fn ->
-      {:ok, %{update: update, node: node}} = next_pre_keys_node(context.store, auth_state, count)
+      {:ok, %{update: update, node: node}} =
+        next_pre_keys_node(context.store, auth_state, count, context.next_pre_keys_opts)
+
       :ok = context.emit_creds_update.(update)
       {State.merge_updates(auth_state, update), node}
     end)
@@ -227,7 +235,7 @@ defmodule BaileysEx.Signal.PreKey do
     end
   end
 
-  defp generate_next_pre_keys(store, auth_state, count) do
+  defp generate_next_pre_keys(store, auth_state, count, opts) do
     next_pre_key_id = State.get(auth_state, :next_pre_key_id, 1)
     first_unuploaded_pre_key_id = State.get(auth_state, :first_unuploaded_pre_key_id, 1)
 
@@ -238,7 +246,7 @@ defmodule BaileysEx.Signal.PreKey do
     new_prekeys =
       if remaining > 0 do
         Enum.reduce(next_pre_key_id..last_prekey_id, %{}, fn id, acc ->
-          Map.put(acc, Integer.to_string(id), Curve.generate_key_pair())
+          Map.put(acc, Integer.to_string(id), build_pre_key_pair(id, opts))
         end)
       else
         %{}
@@ -258,6 +266,14 @@ defmodule BaileysEx.Signal.PreKey do
     }
 
     {update, prekeys}
+  end
+
+  defp build_pre_key_pair(id, opts) do
+    case opts[:key_pair_fun] do
+      fun when is_function(fun, 1) -> fun.(id)
+      fun when is_function(fun, 0) -> fun.()
+      _ -> Curve.generate_key_pair(Keyword.get(opts, :key_pair_opts, []))
+    end
   end
 
   defp digest_key_bundle_node do

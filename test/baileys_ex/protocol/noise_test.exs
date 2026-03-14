@@ -17,7 +17,7 @@ defmodule BaileysEx.Protocol.NoiseTest do
   @empty <<>>
 
   test "client_hello encodes the initiator ephemeral key" do
-    ephemeral_key_pair = Crypto.generate_key_pair(:x25519)
+    ephemeral_key_pair = x25519_key_pair(1)
     ephemeral_public = ephemeral_key_pair.public
 
     assert {:ok, noise} = Noise.new(ephemeral_key_pair: ephemeral_key_pair)
@@ -32,12 +32,12 @@ defmodule BaileysEx.Protocol.NoiseTest do
   end
 
   test "full client handshake and transport flow matches the Baileys algorithm" do
-    client_ephemeral_key_pair = Crypto.generate_key_pair(:x25519)
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
+    client_ephemeral_key_pair = x25519_key_pair(2)
+    client_noise_key_pair = x25519_key_pair(3)
     client_noise_public = client_noise_key_pair.public
-    root_key_pair = Crypto.generate_key_pair(:x25519)
-    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
-    server_static_key_pair = Crypto.generate_key_pair(:x25519)
+    root_key_pair = x25519_key_pair(4)
+    intermediate_key_pair = x25519_key_pair(5)
+    server_static_key_pair = x25519_key_pair(6)
 
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
@@ -94,11 +94,11 @@ defmodule BaileysEx.Protocol.NoiseTest do
   end
 
   test "process_server_hello rejects an invalid certificate chain" do
-    client_ephemeral_key_pair = Crypto.generate_key_pair(:x25519)
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
-    root_key_pair = Crypto.generate_key_pair(:x25519)
-    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
-    server_static_key_pair = Crypto.generate_key_pair(:x25519)
+    client_ephemeral_key_pair = x25519_key_pair(7)
+    client_noise_key_pair = x25519_key_pair(8)
+    root_key_pair = x25519_key_pair(9)
+    intermediate_key_pair = x25519_key_pair(10)
+    server_static_key_pair = x25519_key_pair(11)
 
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
@@ -136,11 +136,11 @@ defmodule BaileysEx.Protocol.NoiseTest do
   end
 
   defp complete_handshake do
-    client_ephemeral_key_pair = Crypto.generate_key_pair(:x25519)
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
-    root_key_pair = Crypto.generate_key_pair(:x25519)
-    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
-    server_static_key_pair = Crypto.generate_key_pair(:x25519)
+    client_ephemeral_key_pair = x25519_key_pair(12)
+    client_noise_key_pair = x25519_key_pair(13)
+    root_key_pair = x25519_key_pair(14)
+    intermediate_key_pair = x25519_key_pair(15)
+    server_static_key_pair = x25519_key_pair(16)
 
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
@@ -174,7 +174,7 @@ defmodule BaileysEx.Protocol.NoiseTest do
     issuer_serial = Keyword.fetch!(opts, :issuer_serial)
 
     server_ephemeral_key_pair =
-      Keyword.get(opts, :server_ephemeral_key_pair, Crypto.generate_key_pair(:x25519))
+      Keyword.get_lazy(opts, :server_ephemeral_key_pair, fn -> x25519_key_pair(91) end)
 
     {:ok, %HandshakeMessage{client_hello: %ClientHello{ephemeral: client_ephemeral}}} =
       HandshakeMessage.decode(client_hello_binary)
@@ -348,6 +348,9 @@ defmodule BaileysEx.Protocol.NoiseTest do
       Crypto.sha256(@noise_mode)
     end
   end
+
+  defp x25519_key_pair(seed),
+    do: Crypto.generate_key_pair(:x25519, private_key: <<seed::unsigned-big-256>>)
 
   defp generate_iv(counter), do: <<0::64, counter::32-big>>
 end

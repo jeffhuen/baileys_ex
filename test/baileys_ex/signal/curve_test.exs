@@ -4,7 +4,10 @@ defmodule BaileysEx.Signal.CurveTest do
   alias BaileysEx.Signal.Curve
 
   test "generate_signal_pub_key prefixes raw public keys and preserves prefixed keys" do
-    raw_public_key = :crypto.strong_rand_bytes(32)
+    raw_public_key =
+      <<1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        26, 27, 28, 29, 30, 31, 32>>
+
     prefixed_public_key = <<5, raw_public_key::binary>>
 
     assert {:ok, ^prefixed_public_key} = Curve.generate_signal_pub_key(raw_public_key)
@@ -13,7 +16,7 @@ defmodule BaileysEx.Signal.CurveTest do
   end
 
   test "sign and verify accept raw and prefixed public keys" do
-    key_pair = Curve.generate_key_pair()
+    key_pair = Curve.generate_key_pair(private_key: <<14::256>>)
     message = "adv account signature payload"
 
     assert {:ok, signature} = Curve.sign(key_pair.private, message)
@@ -25,8 +28,8 @@ defmodule BaileysEx.Signal.CurveTest do
   end
 
   test "shared_key matches x25519 agreement semantics" do
-    alice = Curve.generate_key_pair()
-    bob = Curve.generate_key_pair()
+    alice = Curve.generate_key_pair(private_key: <<15::256>>)
+    bob = Curve.generate_key_pair(private_key: <<16::256>>)
 
     assert {:ok, shared_ab} = Curve.shared_key(alice.private, bob.public)
     assert {:ok, shared_ba} = Curve.shared_key(bob.private, alice.public)
@@ -35,9 +38,13 @@ defmodule BaileysEx.Signal.CurveTest do
   end
 
   test "signed_key_pair signs the prefixed pre-key exactly like Baileys" do
-    identity_key_pair = Curve.generate_key_pair()
+    identity_key_pair = Curve.generate_key_pair(private_key: <<17::256>>)
 
-    assert {:ok, signed_pre_key} = Curve.signed_key_pair(identity_key_pair, 7)
+    assert {:ok, signed_pre_key} =
+             Curve.signed_key_pair(identity_key_pair, 7,
+               key_pair: Curve.generate_key_pair(private_key: <<18::256>>)
+             )
+
     assert %{key_pair: key_pair, signature: signature, key_id: 7} = signed_pre_key
     assert byte_size(key_pair.public) == 32
     assert byte_size(key_pair.private) == 32
@@ -65,26 +72,26 @@ defmodule BaileysEx.Signal.CurveTest do
 
   describe "error paths" do
     test "shared_key rejects invalid private key sizes" do
-      valid_public = :crypto.strong_rand_bytes(32)
+      valid_public = <<19::256>>
       assert {:error, :invalid_private_key} = Curve.shared_key(<<1, 2, 3>>, valid_public)
       assert {:error, :invalid_private_key} = Curve.shared_key(<<>>, valid_public)
 
-      too_long = :crypto.strong_rand_bytes(33)
+      too_long = :binary.copy(<<20>>, 33)
       assert {:error, :invalid_private_key} = Curve.shared_key(too_long, valid_public)
     end
 
     test "shared_key rejects invalid public key sizes" do
-      valid_private = :crypto.strong_rand_bytes(32)
+      valid_private = <<21::256>>
       assert {:error, :invalid_public_key} = Curve.shared_key(valid_private, <<1, 2, 3>>)
       assert {:error, :invalid_public_key} = Curve.shared_key(valid_private, <<>>)
 
-      too_long = :crypto.strong_rand_bytes(34)
+      too_long = :binary.copy(<<22>>, 34)
       assert {:error, :invalid_public_key} = Curve.shared_key(valid_private, too_long)
     end
 
     test "shared_key accepts Signal-prefixed (33-byte) public keys" do
-      alice = Curve.generate_key_pair()
-      bob = Curve.generate_key_pair()
+      alice = Curve.generate_key_pair(private_key: <<23::256>>)
+      bob = Curve.generate_key_pair(private_key: <<24::256>>)
       prefixed_bob = <<5, bob.public::binary>>
 
       assert {:ok, shared_raw} = Curve.shared_key(alice.private, bob.public)
@@ -98,7 +105,7 @@ defmodule BaileysEx.Signal.CurveTest do
     end
 
     test "verify returns false for invalid public key sizes" do
-      refute Curve.verify(<<1, 2, 3>>, "message", :crypto.strong_rand_bytes(64))
+      refute Curve.verify(<<1, 2, 3>>, "message", :binary.copy(<<25>>, 64))
     end
 
     test "signed_key_pair rejects non-map identity key" do
@@ -106,7 +113,7 @@ defmodule BaileysEx.Signal.CurveTest do
     end
 
     test "signed_key_pair rejects negative key_id" do
-      key_pair = Curve.generate_key_pair()
+      key_pair = Curve.generate_key_pair(private_key: <<26::256>>)
       assert {:error, :invalid_identity_key} = Curve.signed_key_pair(key_pair, -1)
     end
   end

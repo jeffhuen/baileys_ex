@@ -1,5 +1,5 @@
 use rustler::{Atom, Binary, Env, NewBinary, NifResult, Resource, ResourceArc};
-use snow::{Builder, params::NoiseParams};
+use snow::{params::NoiseParams, Builder};
 use std::sync::Mutex;
 
 mod atoms {
@@ -44,16 +44,31 @@ impl Resource for NoiseSession {}
 ///
 /// WhatsApp prologue: <<87, 65, 6, 2>> ("WA" + version bytes).
 #[rustler::nif(name = "noise_init")]
-fn init(prologue: Binary) -> NifResult<ResourceArc<NoiseSession>> {
+fn init(
+    prologue: Binary,
+    local_private_key: Option<Binary>,
+    local_ephemeral_private_key: Option<Binary>,
+) -> NifResult<ResourceArc<NoiseSession>> {
     let params: NoiseParams = NOISE_PATTERN.parse().expect("valid noise pattern");
     let builder = Builder::new(params.clone());
-    let keypair = builder
-        .generate_keypair()
-        .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("keypair gen failed: {e}"))))?;
+    let private_key = local_private_key_bytes(&builder, local_private_key)?;
+    let ephemeral_private_key = optional_private_key_bytes(
+        local_ephemeral_private_key,
+        "invalid local ephemeral private key size",
+    )?;
 
-    let hs = Builder::new(params)
+    let builder = Builder::new(params)
         .prologue(prologue.as_slice())
-        .local_private_key(&keypair.private)
+        .local_private_key(&private_key);
+
+    let builder = match ephemeral_private_key.as_ref() {
+        Some(ephemeral_private_key) => {
+            builder.fixed_ephemeral_key_for_testing_only(ephemeral_private_key)
+        }
+        None => builder,
+    };
+
+    let hs = builder
         .build_initiator()
         .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("snow init failed: {e}"))))?;
 
@@ -66,22 +81,78 @@ fn init(prologue: Binary) -> NifResult<ResourceArc<NoiseSession>> {
 ///
 /// Same as `init` but builds a responder instead of initiator.
 #[rustler::nif(name = "noise_init_responder")]
-fn init_responder(prologue: Binary) -> NifResult<ResourceArc<NoiseSession>> {
+fn init_responder(
+    prologue: Binary,
+    local_private_key: Option<Binary>,
+    local_ephemeral_private_key: Option<Binary>,
+) -> NifResult<ResourceArc<NoiseSession>> {
     let params: NoiseParams = NOISE_PATTERN.parse().expect("valid noise pattern");
     let builder = Builder::new(params.clone());
-    let keypair = builder
-        .generate_keypair()
-        .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("keypair gen failed: {e}"))))?;
+    let private_key = local_private_key_bytes(&builder, local_private_key)?;
+    let ephemeral_private_key = optional_private_key_bytes(
+        local_ephemeral_private_key,
+        "invalid local ephemeral private key size",
+    )?;
 
-    let hs = Builder::new(params)
+    let builder = Builder::new(params)
         .prologue(prologue.as_slice())
-        .local_private_key(&keypair.private)
+        .local_private_key(&private_key);
+
+    let builder = match ephemeral_private_key.as_ref() {
+        Some(ephemeral_private_key) => {
+            builder.fixed_ephemeral_key_for_testing_only(ephemeral_private_key)
+        }
+        None => builder,
+    };
+
+    let hs = builder
         .build_responder()
         .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("snow init failed: {e}"))))?;
 
     Ok(ResourceArc::new(NoiseSession {
         state: Mutex::new(NoiseState::Handshake(hs)),
     }))
+}
+
+fn local_private_key_bytes(
+    builder: &Builder<'_>,
+    local_private_key: Option<Binary>,
+) -> NifResult<Vec<u8>> {
+    match local_private_key {
+        Some(private_key) => {
+            let bytes = private_key.as_slice();
+
+            if bytes.len() != 32 {
+                Err(rustler::Error::RaiseTerm(Box::new(
+                    "invalid local private key size",
+                )))
+            } else {
+                Ok(bytes.to_vec())
+            }
+        }
+        None => Ok(builder
+            .generate_keypair()
+            .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("keypair gen failed: {e}"))))?
+            .private),
+    }
+}
+
+fn optional_private_key_bytes(
+    private_key: Option<Binary>,
+    error_message: &'static str,
+) -> NifResult<Option<Vec<u8>>> {
+    match private_key {
+        Some(private_key) => {
+            let bytes = private_key.as_slice();
+
+            if bytes.len() != 32 {
+                Err(rustler::Error::RaiseTerm(Box::new(error_message)))
+            } else {
+                Ok(Some(bytes.to_vec()))
+            }
+        }
+        None => Ok(None),
+    }
 }
 
 /// Write a handshake message.
@@ -140,11 +211,9 @@ fn handshake_read<'a>(
     match &mut *guard {
         NoiseState::Handshake(hs) => {
             let mut buf = vec![0u8; MAX_MSG_SIZE];
-            let len = hs
-                .read_message(message.as_slice(), &mut buf)
-                .map_err(|e| {
-                    rustler::Error::RaiseTerm(Box::new(format!("handshake read failed: {e}")))
-                })?;
+            let len = hs.read_message(message.as_slice(), &mut buf).map_err(|e| {
+                rustler::Error::RaiseTerm(Box::new(format!("handshake read failed: {e}")))
+            })?;
 
             let mut out = NewBinary::new(env, len);
             out.as_mut_slice().copy_from_slice(&buf[..len]);

@@ -208,15 +208,15 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
       session = %{
         registration_id: 42,
-        identity_key: :crypto.strong_rand_bytes(32),
+        identity_key: fixed_bytes(32, 1),
         signed_pre_key: %{
           key_id: 7,
-          public_key: :crypto.strong_rand_bytes(32),
-          signature: :crypto.strong_rand_bytes(64)
+          public_key: fixed_bytes(32, 2),
+          signature: fixed_bytes(64, 3)
         },
         pre_key: %{
           key_id: 8,
-          public_key: :crypto.strong_rand_bytes(32)
+          public_key: fixed_bytes(32, 4)
         }
       }
 
@@ -283,10 +283,8 @@ defmodule BaileysEx.Signal.RepositoryTest do
     test "trusts first use and loads identity keys through the repository" do
       {:ok, store} = Store.start_link()
       repo = new_repo(store: store)
-      identity_key = :crypto.strong_rand_bytes(32)
-
-      assert {:ok, expected_identity_key} =
-               BaileysEx.Signal.Curve.generate_signal_pub_key(identity_key)
+      identity_key = fixed_bytes(32, 5)
+      expected_identity_key = <<5, identity_key::binary>>
 
       assert {:ok, repo, true} =
                Repository.save_identity(repo, %{
@@ -314,11 +312,9 @@ defmodule BaileysEx.Signal.RepositoryTest do
                  %{lid: "12345@lid", pn: "5511999887766@s.whatsapp.net"}
                ])
 
-      first_identity = :crypto.strong_rand_bytes(32)
-      second_identity = :crypto.strong_rand_bytes(32)
-
-      assert {:ok, expected_second_identity} =
-               BaileysEx.Signal.Curve.generate_signal_pub_key(second_identity)
+      first_identity = fixed_bytes(32, 6)
+      second_identity = fixed_bytes(32, 7)
+      expected_second_identity = <<5, second_identity::binary>>
 
       assert {:ok, repo, true} =
                Repository.save_identity(repo, %{
@@ -460,13 +456,13 @@ defmodule BaileysEx.Signal.RepositoryTest do
                  jid: "user@s.whatsapp.net",
                  session: %{
                    registration_id: -1,
-                   identity_key: :crypto.strong_rand_bytes(32),
+                   identity_key: fixed_bytes(32, 8),
                    signed_pre_key: %{
                      key_id: 1,
-                     public_key: :crypto.strong_rand_bytes(32),
-                     signature: :crypto.strong_rand_bytes(64)
+                     public_key: fixed_bytes(32, 9),
+                     signature: fixed_bytes(64, 10)
                    },
-                   pre_key: %{key_id: 1, public_key: :crypto.strong_rand_bytes(32)}
+                   pre_key: %{key_id: 1, public_key: fixed_bytes(32, 11)}
                  }
                })
     end
@@ -482,10 +478,10 @@ defmodule BaileysEx.Signal.RepositoryTest do
                    identity_key: <<1, 2, 3>>,
                    signed_pre_key: %{
                      key_id: 1,
-                     public_key: :crypto.strong_rand_bytes(32),
-                     signature: :crypto.strong_rand_bytes(64)
+                     public_key: fixed_bytes(32, 12),
+                     signature: fixed_bytes(64, 13)
                    },
-                   pre_key: %{key_id: 1, public_key: :crypto.strong_rand_bytes(32)}
+                   pre_key: %{key_id: 1, public_key: fixed_bytes(32, 14)}
                  }
                })
     end
@@ -498,13 +494,13 @@ defmodule BaileysEx.Signal.RepositoryTest do
                  jid: "user@g.us",
                  session: %{
                    registration_id: 1,
-                   identity_key: :crypto.strong_rand_bytes(32),
+                   identity_key: fixed_bytes(32, 15),
                    signed_pre_key: %{
                      key_id: 1,
-                     public_key: :crypto.strong_rand_bytes(32),
-                     signature: :crypto.strong_rand_bytes(64)
+                     public_key: fixed_bytes(32, 16),
+                     signature: fixed_bytes(64, 17)
                    },
-                   pre_key: %{key_id: 1, public_key: :crypto.strong_rand_bytes(32)}
+                   pre_key: %{key_id: 1, public_key: fixed_bytes(32, 18)}
                  }
                })
     end
@@ -586,7 +582,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
       assert {:error, :invalid_signal_address} =
                Repository.save_identity(repo, %{
                  jid: "user@g.us",
-                 identity_key: :crypto.strong_rand_bytes(32)
+                 identity_key: fixed_bytes(32, 19)
                })
 
       assert {:error, :invalid_identity_key} =
@@ -633,4 +629,6 @@ defmodule BaileysEx.Signal.RepositoryTest do
                })
     end
   end
+
+  defp fixed_bytes(size, value), do: :binary.copy(<<value>>, size)
 end

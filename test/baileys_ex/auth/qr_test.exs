@@ -5,7 +5,11 @@ defmodule BaileysEx.Auth.QRTest do
   alias BaileysEx.Auth.State
 
   test "generate/2 reuses a base64 adv secret without double encoding it" do
-    state = State.new()
+    state = %State{
+      noise_key: %{public: <<1::256>>, private: <<2::256>>},
+      signed_identity_key: %{public: <<3::256>>, private: <<4::256>>},
+      adv_secret_key: Base.encode64(<<5::256>>)
+    }
 
     assert [ref, noise_key, identity_key, adv_secret_key] =
              String.split(QR.generate("ref-1", state), ",")
@@ -17,13 +21,13 @@ defmodule BaileysEx.Auth.QRTest do
   end
 
   test "generate/2 encodes raw adv secrets like Baileys pair-device flow" do
-    raw_adv_secret_key = :crypto.strong_rand_bytes(32)
+    raw_adv_secret_key = <<6::256>>
 
     auth_state = %{
-      noise_key: %{public: :crypto.strong_rand_bytes(32), private: :crypto.strong_rand_bytes(32)},
+      noise_key: %{public: <<7::256>>, private: <<8::256>>},
       signed_identity_key: %{
-        public: :crypto.strong_rand_bytes(32),
-        private: :crypto.strong_rand_bytes(32)
+        public: <<9::256>>,
+        private: <<10::256>>
       },
       adv_secret_key: raw_adv_secret_key
     }

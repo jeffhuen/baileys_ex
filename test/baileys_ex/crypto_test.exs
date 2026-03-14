@@ -127,9 +127,9 @@ defmodule BaileysEx.CryptoTest do
     end
 
     test "decrypt fails with wrong key" do
-      key = :crypto.strong_rand_bytes(32)
-      wrong_key = :crypto.strong_rand_bytes(32)
-      iv = :crypto.strong_rand_bytes(12)
+      key = fixed_bytes(32, 1)
+      wrong_key = fixed_bytes(32, 2)
+      iv = fixed_bytes(12, 3)
       plaintext = "hello world"
 
       {:ok, ciphertext} = Crypto.aes_gcm_encrypt(key, iv, plaintext)
@@ -137,8 +137,8 @@ defmodule BaileysEx.CryptoTest do
     end
 
     test "decrypt fails with tampered ciphertext" do
-      key = :crypto.strong_rand_bytes(32)
-      iv = :crypto.strong_rand_bytes(12)
+      key = fixed_bytes(32, 4)
+      iv = fixed_bytes(12, 5)
       plaintext = "hello world"
 
       {:ok, ciphertext} = Crypto.aes_gcm_encrypt(key, iv, plaintext)
@@ -156,8 +156,8 @@ defmodule BaileysEx.CryptoTest do
 
   describe "aes_cbc_encrypt/3 and aes_cbc_decrypt/3" do
     test "roundtrip with block-aligned plaintext (16 bytes)" do
-      key = :crypto.strong_rand_bytes(32)
-      iv = :crypto.strong_rand_bytes(16)
+      key = fixed_bytes(32, 6)
+      iv = fixed_bytes(16, 7)
       plaintext = "exactly16bytes!!"
 
       assert byte_size(plaintext) == 16
@@ -169,8 +169,8 @@ defmodule BaileysEx.CryptoTest do
     end
 
     test "roundtrip with non-aligned plaintext" do
-      key = :crypto.strong_rand_bytes(32)
-      iv = :crypto.strong_rand_bytes(16)
+      key = fixed_bytes(32, 8)
+      iv = fixed_bytes(16, 9)
       plaintext = "hello"
 
       {:ok, ciphertext} = Crypto.aes_cbc_encrypt(key, iv, plaintext)
@@ -180,8 +180,8 @@ defmodule BaileysEx.CryptoTest do
     end
 
     test "roundtrip with empty plaintext" do
-      key = :crypto.strong_rand_bytes(32)
-      iv = :crypto.strong_rand_bytes(16)
+      key = fixed_bytes(32, 10)
+      iv = fixed_bytes(16, 11)
       plaintext = <<>>
 
       {:ok, ciphertext} = Crypto.aes_cbc_encrypt(key, iv, plaintext)
@@ -205,6 +205,17 @@ defmodule BaileysEx.CryptoTest do
 
       assert raw_ciphertext == expected_ciphertext
     end
+
+    test "module API produces a pinned PKCS7 CBC ciphertext" do
+      key = Base.decode16!("603DEB1015CA71BE2B73AEF0857D77811F352C073B6108D72D9810A30914DFF4")
+      iv = Base.decode16!("000102030405060708090A0B0C0D0E0F")
+      plaintext = "hello"
+
+      expected_ciphertext = Base.decode16!("11567E234FD4575F682CE39DEF007307")
+
+      assert {:ok, ^expected_ciphertext} = Crypto.aes_cbc_encrypt(key, iv, plaintext)
+      assert {:ok, ^plaintext} = Crypto.aes_cbc_decrypt(key, iv, expected_ciphertext)
+    end
   end
 
   # ============================================================================
@@ -212,9 +223,33 @@ defmodule BaileysEx.CryptoTest do
   # ============================================================================
 
   describe "aes_ctr_encrypt/3 and aes_ctr_decrypt/3" do
+    test "matches the NIST AES-256-CTR vector through the module API" do
+      key = Base.decode16!("603DEB1015CA71BE2B73AEF0857D77811F352C073B6108D72D9810A30914DFF4")
+      iv = Base.decode16!("F0F1F2F3F4F5F6F7F8F9FAFBFCFDFEFF")
+
+      plaintext =
+        Base.decode16!(
+          "6BC1BEE22E409F96E93D7E117393172A" <>
+            "AE2D8A571E03AC9C9EB76FAC45AF8E51" <>
+            "30C81C46A35CE411E5FBC1191A0A52EF" <>
+            "F69F2445DF4F9B17AD2B417BE66C3710"
+        )
+
+      expected_ciphertext =
+        Base.decode16!(
+          "601EC313775789A5B7A7F504BBF3D228" <>
+            "F443E3CA4D62B59ACA84E990CACAF5C5" <>
+            "2B0930DAA23DE94CE87017BA2D84988D" <>
+            "DFC9C58DB67AADA613C2DD08457941A6"
+        )
+
+      assert {:ok, ^expected_ciphertext} = Crypto.aes_ctr_encrypt(key, iv, plaintext)
+      assert {:ok, ^plaintext} = Crypto.aes_ctr_decrypt(key, iv, expected_ciphertext)
+    end
+
     test "roundtrip" do
-      key = :crypto.strong_rand_bytes(32)
-      iv = :crypto.strong_rand_bytes(16)
+      key = fixed_bytes(32, 12)
+      iv = fixed_bytes(16, 13)
       plaintext = "stream cipher roundtrip test data"
 
       {:ok, ciphertext} = Crypto.aes_ctr_encrypt(key, iv, plaintext)
@@ -225,11 +260,11 @@ defmodule BaileysEx.CryptoTest do
     end
 
     test "ciphertext has same length as plaintext (stream cipher)" do
-      key = :crypto.strong_rand_bytes(32)
-      iv = :crypto.strong_rand_bytes(16)
+      key = fixed_bytes(32, 14)
+      iv = fixed_bytes(16, 15)
 
       for len <- [0, 1, 7, 15, 16, 17, 31, 32, 33, 100] do
-        plaintext = :crypto.strong_rand_bytes(len)
+        plaintext = fixed_bytes(len, 16 + len)
         {:ok, ciphertext} = Crypto.aes_ctr_encrypt(key, iv, plaintext)
         assert byte_size(ciphertext) == len
       end
@@ -350,9 +385,20 @@ defmodule BaileysEx.CryptoTest do
     end
 
     test "generate_key_pair produces 32-byte keys" do
-      pair = Crypto.generate_key_pair(:x25519)
+      pair = Crypto.generate_key_pair(:x25519, private_key: <<29::256>>)
       assert byte_size(pair.public) == 32
       assert byte_size(pair.private) == 32
+    end
+
+    test "generate_key_pair accepts a fixed x25519 private key" do
+      private_key =
+        Base.decode16!("77076D0A7318A57D3C16C17251B26645DF4C2F87EBC0992AB177FBA51DB92C2A")
+
+      expected_public =
+        Base.decode16!("8520F0098930A754748B7DDCB43EF75A0DBF3A0D26381AF4EBA4A98EAA9B4E6A")
+
+      assert %{public: ^expected_public, private: ^private_key} =
+               Crypto.generate_key_pair(:x25519, private_key: private_key)
     end
   end
 
@@ -362,7 +408,7 @@ defmodule BaileysEx.CryptoTest do
 
   describe "Ed25519 sign/verify" do
     test "roundtrip sign and verify" do
-      pair = Crypto.generate_key_pair(:ed25519)
+      pair = Crypto.generate_key_pair(:ed25519, private_key: <<30::256>>)
       message = "test message for signing"
 
       signature = Crypto.ed25519_sign(pair.private, message)
@@ -371,8 +417,8 @@ defmodule BaileysEx.CryptoTest do
     end
 
     test "verify fails with wrong public key" do
-      pair1 = Crypto.generate_key_pair(:ed25519)
-      pair2 = Crypto.generate_key_pair(:ed25519)
+      pair1 = Crypto.generate_key_pair(:ed25519, private_key: <<31::256>>)
+      pair2 = Crypto.generate_key_pair(:ed25519, private_key: <<32::256>>)
       message = "test message"
 
       signature = Crypto.ed25519_sign(pair1.private, message)
@@ -380,7 +426,7 @@ defmodule BaileysEx.CryptoTest do
     end
 
     test "verify fails with tampered message" do
-      pair = Crypto.generate_key_pair(:ed25519)
+      pair = Crypto.generate_key_pair(:ed25519, private_key: <<33::256>>)
       message = "original message"
 
       signature = Crypto.ed25519_sign(pair.private, message)
@@ -409,6 +455,16 @@ defmodule BaileysEx.CryptoTest do
       assert signature == expected_signature
       assert Crypto.ed25519_verify(public_key, message, signature)
     end
+
+    test "generate_key_pair accepts a fixed ed25519 private key" do
+      private_key =
+        Base.decode16!("9D61B19DEFFD5A60BA844AF492EC2CC44449C5697B326919703BAC031CAE7F60")
+
+      {expected_public, _} = :crypto.generate_key(:eddsa, :ed25519, private_key)
+
+      assert %{public: ^expected_public, private: ^private_key} =
+               Crypto.generate_key_pair(:ed25519, private_key: private_key)
+    end
   end
 
   # ============================================================================
@@ -416,8 +472,25 @@ defmodule BaileysEx.CryptoTest do
   # ============================================================================
 
   describe "expand_media_key/2" do
+    test "matches the pinned image media key vector" do
+      media_key =
+        Base.decode16!("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F")
+
+      expected = %{
+        iv: Base.decode16!("AA6A127218397CBD2383E4CCF7176A79"),
+        cipher_key:
+          Base.decode16!("008C9AEA9B7C5D81EB56B3F530F87D42DCC92D27B11AD6B5BD66F0560D0D8C46"),
+        mac_key:
+          Base.decode16!("91D09FFEC108833C1699574C52657923FB6E3E161D9698BC6B3A05FBC508A515"),
+        ref_key:
+          Base.decode16!("4D4981725E9EB39838FCFF2130508F1360CBB319F99CEF163D57AB7C050A667E")
+      }
+
+      assert Crypto.expand_media_key(media_key, :image) == expected
+    end
+
     test "produces 112 bytes split correctly" do
-      media_key = :crypto.strong_rand_bytes(32)
+      media_key = fixed_bytes(32, 34)
 
       for media_type <- [:image, :video, :audio, :document, :sticker] do
         result = Crypto.expand_media_key(media_key, media_type)
@@ -429,36 +502,29 @@ defmodule BaileysEx.CryptoTest do
       end
     end
 
-    test "deterministic — same input produces same output" do
-      media_key = :crypto.strong_rand_bytes(32)
-      result1 = Crypto.expand_media_key(media_key, :image)
-      result2 = Crypto.expand_media_key(media_key, :image)
-      assert result1 == result2
-    end
-
     test "different media types produce different keys" do
-      media_key = :crypto.strong_rand_bytes(32)
+      media_key = fixed_bytes(32, 36)
       image_keys = Crypto.expand_media_key(media_key, :image)
       video_keys = Crypto.expand_media_key(media_key, :video)
       assert image_keys != video_keys
     end
 
     test "sticker uses same info string as image" do
-      media_key = :crypto.strong_rand_bytes(32)
+      media_key = fixed_bytes(32, 37)
       image_keys = Crypto.expand_media_key(media_key, :image)
       sticker_keys = Crypto.expand_media_key(media_key, :sticker)
       assert image_keys == sticker_keys
     end
 
     test "gif uses same info string as video" do
-      media_key = :crypto.strong_rand_bytes(32)
+      media_key = fixed_bytes(32, 38)
       video_keys = Crypto.expand_media_key(media_key, :video)
       gif_keys = Crypto.expand_media_key(media_key, :gif)
       assert video_keys == gif_keys
     end
 
     test "all extended media types produce valid output" do
-      media_key = :crypto.strong_rand_bytes(32)
+      media_key = fixed_bytes(32, 39)
 
       all_types = [
         :image,
@@ -540,7 +606,7 @@ defmodule BaileysEx.CryptoTest do
 
     test "roundtrip with various sizes" do
       for size <- [0, 1, 2, 7, 8, 15, 16, 17, 31, 32, 33, 255] do
-        data = :crypto.strong_rand_bytes(size)
+        data = fixed_bytes(size, size)
         padded = Crypto.pkcs7_pad(data, 16)
         assert rem(byte_size(padded), 16) == 0
         assert byte_size(padded) > byte_size(data)
@@ -602,11 +668,8 @@ defmodule BaileysEx.CryptoTest do
         assert byte_size(result) == n
       end
     end
-
-    test "produces different output on subsequent calls" do
-      a = Crypto.random_bytes(32)
-      b = Crypto.random_bytes(32)
-      assert a != b
-    end
   end
+
+  defp fixed_bytes(0, _value), do: <<>>
+  defp fixed_bytes(size, value), do: :binary.copy(<<rem(value, 256)>>, size)
 end

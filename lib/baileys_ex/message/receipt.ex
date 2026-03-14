@@ -17,13 +17,13 @@ defmodule BaileysEx.Message.Receipt do
     "sender" => :server_ack
   }
 
-  @spec build_receipt_node(String.t(), String.t() | nil, [String.t()], receipt_type()) ::
+  @spec build_receipt_node(String.t(), String.t() | nil, [String.t()], receipt_type(), keyword()) ::
           BinaryNode.t()
-  def build_receipt_node(jid, participant, [first_id | rest], type)
-      when is_binary(jid) and is_binary(first_id) do
+  def build_receipt_node(jid, participant, [first_id | rest], type, opts \\ [])
+      when is_binary(jid) and is_binary(first_id) and is_list(opts) do
     type_string = receipt_type_to_string(type)
     attrs = %{"id" => first_id}
-    attrs = maybe_put_receipt_timestamp(attrs, type_string)
+    attrs = maybe_put_receipt_timestamp(attrs, type_string, opts)
 
     attrs =
       if type_string == "sender" and direct_jid?(jid) do
@@ -54,24 +54,26 @@ defmodule BaileysEx.Message.Receipt do
           String.t(),
           String.t() | nil,
           [String.t()],
-          receipt_type()
+          receipt_type(),
+          keyword()
         ) ::
           :ok | {:error, term()}
-  def send_receipt(sender, jid, participant, ids, type) when is_function(sender, 1) do
-    sender.(build_receipt_node(jid, participant, ids, type))
+  def send_receipt(sender, jid, participant, ids, type, opts \\ [])
+      when is_function(sender, 1) and is_list(opts) do
+    sender.(build_receipt_node(jid, participant, ids, type, opts))
   end
 
-  @spec read_messages((BinaryNode.t() -> :ok | {:error, term()}), [map()], map()) ::
+  @spec read_messages((BinaryNode.t() -> :ok | {:error, term()}), [map()], map(), keyword()) ::
           :ok | {:error, term()}
-  def read_messages(sender, keys, privacy_settings)
-      when is_function(sender, 1) and is_list(keys) and is_map(privacy_settings) do
+  def read_messages(sender, keys, privacy_settings, opts \\ [])
+      when is_function(sender, 1) and is_list(keys) and is_map(privacy_settings) and is_list(opts) do
     read_type = if Map.get(privacy_settings, :readreceipts) == "all", do: :read, else: :read_self
 
     keys
     |> Enum.reject(&Map.get(&1, :from_me, false))
     |> aggregate_keys()
     |> Enum.reduce_while(:ok, fn %{jid: jid, participant: participant, ids: ids}, _acc ->
-      case send_receipt(sender, jid, participant, ids, read_type) do
+      case send_receipt(sender, jid, participant, ids, read_type, opts) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -158,11 +160,19 @@ defmodule BaileysEx.Message.Receipt do
   defp receipt_type_to_string(:read_self), do: "read-self"
   defp receipt_type_to_string(type), do: Atom.to_string(type)
 
-  defp maybe_put_receipt_timestamp(attrs, type) when type in ["read", "read-self", "played"] do
-    Map.put(attrs, "t", Integer.to_string(System.os_time(:second)))
+  defp maybe_put_receipt_timestamp(attrs, type, opts)
+       when type in ["read", "read-self", "played"] do
+    timestamp =
+      case opts[:timestamp] do
+        fun when is_function(fun, 0) -> fun.()
+        value when is_integer(value) -> value
+        _ -> System.os_time(:second)
+      end
+
+    Map.put(attrs, "t", Integer.to_string(timestamp))
   end
 
-  defp maybe_put_receipt_timestamp(attrs, _type), do: attrs
+  defp maybe_put_receipt_timestamp(attrs, _type, _opts), do: attrs
 
   defp receipt_update_key("read"), do: :read_timestamp
   defp receipt_update_key("played"), do: :played_timestamp

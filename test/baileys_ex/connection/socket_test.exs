@@ -76,15 +76,15 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   test "connect/1 waits for a transport connected event before starting the noise handshake" do
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
-    root_key_pair = Crypto.generate_key_pair(:x25519)
+    client_noise_key_pair = x25519_key_pair(101)
+    root_key_pair = x25519_key_pair(102)
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
     assert {:ok, pid} =
              Socket.start_link(
                config: Config.new(),
                auth_state:
-                 State.new()
+                 deterministic_state(200)
                  |> Map.put(:noise_key, client_noise_key_pair)
                  |> Map.put(:routing_info, nil),
                noise_opts: [trusted_cert: trusted_cert],
@@ -113,10 +113,10 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   test "a valid server hello sends the rc9 registration payload when no jid is present" do
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
-    root_key_pair = Crypto.generate_key_pair(:x25519)
-    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
-    server_static_key_pair = Crypto.generate_key_pair(:x25519)
+    client_noise_key_pair = x25519_key_pair(111)
+    root_key_pair = x25519_key_pair(112)
+    intermediate_key_pair = x25519_key_pair(113)
+    server_static_key_pair = x25519_key_pair(114)
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
     assert {:ok, pid} =
@@ -124,7 +124,7 @@ defmodule BaileysEx.Connection.SocketTest do
                config:
                  Config.new(version: [2, 24, 7], browser: {"Windows", "Edge", "10.0.22631"}),
                auth_state:
-                 State.new()
+                 deterministic_state(210)
                  |> Map.put(:noise_key, client_noise_key_pair)
                  |> Map.put(:routing_info, nil),
                noise_opts: [trusted_cert: trusted_cert],
@@ -159,14 +159,14 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   test "a valid server hello sends the rc9 login payload when creds.me is present" do
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
-    root_key_pair = Crypto.generate_key_pair(:x25519)
-    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
-    server_static_key_pair = Crypto.generate_key_pair(:x25519)
+    client_noise_key_pair = x25519_key_pair(121)
+    root_key_pair = x25519_key_pair(122)
+    intermediate_key_pair = x25519_key_pair(123)
+    server_static_key_pair = x25519_key_pair(124)
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
     auth_state =
-      State.new()
+      deterministic_state(220)
       |> Map.put(:noise_key, client_noise_key_pair)
       |> Map.put(:me, %{id: "15551234567:3@s.whatsapp.net", name: "~"})
       |> Map.put(:routing_info, nil)
@@ -207,15 +207,15 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   test "an invalid server hello returns the socket to disconnected and records the error" do
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
-    root_key_pair = Crypto.generate_key_pair(:x25519)
+    client_noise_key_pair = x25519_key_pair(131)
+    root_key_pair = x25519_key_pair(132)
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
     assert {:ok, pid} =
              Socket.start_link(
                config: Config.new(),
                auth_state:
-                 State.new()
+                 deterministic_state(230)
                  |> Map.put(:noise_key, client_noise_key_pair)
                  |> Map.put(:routing_info, nil),
                noise_opts: [trusted_cert: trusted_cert],
@@ -344,6 +344,58 @@ defmodule BaileysEx.Connection.SocketTest do
     assert %BinaryNode{tag: "ib"} = unified_session_node
 
     assert %BinaryNode{tag: "unified_session"} =
+             BinaryNodeUtil.child(unified_session_node, "unified_session")
+  end
+
+  test "socket clock and message tag injection make passive iq and unified session deterministic" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_authenticated_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        clock_ms_fun: fn -> 1_710_000_123_000 end,
+        message_tag_fun: fn -> "passive-tag-1" end
+      )
+
+    success_node =
+      %BinaryNode{
+        tag: "success",
+        attrs: %{"t" => "1710000000", "lid" => "12345678901234@lid"}
+      }
+
+    {server_transport, success_frame} = server_transport_frame(server_transport, success_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, success_frame}})
+
+    assert_receive {:transport_sent, passive_iq_frame}
+
+    {server_transport, passive_iq_node} =
+      decode_client_transport_frame(server_transport, passive_iq_frame)
+
+    assert passive_iq_node.attrs["id"] == "passive-tag-1"
+
+    passive_result = %BinaryNode{
+      tag: "iq",
+      attrs: %{"id" => passive_iq_node.attrs["id"], "type" => "result"},
+      content: nil
+    }
+
+    {server_transport, passive_result_frame} =
+      server_transport_frame(server_transport, passive_result)
+
+    Kernel.send(pid, {:scripted_transport, {:binary, passive_result_frame}})
+
+    assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
+    assert_receive {:transport_sent, unified_session_frame}
+
+    {_, unified_session_node} =
+      decode_client_transport_frame(server_transport, unified_session_frame)
+
+    assert %BinaryNode{attrs: %{"id" => "489600000"}} =
              BinaryNodeUtil.child(unified_session_node, "unified_session")
   end
 
@@ -1039,7 +1091,7 @@ defmodule BaileysEx.Connection.SocketTest do
       EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
 
     auth_state =
-      State.new()
+      deterministic_state(240)
       |> Map.put(:me, %{id: "15551234567@s.whatsapp.net", name: "~"})
       |> Map.put(:next_pre_key_id, 2)
       |> Map.put(:first_unuploaded_pre_key_id, 2)
@@ -1300,10 +1352,10 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   defp start_authenticated_socket(opts) do
-    client_noise_key_pair = Crypto.generate_key_pair(:x25519)
-    root_key_pair = Crypto.generate_key_pair(:x25519)
-    intermediate_key_pair = Crypto.generate_key_pair(:x25519)
-    server_static_key_pair = Crypto.generate_key_pair(:x25519)
+    client_noise_key_pair = x25519_key_pair(141)
+    root_key_pair = x25519_key_pair(142)
+    intermediate_key_pair = x25519_key_pair(143)
+    server_static_key_pair = x25519_key_pair(144)
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
     config = Keyword.get(opts, :config, Config.new())
@@ -1311,22 +1363,27 @@ defmodule BaileysEx.Connection.SocketTest do
 
     auth_state =
       merge_maps(
-        State.new()
+        deterministic_state(250)
         |> Map.put(:noise_key, client_noise_key_pair)
         |> Map.put(:routing_info, nil),
         Keyword.get(opts, :auth_state, %{})
       )
 
-    assert {:ok, pid} =
-             Socket.start_link(
-               config: config,
-               auth_state: auth_state,
-               noise_opts: [trusted_cert: trusted_cert],
-               event_emitter: event_emitter,
-               signal_store: Keyword.get(opts, :signal_store),
-               task_supervisor: Keyword.get(opts, :task_supervisor),
-               transport: {ScriptedTransport, %{test_pid: self()}}
-             )
+    start_link_opts =
+      [
+        config: config,
+        auth_state: auth_state,
+        noise_opts: [trusted_cert: trusted_cert],
+        event_emitter: event_emitter,
+        signal_store: Keyword.get(opts, :signal_store),
+        task_supervisor: Keyword.get(opts, :task_supervisor),
+        transport: {ScriptedTransport, %{test_pid: self()}}
+      ]
+      |> maybe_put_opt(:clock_ms_fun, opts[:clock_ms_fun])
+      |> maybe_put_opt(:monotonic_ms_fun, opts[:monotonic_ms_fun])
+      |> maybe_put_opt(:message_tag_fun, opts[:message_tag_fun])
+
+    assert {:ok, pid} = Socket.start_link(start_link_opts)
 
     assert :ok = Socket.connect(pid)
     Kernel.send(pid, {:scripted_transport, :connected})
@@ -1418,7 +1475,7 @@ defmodule BaileysEx.Connection.SocketTest do
     expected_jid = "15551234567@s.whatsapp.net"
     expected_platform = "Chrome"
     expected_key_index = "7"
-    account_signature_key = Crypto.generate_key_pair(:x25519)
+    account_signature_key = x25519_key_pair(150)
 
     device_identity =
       %ADVDeviceIdentity{
@@ -1484,16 +1541,16 @@ defmodule BaileysEx.Connection.SocketTest do
 
   defp pairing_auth_state do
     %{
-      noise_key: Crypto.generate_key_pair(:x25519),
-      signed_identity_key: Crypto.generate_key_pair(:x25519),
-      adv_secret_key: Crypto.random_bytes(32),
+      noise_key: x25519_key_pair(151),
+      signed_identity_key: x25519_key_pair(152),
+      adv_secret_key: fixed_bytes(32, 153),
       signal_identities: [],
       creds: %{routing_info: nil}
     }
   end
 
   defp phone_pairing_auth_state do
-    state = BaileysEx.Auth.State.new()
+    state = deterministic_state(260)
 
     %{
       noise_key: state.noise_key,
@@ -1508,8 +1565,8 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   defp phone_pairing_notification(ref, pairing_code) do
-    primary_identity_key = Crypto.generate_key_pair(:x25519)
-    code_pairing_key = Crypto.generate_key_pair(:x25519)
+    primary_identity_key = x25519_key_pair(154)
+    code_pairing_key = x25519_key_pair(155)
     salt = :binary.copy(<<17>>, 32)
     iv = :binary.copy(<<29>>, 16)
     {:ok, pairing_key} = BaileysEx.Auth.Phone.derive_pairing_code_key(pairing_code, salt)
@@ -1562,4 +1619,28 @@ defmodule BaileysEx.Connection.SocketTest do
       end
     end)
   end
+
+  defp deterministic_state(seed) do
+    signed_identity_key = x25519_key_pair(seed + 2)
+
+    {:ok, signed_pre_key} =
+      Curve.signed_key_pair(signed_identity_key, seed + 3, key_pair: x25519_key_pair(seed + 4))
+
+    State.new(
+      noise_key: x25519_key_pair(seed),
+      pairing_ephemeral_key: x25519_key_pair(seed + 1),
+      signed_identity_key: signed_identity_key,
+      signed_pre_key: signed_pre_key,
+      registration_id: seed + 1_000,
+      adv_secret_key: Base.encode64(fixed_bytes(32, seed + 5))
+    )
+  end
+
+  defp x25519_key_pair(seed),
+    do: Crypto.generate_key_pair(:x25519, private_key: <<seed::unsigned-big-256>>)
+
+  defp fixed_bytes(size, value), do: :binary.copy(<<rem(value, 256)>>, size)
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
 end

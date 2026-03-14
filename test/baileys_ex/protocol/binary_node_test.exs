@@ -205,6 +205,15 @@ defmodule BaileysEx.Protocol.BinaryNodeTest do
   end
 
   describe "encode/1 specific behaviors" do
+    test "encode matches the pinned bytes for a simple iq query" do
+      node = %BinaryNode{
+        tag: "iq",
+        attrs: %{"type" => "get", "xmlns" => "urn:xmpp:ping"}
+      }
+
+      assert Base.decode16!("00F805190429162B", case: :mixed) == BinaryNodeCodec.encode(node)
+    end
+
     test "encode produces binary starting with 0 byte (no compression)" do
       node = %BinaryNode{tag: "iq", attrs: %{}}
       encoded = BinaryNodeCodec.encode(node)

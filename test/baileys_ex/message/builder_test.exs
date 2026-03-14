@@ -17,6 +17,78 @@ defmodule BaileysEx.Message.BuilderTest do
            } = Builder.build(%{text: "hello"})
   end
 
+  test "builds image and audio messages from prepared media metadata" do
+    image_media = %{
+      media_url: "https://mmg.whatsapp.net/mms/image/abc",
+      direct_path: "/mms/image/abc",
+      media_key: <<1::256>>,
+      file_sha256: <<2::256>>,
+      file_enc_sha256: <<3::256>>,
+      file_length: 12,
+      media_key_timestamp: 1_710_000_000,
+      jpeg_thumbnail: "thumb-jpeg",
+      width: 13,
+      height: 7
+    }
+
+    audio_media = %{
+      media_url: "https://mmg.whatsapp.net/mms/audio/abc",
+      direct_path: "/mms/audio/abc",
+      media_key: <<4::256>>,
+      file_sha256: <<5::256>>,
+      file_enc_sha256: <<6::256>>,
+      file_length: 9,
+      media_key_timestamp: 1_710_000_000,
+      waveform: :binary.copy(<<9>>, 64)
+    }
+
+    assert %Message{
+             image_message: %Message.ImageMessage{
+               url: "https://mmg.whatsapp.net/mms/image/abc",
+               direct_path: "/mms/image/abc",
+               media_key: <<1::256>>,
+               file_sha256: <<2::256>>,
+               file_enc_sha256: <<3::256>>,
+               file_length: 12,
+               media_key_timestamp: 1_710_000_000,
+               jpeg_thumbnail: "thumb-jpeg",
+               width: 13,
+               height: 7,
+               caption: "photo",
+               mimetype: "image/jpeg"
+             }
+           } =
+             Builder.build(%{
+               image: {:file, "/tmp/photo.jpg"},
+               caption: "photo",
+               mimetype: "image/jpeg",
+               media_upload: image_media
+             })
+
+    assert %Message{
+             audio_message: %Message.AudioMessage{
+               url: "https://mmg.whatsapp.net/mms/audio/abc",
+               direct_path: "/mms/audio/abc",
+               media_key: <<4::256>>,
+               file_sha256: <<5::256>>,
+               file_enc_sha256: <<6::256>>,
+               file_length: 9,
+               media_key_timestamp: 1_710_000_000,
+               waveform: waveform,
+               ptt: true,
+               mimetype: "audio/ogg"
+             }
+           } =
+             Builder.build(%{
+               audio: {:file, "/tmp/voice.ogg"},
+               ptt: true,
+               mimetype: "audio/ogg",
+               media_upload: audio_media
+             })
+
+    assert byte_size(waveform) == 64
+  end
+
   test "builds extended text when quote and mentions are present" do
     quoted = %Message{extended_text_message: %Message.ExtendedTextMessage{text: "quoted"}}
 
@@ -63,11 +135,13 @@ defmodule BaileysEx.Message.BuilderTest do
   end
 
   test "builds a reaction message" do
+    sender_timestamp_ms = 1_710_000_123_456
+
     assert %Message{
              reaction_message: %ReactionMessage{
                key: %MessageKey{id: "msg-1", remote_jid: "15551234567@s.whatsapp.net"},
                text: "🔥",
-               sender_timestamp_ms: sender_timestamp_ms
+               sender_timestamp_ms: ^sender_timestamp_ms
              }
            } =
              Builder.build(%{
@@ -76,11 +150,43 @@ defmodule BaileysEx.Message.BuilderTest do
                    id: "msg-1",
                    remote_jid: %JID{user: "15551234567", server: "s.whatsapp.net"}
                  },
-                 text: "🔥"
+                 text: "🔥",
+                 sender_timestamp_ms: sender_timestamp_ms
                }
              })
+  end
 
-    assert is_integer(sender_timestamp_ms)
+  test "explicit reaction and pin timestamps bypass the injected clock" do
+    timestamp_ms = 1_710_000_123_456
+
+    assert %Message{
+             reaction_message: %ReactionMessage{sender_timestamp_ms: ^timestamp_ms}
+           } =
+             Builder.build(
+               %{
+                 react: %{
+                   key: %{id: "msg-1", remote_jid: "15551234567@s.whatsapp.net"},
+                   text: "🔥",
+                   sender_timestamp_ms: timestamp_ms
+                 }
+               },
+               now_ms: fn -> flunk("reaction timestamp should not call now_ms/1") end
+             )
+
+    assert %Message{
+             pin_in_chat_message: %Message.PinInChatMessage{sender_timestamp_ms: ^timestamp_ms}
+           } =
+             Builder.build(
+               %{
+                 pin: %{
+                   key: %{id: "msg-2", remote_jid: "15551234567@s.whatsapp.net"},
+                   type: :pin,
+                   time: 86_400,
+                   sender_timestamp_ms: timestamp_ms
+                 }
+               },
+               now_ms: fn -> flunk("pin timestamp should not call now_ms/1") end
+             )
   end
 
   test "builds single-select polls as poll creation v3 messages" do
@@ -97,6 +203,63 @@ defmodule BaileysEx.Message.BuilderTest do
            } =
              Builder.build(%{
                poll: %{name: "Pick one", values: ["A", "B"], selectable_count: 1}
+             })
+  end
+
+  test "build/2 respects injected timestamps and explicit poll/event secrets" do
+    timestamp_ms = 1_710_000_123_456
+    poll_enc_key = <<11::256>>
+    poll_secret = <<12::256>>
+    event_secret = <<13::256>>
+
+    assert %Message{
+             reaction_message: %ReactionMessage{sender_timestamp_ms: ^timestamp_ms}
+           } =
+             Builder.build(
+               %{
+                 react: %{
+                   key: %{id: "msg-1", remote_jid: "15551234567@s.whatsapp.net"},
+                   text: "🔥"
+                 }
+               },
+               now_ms: fn -> timestamp_ms end
+             )
+
+    assert %Message{
+             protocol_message: %ProtocolMessage{timestamp_ms: ^timestamp_ms}
+           } =
+             Builder.build(
+               %{
+                 edit: %{id: "msg-1", remote_jid: "15551234567@s.whatsapp.net"},
+                 text: "edited"
+               },
+               now_ms: fn -> timestamp_ms end
+             )
+
+    assert %Message{
+             poll_creation_message_v3: %Message.PollCreationMessage{enc_key: ^poll_enc_key},
+             message_context_info: %MessageContextInfo{message_secret: ^poll_secret}
+           } =
+             Builder.build(%{
+               poll: %{
+                 name: "Pick one",
+                 values: ["A", "B"],
+                 selectable_count: 1,
+                 enc_key: poll_enc_key,
+                 message_secret: poll_secret
+               }
+             })
+
+    assert %Message{
+             event_message: %Message.EventMessage{name: "Event"},
+             message_context_info: %MessageContextInfo{message_secret: ^event_secret}
+           } =
+             Builder.build(%{
+               event: %{
+                 name: "Event",
+                 start_time: ~U[2026-03-11 12:00:00Z],
+                 message_secret: event_secret
+               }
              })
   end
 

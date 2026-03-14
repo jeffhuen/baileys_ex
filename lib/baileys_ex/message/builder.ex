@@ -26,7 +26,7 @@ defmodule BaileysEx.Message.Builder do
         key: build_message_key(key),
         type: :MESSAGE_EDIT,
         edited_message: inner,
-        timestamp_ms: System.os_time(:millisecond)
+        timestamp_ms: Map.get(content, :timestamp_ms, now_ms(opts))
       }
     }
   end
@@ -58,18 +58,45 @@ defmodule BaileysEx.Message.Builder do
   end
 
   def build(%{image: _image} = content, _opts) do
+    upload = content[:media_upload] || %{}
+
     %Message{
       image_message: %Message.ImageMessage{
+        url: upload[:media_url] || upload[:url],
+        mimetype: content[:mimetype],
         caption: content[:caption],
+        file_sha256: upload[:file_sha256],
+        file_length: upload[:file_length],
+        height: upload[:height],
+        width: upload[:width],
+        media_key: upload[:media_key],
+        file_enc_sha256: upload[:file_enc_sha256],
+        direct_path: upload[:direct_path],
+        media_key_timestamp: upload[:media_key_timestamp],
+        jpeg_thumbnail: upload[:jpeg_thumbnail],
         context_info: build_context_info(content)
       }
     }
   end
 
   def build(%{video: _video} = content, _opts) do
+    upload = content[:media_upload] || %{}
+
     video_message = %Message.VideoMessage{
+      url: upload[:media_url] || upload[:url],
+      mimetype: content[:mimetype],
+      file_sha256: upload[:file_sha256],
+      file_length: upload[:file_length],
+      seconds: content[:seconds],
+      media_key: upload[:media_key],
       caption: content[:caption],
       gif_playback: content[:gif_playback] || false,
+      height: upload[:height],
+      width: upload[:width],
+      file_enc_sha256: upload[:file_enc_sha256],
+      direct_path: upload[:direct_path],
+      media_key_timestamp: upload[:media_key_timestamp],
+      jpeg_thumbnail: upload[:jpeg_thumbnail],
       context_info: build_context_info(content)
     }
 
@@ -81,48 +108,85 @@ defmodule BaileysEx.Message.Builder do
   end
 
   def build(%{audio: _audio} = content, _opts) do
+    upload = content[:media_upload] || %{}
+
     %Message{
       audio_message: %Message.AudioMessage{
+        url: upload[:media_url] || upload[:url],
+        mimetype: content[:mimetype],
+        file_sha256: upload[:file_sha256],
+        file_length: upload[:file_length],
         ptt: content[:ptt] || false,
         seconds: content[:seconds],
-        context_info: build_context_info(content)
+        media_key: upload[:media_key],
+        file_enc_sha256: upload[:file_enc_sha256],
+        direct_path: upload[:direct_path],
+        media_key_timestamp: upload[:media_key_timestamp],
+        context_info: build_context_info(content),
+        waveform: upload[:waveform]
       }
     }
   end
 
   def build(%{document: _document} = content, _opts) do
+    upload = content[:media_upload] || %{}
+
     %Message{
       document_message: %Message.DocumentMessage{
+        url: upload[:media_url] || upload[:url],
         mimetype: content[:mimetype] || "application/octet-stream",
+        title: content[:title],
+        file_sha256: upload[:file_sha256],
+        file_length: upload[:file_length],
+        media_key: upload[:media_key],
         file_name: content[:file_name] || "file",
+        file_enc_sha256: upload[:file_enc_sha256],
+        direct_path: upload[:direct_path],
+        media_key_timestamp: upload[:media_key_timestamp],
+        jpeg_thumbnail: upload[:jpeg_thumbnail],
         caption: content[:caption],
+        thumbnail_height: upload[:height],
+        thumbnail_width: upload[:width],
         context_info: build_context_info(content)
       }
     }
   end
 
   def build(%{sticker: _sticker} = content, _opts) do
+    upload = content[:media_upload] || %{}
+
     %Message{
       sticker_message: %Message.StickerMessage{
+        url: upload[:media_url] || upload[:url],
+        file_sha256: upload[:file_sha256],
+        file_enc_sha256: upload[:file_enc_sha256],
+        media_key: upload[:media_key],
+        mimetype: content[:mimetype] || "image/webp",
+        height: upload[:height],
+        width: upload[:width],
+        direct_path: upload[:direct_path],
+        file_length: upload[:file_length],
+        media_key_timestamp: upload[:media_key_timestamp],
         is_animated: content[:is_animated] || false,
+        png_thumbnail: upload[:png_thumbnail],
         context_info: build_context_info(content)
       }
     }
   end
 
-  def build(%{react: %{key: key, text: emoji}}, _opts) do
+  def build(%{react: %{key: key, text: emoji} = react}, opts) do
     %Message{
       reaction_message: %Message.ReactionMessage{
         key: build_message_key(key),
         text: emoji,
-        sender_timestamp_ms: System.os_time(:millisecond)
+        sender_timestamp_ms: map_get_lazy(react, :sender_timestamp_ms, fn -> now_ms(opts) end)
       }
     }
   end
 
   def build(%{poll: %{name: name, values: values} = poll}, _opts) do
     poll_message = %Message.PollCreationMessage{
-      enc_key: :crypto.strong_rand_bytes(32),
+      enc_key: Map.get(poll, :enc_key),
       name: name,
       options: Enum.map(values, &%Message.PollCreationMessage.Option{option_name: &1}),
       selectable_options_count: Map.get(poll, :selectable_count, 0)
@@ -130,7 +194,8 @@ defmodule BaileysEx.Message.Builder do
 
     secret =
       %MessageContextInfo{
-        message_secret: Map.get(poll, :message_secret, :crypto.strong_rand_bytes(32))
+        message_secret:
+          map_get_lazy(poll, :message_secret, fn -> :crypto.strong_rand_bytes(32) end)
       }
 
     cond do
@@ -229,12 +294,12 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{pin: %{key: key, type: type, time: duration}}, _opts) do
+  def build(%{pin: %{key: key, type: type, time: duration} = pin}, opts) do
     %Message{
       pin_in_chat_message: %Message.PinInChatMessage{
         key: build_message_key(key),
         type: if(type == :pin, do: :PIN_FOR_ALL, else: :UNPIN_FOR_ALL),
-        sender_timestamp_ms: System.os_time(:millisecond)
+        sender_timestamp_ms: map_get_lazy(pin, :sender_timestamp_ms, fn -> now_ms(opts) end)
       },
       message_context_info: %MessageContextInfo{
         message_add_on_duration_in_secs: if(type == :pin, do: duration || 86_400, else: 0)
@@ -332,7 +397,8 @@ defmodule BaileysEx.Message.Builder do
             build(%{location: event[:location]}).location_message
       },
       message_context_info: %MessageContextInfo{
-        message_secret: Map.get(event, :message_secret, :crypto.strong_rand_bytes(32))
+        message_secret:
+          map_get_lazy(event, :message_secret, fn -> :crypto.strong_rand_bytes(32) end)
       }
     }
   end
@@ -446,6 +512,21 @@ defmodule BaileysEx.Message.Builder do
   defp jid_to_string(nil), do: nil
   defp jid_to_string(%JID{} = jid), do: JIDUtil.to_string(jid)
   defp jid_to_string(jid) when is_binary(jid), do: jid
+
+  defp now_ms(opts) do
+    case opts[:now_ms] do
+      fun when is_function(fun, 0) -> fun.()
+      value when is_integer(value) -> value
+      _ -> System.os_time(:millisecond)
+    end
+  end
+
+  defp map_get_lazy(map, key, fun) when is_map(map) and is_function(fun, 0) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> fun.()
+    end
+  end
 
   defp to_unix(%DateTime{} = datetime), do: DateTime.to_unix(datetime)
   defp to_unix(value) when is_integer(value), do: value

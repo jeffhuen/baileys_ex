@@ -197,18 +197,31 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     {:ok, emitter} = EventEmitter.start_link()
     parent = self()
     unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+    ciphertext = <<1, 2, 3, 4, 5>>
+    iv = <<6, 7, 8, 9>>
 
     node = %BinaryNode{
       tag: "notification",
       attrs: %{
         "type" => "mediaretry",
-        "from" => "15551234567@s.whatsapp.net",
-        "participant" => "15551234567:1@s.whatsapp.net"
+        "id" => "media-1"
       },
       content: [
         %BinaryNode{
-          tag: "mediaretry",
-          attrs: %{"key" => "media-1", "result" => "success"},
+          tag: "encrypt",
+          attrs: %{},
+          content: [
+            %BinaryNode{tag: "enc_p", attrs: %{}, content: {:binary, ciphertext}},
+            %BinaryNode{tag: "enc_iv", attrs: %{}, content: {:binary, iv}}
+          ]
+        },
+        %BinaryNode{
+          tag: "rmr",
+          attrs: %{
+            "jid" => "15551234567@s.whatsapp.net",
+            "from_me" => "false",
+            "participant" => "15551234567:1@s.whatsapp.net"
+          },
           content: nil
         }
       ]
@@ -224,9 +237,13 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
                     %{
                       messages_media_update: [
                         %{
-                          id: "media-1",
-                          result: "success",
-                          remote_jid: "15551234567@s.whatsapp.net"
+                          key: %{
+                            id: "media-1",
+                            remote_jid: "15551234567@s.whatsapp.net",
+                            from_me: false,
+                            participant: "15551234567:1@s.whatsapp.net"
+                          },
+                          media: %{ciphertext: ^ciphertext, iv: ^iv}
                         }
                       ]
                     }}

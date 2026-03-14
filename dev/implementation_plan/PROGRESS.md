@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-11
+> Last updated: 2026-03-13
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -20,7 +20,7 @@
 | 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | COMPLETE | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | COMPLETE | 5, 6, 7 | 9, 10 |
-| 9 | Media | 9 | IN PROGRESS | 2, 8 | 12 |
+| 9 | Media | 9 | COMPLETE | 2, 8 | 12 |
 | 10 | Features | 17 | NOT STARTED | 8 | 11 |
 | 11 | Advanced Features | 5 | NOT STARTED | 10 | 12 |
 | 12 | Polish | 7 | NOT STARTED | All | — |
@@ -517,21 +517,19 @@ Current branch progress:
 
 ## Phase 9: Media
 
-**Status:** IN PROGRESS · **Depends on:** Phases 2, 8 · **Parallel with:** Phase 10
+**Status:** COMPLETE · **Depends on:** Phases 2, 8 · **Parallel with:** Phase 10
 
-**Current branch note:** The first Phase 9 tranche is landed on `phase-09-media`.
-That includes the WAProto media-field expansion required by rc.9 media messages,
-`BaileysEx.Media.Types`, `BaileysEx.Media.Crypto.encrypt/3` + `decrypt/3`,
-`BaileysEx.Media.Upload.refresh_media_conn/2` + `upload/4`,
-`BaileysEx.Media.Download.download/2` + `download_to_file/3`, and
-`BaileysEx.Media.Thumbnail`. Tasks `9.1`, `9.2`, `9.3`, `9.4`, and `9.5` are
-complete. The download path now supports streaming file output and
-Baileys-style aligned ranged fetches, and the derivative pipeline now provides
-image/video thumbnails plus 64-sample audio waveforms with explicit
-missing-dependency errors for `Image`/`ffmpeg`. The rest of the phase still
-needs re-upload flow, caching/retry, and message-builder integration. Streamed download parity intentionally matches
-Baileys by skipping trailer MAC verification; full-payload verified decrypts
-still go through `BaileysEx.Media.Crypto.decrypt/3`.
+**Current branch note:** Phase 9 is now complete on `phase-09-media`.
+`BaileysEx.Media.Types`, `Crypto`, `Upload`, `Download`, `Thumbnail`,
+`Retry`, and `MessageBuilder` now cover the rc.9 media surface: streaming
+encrypt/decrypt, CDN upload/download, aligned ranged fetches, explicit
+thumbnail/waveform dependency errors, expired-media re-upload requests and
+media-update application, store-backed `media_conn` caching with host retry,
+and sender-side media preparation before `BaileysEx.Message.Builder`. The
+phase now includes a committed Baileys rc.9 media fixture under
+`test/fixtures/media/baileys_v7.json` for cross-validation. Streamed download
+parity intentionally matches Baileys by skipping trailer MAC verification;
+full-payload verified decrypts still go through `BaileysEx.Media.Crypto.decrypt/3`.
 
 ### Tasks
 
@@ -540,10 +538,10 @@ still go through `BaileysEx.Media.Crypto.decrypt/3`.
 - [x] 9.3 Media download (streaming + decryption)
 - [x] 9.4 Media types (image, video, audio, doc, sticker)
 - [x] 9.5 Thumbnail and waveform generation
-- [ ] 9.5a Media Re-upload Flow (GAP-47)
-- [ ] 9.6 Media connection and retry
-- [ ] 9.7 Integrate with message builder
-- [ ] 9.8 Tests
+- [x] 9.5a Media Re-upload Flow (GAP-47)
+- [x] 9.6 Media connection and retry
+- [x] 9.7 Integrate with message builder
+- [x] 9.8 Tests
 
 ### Acceptance Criteria
 
@@ -551,15 +549,15 @@ still go through `BaileysEx.Media.Crypto.decrypt/3`.
 - [x] MAC verification works (pass and fail cases)
 - [x] Upload constructs correct HTTP request
 - [x] Download handles streaming
-- [ ] Message builder integrates media handling
-- [ ] Cross-validation with Baileys-encrypted media
+- [x] Message builder integrates media handling
+- [x] Cross-validation with Baileys-encrypted media
 - [x] Image thumbnails generated when `image` package available
 - [x] Video thumbnails via ffmpeg when available
 - [x] Audio waveform computed (64 samples)
-- [ ] Media connection refreshed and cached
-- [ ] Media upload retry works for failed messages
+- [x] Media connection refreshed and cached
+- [x] Media upload retry works for failed messages
 - [x] Media encryption uses single-pass streaming (GAP-46)
-- [ ] Media re-upload request sent for expired media (GAP-47)
+- [x] Media re-upload request sent for expired media (GAP-47)
 
 ### Files
 
@@ -570,13 +568,20 @@ still go through `BaileysEx.Media.Crypto.decrypt/3`.
 | `lib/baileys_ex/media/download.ex` | ✅ |
 | `lib/baileys_ex/media/types.ex` | ✅ |
 | `lib/baileys_ex/media/thumbnail.ex` | ✅ |
-| `lib/baileys_ex/media/retry.ex` | ⬜ |
-| `lib/baileys_ex/message/builder.ex` (extend) | ⬜ |
+| `lib/baileys_ex/media/message_builder.ex` | ✅ |
+| `lib/baileys_ex/media/retry.ex` | ✅ |
+| `lib/baileys_ex/message/builder.ex` (extend) | ✅ |
+| `lib/baileys_ex/message/notification_handler.ex` (extend) | ✅ |
+| `lib/baileys_ex/message/sender.ex` (extend) | ✅ |
+| `lib/baileys_ex/protocol/proto/media_retry_messages.ex` | ✅ |
 | `test/baileys_ex/media/crypto_test.exs` | ✅ |
+| `test/baileys_ex/media/cross_validation_test.exs` | ✅ |
 | `test/baileys_ex/media/upload_test.exs` | ✅ |
 | `test/baileys_ex/media/download_test.exs` | ✅ |
 | `test/baileys_ex/media/types_test.exs` | ✅ |
 | `test/baileys_ex/media/thumbnail_test.exs` | ✅ |
+| `test/baileys_ex/media/message_builder_test.exs` | ✅ |
+| `test/baileys_ex/media/retry_test.exs` | ✅ |
 
 ---
 

@@ -4,6 +4,7 @@ defmodule BaileysEx.Media.Download do
   """
 
   alias BaileysEx.Crypto, as: CoreCrypto
+  alias BaileysEx.Media.HTTP
   alias BaileysEx.Protocol.Proto.Message
 
   @mmg_host "https://mmg.whatsapp.net"
@@ -31,9 +32,9 @@ defmodule BaileysEx.Media.Download do
   Supports `:start_byte` and `:end_byte` options for Baileys-style ranged media
   downloads. `:end_byte` is an exclusive upper bound.
 
-  This streamed path matches Baileys rc.9: it decrypts aligned AES-CBC chunks
-  and does not validate the trailing 10-byte media MAC. For full-payload MAC
-  verification, use `BaileysEx.Media.Crypto.decrypt/3`.
+  The streamed path decrypts aligned AES-CBC chunks on the fly and does not
+  validate the trailing 10-byte media MAC. For full-payload MAC verification,
+  use `BaileysEx.Media.Crypto.decrypt/3`.
   """
   def download(media_message, opts \\ []) do
     with {:ok, media_type} <- media_type(media_message, opts),
@@ -53,8 +54,8 @@ defmodule BaileysEx.Media.Download do
   Download and decrypt media directly to a file path without buffering the full
   media body in memory.
 
-  Like `download/2`, this follows Baileys rc.9 chunked decryption semantics and
-  does not verify the trailing media MAC while streaming.
+  Like `download/2`, this uses chunked AES-CBC decryption and does not verify
+  the trailing media MAC while streaming.
   """
   def download_to_file(media_message, path, opts \\ []) do
     with {:ok, media_type} <- media_type(media_message, opts),
@@ -151,7 +152,7 @@ defmodule BaileysEx.Media.Download do
 
     headers =
       req_options[:headers]
-      |> merge_headers([{"origin", "https://web.whatsapp.com"}])
+      |> HTTP.merge_headers([{"origin", "https://web.whatsapp.com"}])
       |> maybe_add_range_header(decrypt_opts)
 
     request_opts =
@@ -432,22 +433,8 @@ defmodule BaileysEx.Media.Download do
         _ -> "bytes=#{start_chunk}-#{end_chunk}"
       end
 
-    merge_headers(headers, [{"range", range_value}])
+    HTTP.merge_headers(headers, [{"range", range_value}])
   end
 
   defp to_smallest_chunk_size(num), do: div(num, @aes_chunk_size) * @aes_chunk_size
-
-  defp merge_headers(existing, required) do
-    normalized =
-      existing
-      |> List.wrap()
-      |> Enum.map(fn {key, value} -> {String.downcase(to_string(key)), value} end)
-
-    normalized_keys = MapSet.new(Enum.map(normalized, &elem(&1, 0)))
-
-    normalized ++
-      Enum.reject(required, fn {key, _value} ->
-        MapSet.member?(normalized_keys, key)
-      end)
-  end
 end

@@ -73,6 +73,8 @@ defmodule BaileysEx.Media.Types do
       hkdf_info: "WhatsApp  Keys",
       proto_field: :product_message
     },
+    # Baileys carries `''` here, but this runtime intentionally treats md-app-state
+    # as outside the normal CDN upload flow and models it as `nil`.
     md_app_state: %{
       path: nil,
       hkdf_info: "WhatsApp App State Keys",

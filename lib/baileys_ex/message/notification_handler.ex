@@ -8,6 +8,7 @@ defmodule BaileysEx.Message.NotificationHandler do
 
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
+  alias BaileysEx.Media.Retry, as: MediaRetry
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.MessageStubType
@@ -227,20 +228,8 @@ defmodule BaileysEx.Message.NotificationHandler do
   end
 
   defp handle_media_retry_notification(%BinaryNode{attrs: attrs} = node, context) do
-    case BinaryNodeUtil.child(node, "mediaretry") do
-      %BinaryNode{attrs: retry_attrs} ->
-        emit(context, :messages_media_update, [
-          %{
-            id: retry_attrs["key"],
-            result: retry_attrs["result"],
-            remote_jid: attrs["from"],
-            participant: attrs["participant"]
-          }
-        ])
-
-      _ ->
-        :ok
-    end
+    _ = attrs
+    emit(context, :messages_media_update, [MediaRetry.decode_notification_event(node)])
   end
 
   defp handle_newsletter_notification(%BinaryNode{attrs: attrs} = node, context) do

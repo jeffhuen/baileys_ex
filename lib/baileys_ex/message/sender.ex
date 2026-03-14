@@ -5,6 +5,7 @@ defmodule BaileysEx.Message.Sender do
 
   alias BaileysEx.BinaryNode
   alias BaileysEx.JID
+  alias BaileysEx.Media.MessageBuilder, as: MediaMessageBuilder
   alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Reporting
   alias BaileysEx.Message.Wire
@@ -46,7 +47,13 @@ defmodule BaileysEx.Message.Sender do
   end
 
   def send(%{} = context, %JID{} = jid, content, opts) when is_map(content) do
-    with %Message{} = proto_message <- Builder.build(content, opts) do
+    media_opts =
+      opts
+      |> Keyword.put_new_lazy(:media_queryable, fn -> context[:query_fun] || context[:socket] end)
+      |> Keyword.put_new(:store_ref, context[:store_ref])
+
+    with {:ok, prepared_content} <- MediaMessageBuilder.prepare(content, media_opts),
+         %Message{} = proto_message <- Builder.build(prepared_content, opts) do
       send_proto(context, jid, proto_message, opts)
     end
   end

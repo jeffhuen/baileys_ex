@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "source": "dev/reference/Baileys-master",
+    "baileys_version": "7.0.0-rc.9",
+    "scope": [
+      "media hkdf key expansion parity",
+      "media encrypt output parity",
+      "media decrypt parity"
+    ],
+    "generator": "node --input-type=module with whatsapp-rust-bridge hkdf plus the rc.9 AES-256-CBC/HMAC-SHA256 media algorithm from src/Utils/messages-media.ts"
+  },
+  "image": {
+    "plaintext": "aGVsbG8gZnJvbSBiYWlsZXlzIG1lZGlhIGZpeHR1cmU=",
+    "media_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+    "iv": "ri0dWKAUbIzd5C9uXog8YQ==",
+    "cipher_key": "v3Ol9H8EMGRgyUh2eVt3RclYA0N9kL0lm7PeEm5CCXA=",
+    "mac_key": "0ZSt3hLiKMCOcCqmith1D1g/utQpPxEC2ZGito52YTo=",
+    "encrypted": "0X3ysoawWsx9L0vB0GgLDS/cAaN6i72P2TRf7yyB3nKzzXFlEB2PHgGy3w6qadJwvx2guKnfFroi5w==",
+    "file_sha256": "vkphK5z1m2as/HcfGp+wwQvL7p02Zr2/iUdo+QFifyI=",
+    "file_enc_sha256": "0EJbyXuE5lDZG0Ks6am4du0m6AeJvKNrvHvWR10dp+k=",
+    "file_length": 32
+  }
+}

@@ -81,8 +81,8 @@ defmodule BaileysEx.Media.CryptoTest do
   test "encrypt/3 and decrypt/3 roundtrip the core media message types", %{tmp_dir: tmp_dir} do
     plaintext = String.duplicate("core-media-roundtrip", 32)
 
-    for media_type <- [:image, :video, :audio, :document, :sticker] do
-      media_key = :crypto.strong_rand_bytes(32)
+    for {media_type, index} <- Enum.with_index([:image, :video, :audio, :document, :sticker], 1) do
+      media_key = deterministic_media_key(index)
 
       assert {:ok, %{encrypted_path: encrypted_path}} =
                Crypto.encrypt(plaintext, media_type, media_key: media_key, tmp_dir: tmp_dir)
@@ -97,8 +97,8 @@ defmodule BaileysEx.Media.CryptoTest do
        %{tmp_dir: tmp_dir} do
     plaintext = String.duplicate("all-media-types-roundtrip", 12)
 
-    for media_type <- @all_media_types do
-      media_key = :crypto.strong_rand_bytes(32)
+    for {media_type, index} <- Enum.with_index(@all_media_types, 1) do
+      media_key = deterministic_media_key(index + 32)
 
       assert {:ok, %{encrypted_path: encrypted_path}} =
                Crypto.encrypt(plaintext, media_type, media_key: media_key, tmp_dir: tmp_dir)
@@ -111,5 +111,9 @@ defmodule BaileysEx.Media.CryptoTest do
   test "decrypt/3 rejects payloads without room for ciphertext and mac" do
     assert {:error, :invalid_media_payload} =
              Crypto.decrypt(<<1, 2, 3>>, :binary.copy(<<1>>, 32), :image)
+  end
+
+  defp deterministic_media_key(index) when is_integer(index) and index > 0 do
+    :binary.copy(<<index>>, 32)
   end
 end

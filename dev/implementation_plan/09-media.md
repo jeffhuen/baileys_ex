@@ -30,10 +30,9 @@ and responses natively.
 
 ## Current Branch Status
 
-Phase 9 is now in progress on `phase-09-media`.
+Phase 9 is now complete on `phase-09-media`.
 
-The first landed tranche covers the rc.9 media foundation that the repo was
-missing:
+The completed media runtime now covers the full Phase 9 scope:
 - WAProto media message structs now include the core upload/download metadata
   fields used by rc.9 (`url`, `direct_path`, `media_key`, hashes, length, and
   type-specific fields like thumbnails/waveform/background color).
@@ -44,10 +43,20 @@ missing:
 - `BaileysEx.Media.Upload` implements `w:m` `media_conn` lookup and CDN upload.
 - `BaileysEx.Media.Download` implements media URL resolution, streaming decrypt
   to a file, and Baileys-style aligned ranged downloads.
-
-This means `9.1` through `9.5` are complete on branch. The remaining phase
-scope is media re-upload flow, media-conn caching/retry, and
-message-builder integration.
+- `BaileysEx.Media.Thumbnail` provides image/video thumbnails, sticker
+  dimensions, and 64-sample push-to-talk waveforms with explicit missing-tool
+  errors.
+- `BaileysEx.Media.Retry` implements the rc.9 expired-media re-upload flow:
+  `server-error` receipt construction, encrypted retry payloads, retry
+  notification decoding, and decrypted media-update application.
+- `BaileysEx.Media.Upload` now caches `media_conn` in the connection store,
+  force-refreshes on invalid responses, and retries across upload hosts instead
+  of collapsing on the first failure.
+- `BaileysEx.Media.MessageBuilder` now handles sender-side media preparation
+  before `BaileysEx.Message.Builder`: encrypt, upload, derive thumbnails or
+  waveforms, and populate the media proto metadata expected by the relay path.
+- The phase now includes committed Baileys rc.9 media cross-validation fixtures
+  in `test/fixtures/media/baileys_v7.json`.
 
 The streamed download path intentionally mirrors Baileys rc.9 by decrypting
 aligned AES-CBC chunks without validating the trailing 10-byte media MAC. Full
@@ -290,49 +299,30 @@ end
 File: `lib/baileys_ex/media/retry.ex`
 
 When media download returns HTTP 404/410 (expired), the client sends a
-`mediaretry` notification encrypted with HKDF-derived keys. The server
-responds with a `messages.media-update` event containing refreshed media.
+Baileys-style `server-error` receipt with an encrypted retry payload. The
+paired device responds through a `mediaretry` notification that becomes a
+`messages_media_update` event and can be decrypted back into a refreshed
+`direct_path`.
 
 ```elixir
 defmodule BaileysEx.Media.Retry do
-  @moduledoc """
-  Media re-upload request flow for expired media.
-  Reference: Baileys messages-media.ts L637-679
-  """
+  @doc "Build or send the rc.9 `server-error` receipt requesting re-upload"
+  def request_reupload(socket, message_key, media_key, opts \\ []) do
+    # Derive the retry key using `WhatsApp Media Retry Notification`
+    # Encrypt a `ServerErrorReceipt` protobuf with AES-256-GCM (AAD = stanza id)
+    # Emit a receipt node containing <encrypt><enc_p/><enc_iv/></encrypt> and <rmr/>
+    # via `BaileysEx.Connection.Socket.send_node/2`
+  end
 
-  @doc "Request media re-upload for an expired message"
-  def request_reupload(conn, message_key, opts \\ []) do
-    # 1. Generate retry receipt with HKDF keys
-    media_key = BaileysEx.Crypto.random_bytes(32)
-    expanded = BaileysEx.Crypto.hkdf_expand(media_key, "messages_media_retry", 80)
-    <<iv::binary-16, cipher_key::binary-32, mac_key::binary-32>> = expanded
+  @doc "Decode a mediaretry notification into the event payload emitted upstream"
+  def decode_notification_event(node) do
+    # Extract the `rmr` message key and either `encrypt` bytes or `error` attrs
+  end
 
-    # 2. Encrypt retry request
-    retry_data = Proto.ServerErrorReceipt.encode(%Proto.ServerErrorReceipt{
-      stanza_id: message_key.id
-    })
-    encrypted = BaileysEx.Crypto.aes_cbc_encrypt(cipher_key, iv, retry_data)
-
-    # 3. Send via IQ
-    node = %BinaryNode{
-      tag: "iq",
-      attrs: %{
-        "to" => message_key.remote_jid,
-        "type" => "set",
-        "xmlns" => "urn:xmpp:whatsapp:m"
-      },
-      content: [
-        %BinaryNode{
-          tag: "media_retry",
-          attrs: %{
-            "id" => message_key.id,
-            "participant" => message_key.participant
-          },
-          content: encrypted
-        }
-      ]
-    }
-    Connection.Socket.send_node(conn, node)
+  @doc "Decrypt and apply the refreshed direct path to a media message"
+  def apply_media_update(message, media_key, event) do
+    # Decrypt `MediaRetryNotification`, require `SUCCESS`, then replace
+    # `direct_path` and `url` on the relevant media proto struct
   end
 end
 ```
@@ -343,43 +333,37 @@ File: extends `lib/baileys_ex/media/upload.ex`
 
 ```elixir
   @doc "Refresh media connection credentials (cached, force-refreshable)"
-  def refresh_media_conn(conn, force \\ false) do
-    # IQ: xmlns='w:m', type='set', content: <media_conn/>
-    # Cache auth tokens, refresh on expiry or force
+  def refresh_media_conn(queryable, opts \\ []) do
+    # Query `xmlns='w:m'` for `<media_conn/>`
+    # Reuse a cached store-backed record until TTL expiry unless `force: true`
+    # Persist refreshed records under `:media_conn`
   end
 
-  @doc "Retry media upload for failed messages"
-  def update_media_message(conn, message) do
-    # Re-encrypt and re-upload media
-    # Update message with new URL/directPath
-    # Emit :messages_media_update event
+  @doc "Upload encrypted media with host retry and invalid-response refresh"
+  def upload(queryable, encrypted_path, media_type, opts \\ []) do
+    # Try each returned upload host in order
+    # Force-refresh `media_conn` if a successful response omits both `url` and
+    # `direct_path`, then continue with the remaining hosts
   end
 ```
 
 ### 9.7 Integrate with message builder
 
-Extend `Message.Builder` to handle media messages:
+The media pipeline now lives one layer earlier than the original draft:
+`BaileysEx.Media.MessageBuilder` prepares sender-side media before the existing
+message builder constructs the proto structs.
 
 ```elixir
-def build(%{image: {:file, path}, caption: caption}, conn) do
-  file_data = File.read!(path)
-  mime = MIME.type(Path.extname(path))
+def send(context, jid, content, opts \\ []) when is_map(content) do
+  media_opts =
+    opts
+    |> Keyword.put_new_lazy(:media_queryable, fn -> context[:query_fun] || context[:socket] end)
+    |> Keyword.put_new(:store_ref, context[:store_ref])
 
-  encrypted = Media.Crypto.encrypt(file_data, :image)
-  {:ok, upload_result} = Media.Upload.upload(conn, encrypted.encrypted, :image)
-
-  %Proto.Message{
-    image_message: %Proto.ImageMessage{
-      url: upload_result.url,
-      direct_path: upload_result.direct_path,
-      media_key: encrypted.media_key,
-      file_sha256: encrypted.file_sha256,
-      file_enc_sha256: encrypted.file_enc_sha256,
-      file_length: byte_size(file_data),
-      mimetype: mime,
-      caption: caption
-    }
-  }
+  with {:ok, prepared_content} <- BaileysEx.Media.MessageBuilder.prepare(content, media_opts),
+       %Proto.Message{} = proto_message <- BaileysEx.Message.Builder.build(prepared_content, opts) do
+    send_proto(context, jid, proto_message, opts)
+  end
 end
 ```
 
@@ -391,6 +375,8 @@ end
 - Upload node construction
 - Download with mock HTTP server and aligned range requests
 - Integration: encrypt → upload → download → decrypt roundtrip
+- Committed cross-validation against a Baileys rc.9 media fixture generated from
+  the local reference algorithm and bridge-backed HKDF expansion
 
 ---
 
@@ -400,15 +386,15 @@ end
 - [x] MAC verification works (pass and fail cases)
 - [x] Upload constructs correct HTTP request
 - [x] Download handles streaming
-- [ ] Message builder integrates media handling
-- [ ] Cross-validation with Baileys-encrypted media
+- [x] Message builder integrates media handling
+- [x] Cross-validation with Baileys-encrypted media
 - [x] Image thumbnails generated when `image` package available
 - [x] Video thumbnails via ffmpeg when available
 - [x] Audio waveform computed (64 samples)
-- [ ] Media connection refreshed and cached
-- [ ] Media upload retry works for failed messages
+- [x] Media connection refreshed and cached
+- [x] Media upload retry works for failed messages
 - [x] Media encryption uses single-pass streaming for large files (GAP-46)
-- [ ] Media re-upload request sent for expired media (GAP-47)
+- [x] Media re-upload request sent for expired media (GAP-47)
 
 ## Files Created/Modified
 
@@ -417,10 +403,18 @@ end
 - `lib/baileys_ex/media/download.ex`
 - `lib/baileys_ex/media/types.ex`
 - `lib/baileys_ex/media/thumbnail.ex`
+- `lib/baileys_ex/media/message_builder.ex`
+- `lib/baileys_ex/media/retry.ex`
 - `lib/baileys_ex/message/builder.ex` (extend)
+- `lib/baileys_ex/message/notification_handler.ex` (extend)
+- `lib/baileys_ex/message/sender.ex` (extend)
+- `lib/baileys_ex/protocol/proto/media_retry_messages.ex`
 - `test/baileys_ex/media/crypto_test.exs`
+- `test/baileys_ex/media/cross_validation_test.exs`
 - `test/baileys_ex/media/upload_test.exs`
 - `test/baileys_ex/media/download_test.exs`
 - `test/baileys_ex/media/types_test.exs`
 - `test/baileys_ex/media/thumbnail_test.exs`
-- `lib/baileys_ex/media/retry.ex`
+- `test/baileys_ex/media/message_builder_test.exs`
+- `test/baileys_ex/media/retry_test.exs`
+- `test/fixtures/media/baileys_v7.json`

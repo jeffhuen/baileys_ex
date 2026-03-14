@@ -7,6 +7,7 @@ defmodule BaileysEx.Message.SenderTest do
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
+  alias BaileysEx.TestHelpers.FakeThumbnail
   alias BaileysEx.TestHelpers.MessageSignalHelpers
 
   test "send/4 performs direct-device fanout with DSM, phash, device identity, and trusted-contact token" do
@@ -95,6 +96,66 @@ defmodule BaileysEx.Message.SenderTest do
              _ ->
                false
            end)
+  end
+
+  @tag :tmp_dir
+  test "send/4 prepares uploaded image media before relay", %{tmp_dir: tmp_dir} do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+    image_path = Path.join(tmp_dir, "photo.jpg")
+    File.write!(image_path, "fake-image-binary")
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    repo =
+      repo
+      |> inject_session!("15551234567:0@s.whatsapp.net", session)
+      |> inject_session!("15550001111:2@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => ["1", "2"]}
+             })
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111:1@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    assert {:ok, %{message: %Message{image_message: image_message}}, _updated_context} =
+             Sender.send(context, jid, %{image: {:file, image_path}, caption: "media hello"},
+               media_upload_fun: fn _encrypted_path, :image, _upload_opts ->
+                 {:ok,
+                  %{
+                    media_url: "https://mmg.whatsapp.net/mms/image/abc",
+                    direct_path: "/mms/image/abc"
+                  }}
+               end,
+               thumbnail_module: FakeThumbnail,
+               tmp_dir: tmp_dir,
+               message_id_fun: fn _me_id -> "3EB0MEDIAID" end
+             )
+
+    assert image_message.caption == "media hello"
+    assert image_message.direct_path == "/mms/image/abc"
+    assert image_message.url == "https://mmg.whatsapp.net/mms/image/abc"
+    assert image_message.jpeg_thumbnail == "thumb-jpeg"
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{
+                        "to" => "15551234567@s.whatsapp.net",
+                        "type" => "media",
+                        "id" => "3EB0MEDIAID"
+                      }
+                    }}
   end
 
   test "send/4 performs group sender-key fanout and persists sender-key memory" do
@@ -338,7 +399,7 @@ defmodule BaileysEx.Message.SenderTest do
                  name: "Phase 8 Review",
                  values: ["yes", "no"],
                  selectable_count: 1,
-                 message_secret: :crypto.strong_rand_bytes(32)
+                 message_secret: <<33::256>>
                }
              })
 

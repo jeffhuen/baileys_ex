@@ -13,26 +13,6 @@ defmodule BaileysEx.Crypto do
   # -- Types --
 
   @type key_pair :: %{public: binary(), private: binary()}
-  @type media_type ::
-          :image
-          | :video
-          | :audio
-          | :document
-          | :sticker
-          | :gif
-          | :ptt
-          | :ptv
-          | :thumbnail_document
-          | :thumbnail_image
-          | :thumbnail_video
-          | :thumbnail_link
-          | :md_msg_hist
-          | :md_app_state
-          | :product
-          | :product_catalog_image
-          | :payment_bg_image
-          | :ppic
-          | :biz_cover_photo
 
   @type media_keys :: %{
           iv: <<_::128>>,
@@ -226,16 +206,26 @@ defmodule BaileysEx.Crypto do
   - `:x25519` — Curve25519 key pair for Diffie-Hellman key exchange
   - `:ed25519` — Ed25519 key pair for digital signatures
   """
-  @spec generate_key_pair(:x25519 | :ed25519) :: key_pair()
-  def generate_key_pair(curve)
+  @spec generate_key_pair(:x25519 | :ed25519, keyword()) :: key_pair()
+  def generate_key_pair(curve, opts \\ [])
 
-  def generate_key_pair(:x25519) do
-    {pub, priv} = :crypto.generate_key(:ecdh, :x25519)
+  def generate_key_pair(:x25519, opts) do
+    {pub, priv} =
+      case opts[:private_key] do
+        nil -> :crypto.generate_key(:ecdh, :x25519)
+        private_key -> :crypto.generate_key(:ecdh, :x25519, private_key)
+      end
+
     %{public: pub, private: priv}
   end
 
-  def generate_key_pair(:ed25519) do
-    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+  def generate_key_pair(:ed25519, opts) do
+    {pub, priv} =
+      case opts[:private_key] do
+        nil -> :crypto.generate_key(:eddsa, :ed25519)
+        private_key -> :crypto.generate_key(:eddsa, :ed25519, private_key)
+      end
+
     %{public: pub, private: priv}
   end
 
@@ -279,7 +269,7 @@ defmodule BaileysEx.Crypto do
   Returns a map with `:iv` (16 bytes), `:cipher_key` (32 bytes),
   `:mac_key` (32 bytes), and `:ref_key` (32 bytes).
   """
-  @spec expand_media_key(<<_::256>>, media_type()) :: media_keys()
+  @spec expand_media_key(<<_::256>>, BaileysEx.Media.Types.media_type()) :: media_keys()
   def expand_media_key(media_key, media_type) do
     info = BaileysEx.Media.Types.hkdf_info(media_type)
     {:ok, expanded} = hkdf(media_key, info, 112)

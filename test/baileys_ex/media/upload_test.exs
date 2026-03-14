@@ -2,6 +2,7 @@ defmodule BaileysEx.Media.UploadTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Connection.Store
   alias BaileysEx.Media.Upload
 
   test "refresh_media_conn/2 issues the w:m media_conn iq and parses the response" do
@@ -52,6 +53,30 @@ defmodule BaileysEx.Media.UploadTest do
              fetch_date: ~U[2026-03-13 00:00:00Z],
              hosts: [%{hostname: "upload.example.com", max_content_length_bytes: 1_048_576}]
            } = media_conn
+  end
+
+  test "refresh_media_conn/2 reuses a cached media_conn when it is still valid" do
+    {:ok, store} = Store.start_link()
+    store_ref = Store.wrap(store)
+
+    cached = %{
+      auth: "cached-auth",
+      ttl: 3600,
+      fetch_date: ~U[2026-03-13 00:00:00Z],
+      hosts: [%{hostname: "cached.example.com", max_content_length_bytes: 1024}]
+    }
+
+    assert :ok = Store.put(store_ref, :media_conn, cached)
+
+    query_fun = fn _node, _timeout ->
+      flunk("refresh_media_conn/2 should not query when the cache entry is still valid")
+    end
+
+    assert {:ok, ^cached} =
+             Upload.refresh_media_conn(query_fun,
+               store_ref: store_ref,
+               now_fun: fn -> ~U[2026-03-13 00:10:00Z] end
+             )
   end
 
   @tag :tmp_dir
@@ -115,10 +140,7 @@ defmodule BaileysEx.Media.UploadTest do
                request_fun: request_fun
              )
 
-    token =
-      file_enc_sha256
-      |> Base.encode64()
-      |> Upload.encode_token()
+    token = "-7Gr5yBsToK49ZMobsMBDIB3BgQ1zyp5NsKfEEJ0LdY"
 
     assert_receive {:upload_request, "upload.example.com", request_path, query_string,
                     "ciphertext-with-mac", headers}
@@ -128,6 +150,62 @@ defmodule BaileysEx.Media.UploadTest do
 
     assert {"content-type", "application/octet-stream"} in headers
     assert {"origin", "https://web.whatsapp.com"} in headers
+  end
+
+  @tag :tmp_dir
+  test "upload/4 retries subsequent media hosts when the first upload attempt fails",
+       %{tmp_dir: tmp_dir} do
+    parent = self()
+    enc_path = Path.join(tmp_dir, "enc.bin")
+    File.write!(enc_path, "ciphertext-with-mac")
+    file_enc_sha256 = :crypto.hash(:sha256, "ciphertext-with-mac")
+
+    query_fun = fn _node, _timeout ->
+      {:ok,
+       %BinaryNode{
+         tag: "iq",
+         attrs: %{"type" => "result"},
+         content: [
+           %BinaryNode{
+             tag: "media_conn",
+             attrs: %{"auth" => "auth-token", "ttl" => "3600"},
+             content: [
+               %BinaryNode{tag: "host", attrs: %{"hostname" => "upload-1.example.com"}},
+               %BinaryNode{tag: "host", attrs: %{"hostname" => "upload-2.example.com"}}
+             ]
+           }
+         ]
+       }}
+    end
+
+    request_fun = fn request ->
+      uri = URI.parse(request[:url])
+      send(parent, {:upload_host_attempt, uri.host})
+
+      case uri.host do
+        "upload-1.example.com" ->
+          {:error, :econnrefused}
+
+        "upload-2.example.com" ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: %{
+               "url" => "https://mmg.whatsapp.net/mms/image/retried",
+               "direct_path" => "/mms/image/retried"
+             }
+           }}
+      end
+    end
+
+    assert {:ok, %{direct_path: "/mms/image/retried"}} =
+             Upload.upload(query_fun, enc_path, :image,
+               file_enc_sha256: file_enc_sha256,
+               request_fun: request_fun
+             )
+
+    assert_receive {:upload_host_attempt, "upload-1.example.com"}
+    assert_receive {:upload_host_attempt, "upload-2.example.com"}
   end
 
   @tag :tmp_dir

@@ -364,6 +364,52 @@ defmodule BaileysEx.Feature.GroupTest do
              Group.get_metadata(fn _node, _timeout -> {:error, :timeout} end, "1234567890@g.us")
   end
 
+  test "update_description/4 propagates metadata fetch failures" do
+    query_fun = fn
+      %BinaryNode{content: [%BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}]},
+      _timeout ->
+        {:error, :metadata_timeout}
+
+      _node, _timeout ->
+        flunk("description update should not continue after metadata fetch failure")
+    end
+
+    assert {:error, :metadata_timeout} =
+             Group.update_description(query_fun, "1234567890@g.us", "Body")
+  end
+
+  test "update_description/4 treats an empty string as a delete" do
+    parent = self()
+
+    query_fun = fn node, timeout ->
+      send(parent, {:query, node, timeout})
+
+      case node.content do
+        [%BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}] ->
+          {:ok, group_result_node("1234567890")}
+
+        [%BinaryNode{tag: "description"}] ->
+          {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+      end
+    end
+
+    assert :ok = Group.update_description(query_fun, "1234567890@g.us", "")
+
+    assert_receive {:query,
+                    %BinaryNode{
+                      content: [%BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}]
+                    }, 60_000}
+
+    assert_receive {:query,
+                    %BinaryNode{
+                      content: [%BinaryNode{tag: "description", attrs: attrs, content: nil}]
+                    }, 60_000}
+
+    assert attrs["delete"] == "true"
+    refute Map.has_key?(attrs, "id")
+    refute Map.has_key?(attrs, "prev")
+  end
+
   test "extract_group_metadata/1 normalizes owners, preserves explicit zero size, and filters PN/LID fields like Baileys" do
     result =
       %BinaryNode{
@@ -505,6 +551,45 @@ defmodule BaileysEx.Feature.GroupTest do
                         }
                       ]
                     }, 60_000}
+  end
+
+  test "accept_invite_v4 seeds the synthetic add message id with the current user id" do
+    parent = self()
+
+    query_fun = fn node, timeout ->
+      send(parent, {:query, node, timeout})
+      {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+    end
+
+    assert {:ok, "1234567890@g.us"} =
+             Group.accept_invite_v4(
+               query_fun,
+               %{id: "invite-msg-2", remote_jid: "15550001111@s.whatsapp.net"},
+               %{
+                 group_jid: "1234567890@g.us",
+                 invite_code: "CODE",
+                 invite_expiration: 1_710_000_000
+               },
+               me: %{id: "15550003333:5@s.whatsapp.net", name: "~"},
+               message_id_fun: fn me_id ->
+                 send(parent, {:message_id_seed, me_id})
+                 "seeded-msg-1"
+               end,
+               timestamp_fun: fn -> 1_710_222_333 end,
+               upsert_message_fun: &send(parent, {:messages_upsert, &1})
+             )
+
+    assert_receive {:message_id_seed, "15550003333:5@s.whatsapp.net"}
+
+    assert_receive {:messages_upsert,
+                    %{
+                      key: %{
+                        id: "seeded-msg-1",
+                        participant: "15550001111@s.whatsapp.net",
+                        remote_jid: "1234567890@g.us"
+                      },
+                      message_stub_type: :GROUP_PARTICIPANT_ADD
+                    }}
   end
 
   test "handle_dirty_update/3 sends a Baileys-style dirty clean IQ with id and optional timestamp" do

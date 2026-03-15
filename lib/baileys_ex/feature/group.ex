@@ -55,28 +55,32 @@ defmodule BaileysEx.Feature.Group do
           :ok | {:error, term()}
   def update_description(conn, group_jid, description, opts \\ [])
       when is_binary(group_jid) and is_list(opts) do
-    prev =
-      case get_metadata(conn, group_jid) do
-        {:ok, %{desc_id: desc_id}} when is_binary(desc_id) -> desc_id
-        _ -> nil
+    description = empty_string_to_nil(description)
+
+    with {:ok, metadata} <- get_metadata(conn, group_jid) do
+      prev =
+        case metadata do
+          %{desc_id: desc_id} when is_binary(desc_id) -> desc_id
+          _ -> nil
+        end
+
+      attrs =
+        %{}
+        |> maybe_put("id", if(is_binary(description), do: message_id(opts), else: nil))
+        |> maybe_put("delete", if(is_nil(description), do: "true", else: nil))
+        |> maybe_put("prev", prev)
+
+      content =
+        if is_binary(description) do
+          [%BinaryNode{tag: "body", attrs: %{}, content: description}]
+        end
+
+      case group_query(conn, group_jid, "set", [
+             %BinaryNode{tag: "description", attrs: attrs, content: content}
+           ]) do
+        {:ok, _} -> :ok
+        {:error, _reason} = error -> error
       end
-
-    attrs =
-      %{}
-      |> maybe_put("id", if(is_binary(description), do: message_id(opts), else: nil))
-      |> maybe_put("delete", if(is_nil(description), do: "true", else: nil))
-      |> maybe_put("prev", prev)
-
-    content =
-      if is_binary(description) do
-        [%BinaryNode{tag: "body", attrs: %{}, content: description}]
-      end
-
-    case group_query(conn, group_jid, "set", [
-           %BinaryNode{tag: "description", attrs: attrs, content: content}
-         ]) do
-      {:ok, _} -> :ok
-      {:error, _reason} = error -> error
     end
   end
 
@@ -164,6 +168,9 @@ defmodule BaileysEx.Feature.Group do
   @spec fetch_all_participating(term(), keyword()) ::
           {:ok, %{String.t() => map()}} | {:error, term()}
   def fetch_all_participating(conn, opts \\ []) do
+    root_tag = Keyword.get(opts, :root_tag, "groups")
+    item_tag = Keyword.get(opts, :item_tag, "group")
+
     with {:ok, result} <-
            group_query(conn, "@g.us", "get", [
              %BinaryNode{
@@ -177,8 +184,8 @@ defmodule BaileysEx.Feature.Group do
            ]) do
       groups =
         result
-        |> BinaryNodeUtil.child("groups")
-        |> BinaryNodeUtil.children("group")
+        |> BinaryNodeUtil.child(root_tag)
+        |> BinaryNodeUtil.children(item_tag)
         |> Enum.reduce(%{}, fn group_node, acc ->
           metadata =
             extract_group_metadata(%BinaryNode{
@@ -390,8 +397,11 @@ defmodule BaileysEx.Feature.Group do
   def handle_dirty_update(conn, %{type: type} = dirty_update, opts)
       when type in ["groups", "communities"] do
     timestamp = Map.get(dirty_update, :timestamp) || Map.get(dirty_update, "timestamp")
+    root_tag = Keyword.get(opts, :root_tag, if(type == "communities", do: "communities", else: "groups"))
+    item_tag = Keyword.get(opts, :item_tag, if(type == "communities", do: "community", else: "group"))
 
-    with {:ok, groups} <- fetch_all_participating(conn, opts) do
+    with {:ok, groups} <-
+           fetch_all_participating(conn, Keyword.merge(opts, root_tag: root_tag, item_tag: item_tag)) do
       _ =
         send_node(
           Keyword.get(opts, :sendable, conn),
@@ -440,7 +450,7 @@ defmodule BaileysEx.Feature.Group do
   """
   @spec extract_group_metadata(BinaryNode.t()) :: map()
   def extract_group_metadata(%BinaryNode{} = result) do
-    group = BinaryNodeUtil.child(result, "group")
+    group = BinaryNodeUtil.child(result, "group") || BinaryNodeUtil.child(result, "community")
     desc_child = BinaryNodeUtil.child(group, "description")
 
     group
@@ -615,7 +625,7 @@ defmodule BaileysEx.Feature.Group do
         %{
           key: %{
             remote_jid: group_jid,
-            id: message_id(opts),
+            id: message_id(opts, me_id(me)),
             from_me: false,
             participant: admin
           },
@@ -634,12 +644,20 @@ defmodule BaileysEx.Feature.Group do
     end
   end
 
-  defp message_id(opts) do
+  defp message_id(opts, seed_id \\ nil) do
     case opts[:message_id_fun] do
       fun when is_function(fun, 0) -> fun.()
-      _ -> Wire.generate_message_id(nil)
+      fun when is_function(fun, 1) -> fun.(seed_id)
+      _ -> Wire.generate_message_id(seed_id)
     end
   end
+
+  defp me_id(%{id: id}) when is_binary(id), do: id
+  defp me_id(%{"id" => id}) when is_binary(id), do: id
+  defp me_id(_me), do: nil
+
+  defp empty_string_to_nil(""), do: nil
+  defp empty_string_to_nil(description), do: description
 
   defp message_timestamp(opts) do
     case opts[:timestamp_fun] do

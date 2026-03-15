@@ -12,8 +12,13 @@ defmodule BaileysEx.Protocol.USyncTest do
         |> USync.with_protocol(:devices)
         |> USync.with_protocol(:contact)
         |> USync.with_protocol(:lid)
+        |> USync.with_protocol(:bot)
         |> USync.with_user(%User{phone: "+15551234567"})
-        |> USync.with_user(%User{id: "15557654321@s.whatsapp.net", lid: "123456789@lid"})
+        |> USync.with_user(%User{
+          id: "15557654321@s.whatsapp.net",
+          lid: "123456789@lid",
+          persona_id: "persona-1"
+        })
 
       assert {:ok,
               %BinaryNode{
@@ -36,7 +41,14 @@ defmodule BaileysEx.Protocol.USyncTest do
                         content: [
                           %BinaryNode{tag: "devices", attrs: %{"version" => "2"}},
                           %BinaryNode{tag: "contact", attrs: %{}},
-                          %BinaryNode{tag: "lid", attrs: %{}}
+                          %BinaryNode{tag: "lid", attrs: %{}},
+                          %BinaryNode{
+                            tag: "bot",
+                            attrs: %{},
+                            content: [
+                              %BinaryNode{tag: "profile", attrs: %{"v" => "1"}}
+                            ]
+                          }
                         ]
                       },
                       %BinaryNode{
@@ -54,7 +66,17 @@ defmodule BaileysEx.Protocol.USyncTest do
                             tag: "user",
                             attrs: %{"jid" => "15557654321@s.whatsapp.net"},
                             content: [
-                              %BinaryNode{tag: "lid", attrs: %{"jid" => "123456789@lid"}}
+                              %BinaryNode{tag: "lid", attrs: %{"jid" => "123456789@lid"}},
+                              %BinaryNode{
+                                tag: "bot",
+                                attrs: %{},
+                                content: [
+                                  %BinaryNode{
+                                    tag: "profile",
+                                    attrs: %{"persona_id" => "persona-1"}
+                                  }
+                                ]
+                              }
                             ]
                           }
                         ]
@@ -81,6 +103,7 @@ defmodule BaileysEx.Protocol.USyncTest do
         |> USync.with_protocol(:status)
         |> USync.with_protocol(:disappearing_mode)
         |> USync.with_protocol(:lid)
+        |> USync.with_protocol(:bot)
 
       response = %BinaryNode{
         tag: "iq",
@@ -129,7 +152,73 @@ defmodule BaileysEx.Protocol.USyncTest do
                           }
                         ]
                       },
-                      %BinaryNode{tag: "lid", attrs: %{"val" => "123456789@lid"}}
+                      %BinaryNode{tag: "lid", attrs: %{"val" => "123456789@lid"}},
+                      %BinaryNode{
+                        tag: "bot",
+                        attrs: %{},
+                        content: [
+                          %BinaryNode{
+                            tag: "profile",
+                            attrs: %{"persona_id" => "persona-1"},
+                            content: [
+                              %BinaryNode{tag: "name", attrs: %{}, content: "Helper"},
+                              %BinaryNode{
+                                tag: "attributes",
+                                attrs: %{},
+                                content: "friendly"
+                              },
+                              %BinaryNode{
+                                tag: "description",
+                                attrs: %{},
+                                content: "Answers questions"
+                              },
+                              %BinaryNode{
+                                tag: "category",
+                                attrs: %{},
+                                content: "assistant"
+                              },
+                              %BinaryNode{tag: "default", attrs: %{}, content: nil},
+                              %BinaryNode{
+                                tag: "prompts",
+                                attrs: %{},
+                                content: [
+                                  %BinaryNode{
+                                    tag: "prompt",
+                                    attrs: %{},
+                                    content: [
+                                      %BinaryNode{tag: "emoji", attrs: %{}, content: "💡"},
+                                      %BinaryNode{tag: "text", attrs: %{}, content: "Tips"}
+                                    ]
+                                  }
+                                ]
+                              },
+                              %BinaryNode{
+                                tag: "commands",
+                                attrs: %{},
+                                content: [
+                                  %BinaryNode{
+                                    tag: "description",
+                                    attrs: %{},
+                                    content: "Available commands"
+                                  },
+                                  %BinaryNode{
+                                    tag: "command",
+                                    attrs: %{},
+                                    content: [
+                                      %BinaryNode{tag: "name", attrs: %{}, content: "/help"},
+                                      %BinaryNode{
+                                        tag: "description",
+                                        attrs: %{},
+                                        content: "Show help"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
                     ]
                   }
                 ]
@@ -171,12 +260,114 @@ defmodule BaileysEx.Protocol.USyncTest do
                         expected_timestamp: 23
                       }
                     },
-                    lid: "123456789@lid"
+                    lid: "123456789@lid",
+                    bot: %{
+                      jid: "15551234567@s.whatsapp.net",
+                      name: "Helper",
+                      attributes: "friendly",
+                      description: "Answers questions",
+                      category: "assistant",
+                      is_default: true,
+                      prompts: ["💡 Tips"],
+                      persona_id: "persona-1",
+                      commands: [
+                        %{name: "/help", description: "Show help"}
+                      ],
+                      commands_description: "Available commands"
+                    }
                   }
                 ],
                 side_list: [
                   %{id: "15559876543@s.whatsapp.net", contact: true}
                 ]
+              }} = USync.parse_result(query, response)
+    end
+
+    test "defaults disappearing-mode timestamps to the unix epoch when t is absent" do
+      query = USync.new() |> USync.with_protocol(:disappearing_mode)
+
+      response = %BinaryNode{
+        tag: "iq",
+        attrs: %{"type" => "result"},
+        content: [
+          %BinaryNode{
+            tag: "usync",
+            attrs: %{},
+            content: [
+              %BinaryNode{
+                tag: "list",
+                attrs: %{},
+                content: [
+                  %BinaryNode{
+                    tag: "user",
+                    attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                    content: [
+                      %BinaryNode{
+                        tag: "disappearing_mode",
+                        attrs: %{"duration" => "86400"}
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      assert {:ok,
+              %{
+                list: [
+                  %{
+                    id: "15551234567@s.whatsapp.net",
+                    disappearing_mode: %{
+                      duration: 86_400,
+                      set_at: ~U[1970-01-01 00:00:00Z]
+                    }
+                  }
+                ],
+                side_list: []
+              }} = USync.parse_result(query, response)
+    end
+
+    test "defaults status timestamps to the unix epoch when t is absent" do
+      query = USync.new() |> USync.with_protocol(:status)
+
+      response = %BinaryNode{
+        tag: "iq",
+        attrs: %{"type" => "result"},
+        content: [
+          %BinaryNode{
+            tag: "usync",
+            attrs: %{},
+            content: [
+              %BinaryNode{
+                tag: "list",
+                attrs: %{},
+                content: [
+                  %BinaryNode{
+                    tag: "user",
+                    attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                    content: [
+                      %BinaryNode{tag: "status", attrs: %{}, content: "busy"}
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      assert {:ok,
+              %{
+                list: [
+                  %{
+                    id: "15551234567@s.whatsapp.net",
+                    status: %{status: "busy", set_at: ~U[1970-01-01 00:00:00Z]}
+                  }
+                ],
+                side_list: []
               }} = USync.parse_result(query, response)
     end
 

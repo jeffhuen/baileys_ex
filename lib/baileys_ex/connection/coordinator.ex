@@ -9,17 +9,23 @@ defmodule BaileysEx.Connection.Coordinator do
 
   use GenServer
 
+  require Logger
+
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  alias BaileysEx.Feature.AppState
+  alias BaileysEx.Feature.Call
   alias BaileysEx.Feature.Group
   alias BaileysEx.Feature.Presence
+  alias BaileysEx.Feature.Privacy
   alias BaileysEx.Message.IdentityChangeHandler
   alias BaileysEx.Message.NotificationHandler
   alias BaileysEx.Message.Receipt
   alias BaileysEx.Message.Receiver
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store, as: SignalStore
@@ -58,6 +64,8 @@ defmodule BaileysEx.Connection.Coordinator do
       :resync_app_state_fun,
       :reconnect_timer,
       :initial_sync_timer,
+      :app_state_sync_ref,
+      event_buffer_seed: %{},
       identity_change_cache: %{},
       sync_state: :connecting
     ]
@@ -132,9 +140,12 @@ defmodule BaileysEx.Connection.Coordinator do
       state
       |> handle_socket_node(events)
       |> persist_creds_update(events)
+      |> persist_lid_mapping_update(events)
+      |> maybe_seed_event_buffer(events)
       |> maybe_send_push_name_presence_update(previous_creds, events)
       |> handle_connection_update(events)
       |> handle_sync_event(events)
+      |> maybe_start_initial_app_state_sync(events)
       |> handle_dirty_update(events)
 
     {:noreply, state}
@@ -158,7 +169,34 @@ defmodule BaileysEx.Connection.Coordinator do
     {:noreply, %{state | sync_state: :online}}
   end
 
+  def handle_info(:complete_initial_sync, %State{app_state_sync_ref: ref} = state)
+      when not is_nil(ref) do
+    {:noreply, state}
+  end
+
   def handle_info(:complete_initial_sync, %State{} = state) do
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:app_state_sync_complete, ref, result},
+        %State{app_state_sync_ref: ref} = state
+      ) do
+    state = %{state | app_state_sync_ref: nil}
+
+    case result do
+      :ok ->
+        increment_account_sync_counter(state)
+
+      {:error, reason} ->
+        Logger.warning("initial app state sync failed: #{inspect(reason)}")
+    end
+
+    _ = Process.send_after(self(), :complete_initial_sync, 25)
+    {:noreply, state}
+  end
+
+  def handle_info({:app_state_sync_complete, _ref, _result}, %State{} = state) do
     {:noreply, state}
   end
 
@@ -179,6 +217,23 @@ defmodule BaileysEx.Connection.Coordinator do
         %{state | signal_repository: updated_repository}
 
       _ ->
+        state
+    end
+  end
+
+  defp handle_socket_node(%State{} = state, %{
+         socket_node: %{node: %BinaryNode{tag: "call"} = node}
+       }) do
+    case Call.handle_node(node,
+           event_emitter: state.event_emitter,
+           store_ref: state.store_ref,
+           send_node_fun: receipt_sender_fun(state)
+         ) do
+      {:ok, _call} ->
+        state
+
+      {:error, reason} ->
+        Logger.warning("failed to handle call node: #{inspect(reason)}")
         state
     end
   end
@@ -237,6 +292,17 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp persist_creds_update(%State{} = state, _events), do: state
 
+  defp persist_lid_mapping_update(
+         %State{signal_store: %SignalStore{} = signal_store} = state,
+         %{lid_mapping_update: %{lid: lid, pn: pn}}
+       )
+       when is_binary(lid) and is_binary(pn) do
+    :ok = LIDMappingStore.store_lid_pn_mappings(signal_store, [%{lid: lid, pn: pn}])
+    state
+  end
+
+  defp persist_lid_mapping_update(%State{} = state, _events), do: state
+
   defp handle_connection_update(%State{} = state, %{connection_update: %{connection: :open}}) do
     state
     |> cancel_reconnect()
@@ -261,14 +327,19 @@ defmodule BaileysEx.Connection.Coordinator do
        ) do
     :ok = EventEmitter.buffer(state.event_emitter)
 
-    timer =
-      Process.send_after(self(), :initial_sync_timeout, state.config.initial_sync_timeout_ms)
+    if should_sync_history_message?(state.config, %{sync_type: :RECENT}) do
+      timer =
+        Process.send_after(self(), :initial_sync_timeout, state.config.initial_sync_timeout_ms)
 
-    %{
-      cancel_initial_sync_timer(state)
-      | initial_sync_timer: timer,
-        sync_state: :awaiting_initial_sync
-    }
+      %{
+        cancel_initial_sync_timer(state)
+        | initial_sync_timer: timer,
+          sync_state: :awaiting_initial_sync
+      }
+    else
+      _ = EventEmitter.flush(state.event_emitter)
+      %{cancel_initial_sync_timer(state) | initial_sync_timer: nil, sync_state: :online}
+    end
   end
 
   defp handle_connection_update(%State{} = state, %{connection_update: %{connection: :close}}) do
@@ -323,10 +394,18 @@ defmodule BaileysEx.Connection.Coordinator do
        when type in ["groups", "communities"] do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} ->
+        dirty_opts =
+          case type do
+            "communities" -> [root_tag: "communities", item_tag: "community"]
+            _ -> []
+          end
+
         _ =
           Group.handle_dirty_update({state.socket_module, socket_pid}, %{type: type},
-            event_emitter: state.event_emitter,
-            sendable: {state.socket_module, socket_pid}
+            Keyword.merge(dirty_opts,
+              event_emitter: state.event_emitter,
+              sendable: {state.socket_module, socket_pid}
+            )
           )
 
       :error ->
@@ -361,6 +440,13 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp reconnectable_reason?(:logged_out), do: false
   defp reconnectable_reason?(_reason), do: true
+
+  defp should_sync_history_message?(%{should_sync_history_message: fun}, history_message)
+       when is_function(fun, 1) do
+    !!fun.(history_message)
+  end
+
+  defp should_sync_history_message?(_config, _history_message), do: true
 
   defp maybe_execute_init_queries(%State{config: %{fire_init_queries: false}} = state), do: state
 
@@ -447,24 +533,13 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp fetch_blocklist(%State{} = state) do
-    node = %BinaryNode{
-      tag: "iq",
-      attrs: %{"xmlns" => "blocklist", "to" => @s_whatsapp_net, "type" => "get"},
-      content: nil
-    }
-
     with {:ok, socket_pid} <- fetch_socket_pid(state),
-         {:ok, response} <-
-           state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms) do
-      blocklist =
-        response
-        |> BinaryNodeUtil.child("list")
-        |> BinaryNodeUtil.children("item")
-        |> Enum.map(& &1.attrs["jid"])
-        |> Enum.reject(&is_nil/1)
-
-      :ok = Store.put(state.store, :blocklist, blocklist)
-      :ok = EventEmitter.emit(state.event_emitter, :blocklist_update, blocklist)
+         {:ok, blocklist} <-
+           Privacy.fetch_blocklist({state.socket_module, socket_pid},
+             store: state.store,
+             query_timeout: state.config.default_query_timeout_ms
+           ) do
+      :ok = EventEmitter.emit(state.event_emitter, :blocklist_set, %{blocklist: blocklist})
       :ok
     else
       _ -> :ok
@@ -472,21 +547,12 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp fetch_privacy_settings(%State{} = state) do
-    node = %BinaryNode{
-      tag: "iq",
-      attrs: %{"xmlns" => "privacy", "to" => @s_whatsapp_net, "type" => "get"},
-      content: [%BinaryNode{tag: "privacy", attrs: %{}, content: nil}]
-    }
-
     with {:ok, socket_pid} <- fetch_socket_pid(state),
-         {:ok, response} <-
-           state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms) do
-      privacy_settings =
-        response
-        |> BinaryNodeUtil.child("privacy")
-        |> reduce_children_to_dictionary("category")
-
-      :ok = Store.put(state.store, :privacy_settings, privacy_settings)
+         {:ok, privacy_settings} <-
+           Privacy.fetch_settings({state.socket_module, socket_pid}, true,
+             store: state.store,
+             query_timeout: state.config.default_query_timeout_ms
+           ) do
       :ok = EventEmitter.emit(state.event_emitter, :settings_update, %{privacy: privacy_settings})
       :ok
     else
@@ -636,11 +702,13 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp notification_context(%State{} = state) do
+    resync_app_state_fun = state.resync_app_state_fun || built_in_resync_app_state_fun(state)
+
     %{event_emitter: state.event_emitter}
     |> maybe_put_callback(:store_privacy_token_fun, privacy_token_store_fun(state.signal_store))
     |> maybe_put_callback(:handle_encrypt_notification_fun, state.handle_encrypt_notification_fun)
     |> maybe_put_callback(:device_notification_fun, state.device_notification_fun)
-    |> maybe_put_callback(:resync_app_state_fun, state.resync_app_state_fun)
+    |> maybe_put_callback(:resync_app_state_fun, resync_app_state_fun)
   end
 
   defp receipt_sender_fun(%State{} = state) do
@@ -720,6 +788,220 @@ defmodule BaileysEx.Connection.Coordinator do
       end
     end
   end
+
+  defp built_in_resync_app_state_fun(%State{} = state) do
+    fn name ->
+      with {:ok, collections} <- normalize_patch_names([name]) do
+        run_app_state_resync(state, collections, initial_sync: false)
+      end
+    end
+  end
+
+  defp maybe_seed_event_buffer(
+         %State{} = state,
+         %{messaging_history_set: %{chats: chats}}
+       )
+       when is_list(chats) do
+    seed_event_buffer_chats(state, :history_sets, chats)
+  end
+
+  defp maybe_seed_event_buffer(%State{} = state, %{chats_upsert: chats}) when is_list(chats) do
+    seed_event_buffer_chats(state, :chat_upserts, chats)
+  end
+
+  defp maybe_seed_event_buffer(%State{} = state, _events), do: state
+
+  defp seed_event_buffer_chats(%State{} = state, bucket, chats) do
+    chats_by_id =
+      Enum.reduce(chats, %{}, fn chat, acc ->
+        case chat_id(chat) do
+          id when is_binary(id) -> Map.put(acc, id, chat)
+          _ -> acc
+        end
+      end)
+
+    if map_size(chats_by_id) == 0 do
+      state
+    else
+      seed = merge_event_buffer_seed(state.event_buffer_seed, bucket, chats_by_id)
+      :ok = EventEmitter.seed(state.event_emitter, seed)
+      %{state | event_buffer_seed: seed}
+    end
+  end
+
+  defp merge_event_buffer_seed(seed, :history_sets, chats_by_id) do
+    history_chats =
+      seed
+      |> get_in([:historySets, :chats])
+      |> Kernel.||(%{})
+      |> Map.merge(chats_by_id)
+
+    seed
+    |> Map.put(:historySets, %{chats: history_chats})
+    |> Map.put(:history_sets, %{chats: history_chats})
+  end
+
+  defp merge_event_buffer_seed(seed, :chat_upserts, chats_by_id) do
+    chat_upserts =
+      seed
+      |> Map.get(:chatUpserts, %{})
+      |> Map.merge(chats_by_id)
+
+    seed
+    |> Map.put(:chatUpserts, chat_upserts)
+    |> Map.put(:chat_upserts, chat_upserts)
+  end
+
+  defp maybe_start_initial_app_state_sync(
+         %State{sync_state: :syncing, app_state_sync_ref: nil} = state,
+         %{messaging_history_set: _history}
+       ) do
+    maybe_launch_initial_app_state_sync(state)
+  end
+
+  defp maybe_start_initial_app_state_sync(
+         %State{sync_state: :syncing, app_state_sync_ref: nil} = state,
+         %{creds_update: %{my_app_state_key_id: key_id}}
+       )
+       when is_binary(key_id) and key_id != "" do
+    maybe_launch_initial_app_state_sync(state)
+  end
+
+  defp maybe_start_initial_app_state_sync(%State{} = state, _events), do: state
+
+  defp maybe_launch_initial_app_state_sync(%State{} = state) do
+    case current_app_state_key_id(state) do
+      key_id when is_binary(key_id) and key_id != "" ->
+        launch_initial_app_state_sync(state)
+
+      _ ->
+        state
+    end
+  end
+
+  defp launch_initial_app_state_sync(%State{} = state) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        ref = make_ref()
+        coordinator_pid = self()
+        me = current_me(state)
+        collections = BaileysEx.Syncd.Codec.patch_names()
+
+        {:ok, _pid} =
+          Task.Supervisor.start_child(state.task_supervisor, fn ->
+            result =
+              try do
+                run_app_state_resync(
+                  state,
+                  collections,
+                  initial_sync: true,
+                  socket_pid: socket_pid,
+                  me: me
+                )
+              rescue
+                exception ->
+                  {:error, exception}
+              catch
+                kind, reason ->
+                  {:error, {kind, reason}}
+              end
+
+            Kernel.send(
+              coordinator_pid,
+              {:app_state_sync_complete, ref, normalize_sync_result(result)}
+            )
+          end)
+
+        %{state | app_state_sync_ref: ref}
+
+      :error ->
+        _ = Process.send_after(self(), :complete_initial_sync, 25)
+        state
+    end
+  end
+
+  defp run_app_state_resync(%State{} = state, collections, opts) when is_list(collections) do
+    socket_pid = Keyword.get_lazy(opts, :socket_pid, fn -> socket_pid!(state) end)
+    me = Keyword.get_lazy(opts, :me, fn -> current_me(state) end)
+
+    queryable = fn node ->
+      state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms)
+    end
+
+    AppState.resync_app_state(
+      queryable,
+      state.store,
+      collections,
+      signal_store: state.signal_store,
+      event_emitter: state.event_emitter,
+      me: me,
+      is_initial_sync: Keyword.get(opts, :initial_sync, false)
+    )
+  end
+
+  defp increment_account_sync_counter(%State{} = state) do
+    current_counter =
+      state.store_ref
+      |> Store.get(:creds, %{})
+      |> Map.get(:account_sync_counter, 0)
+
+    :ok =
+      EventEmitter.emit(state.event_emitter, :creds_update, %{
+        account_sync_counter: current_counter + 1
+      })
+  end
+
+  defp normalize_sync_result(:ok), do: :ok
+  defp normalize_sync_result({:error, _} = err), do: err
+
+  defp normalize_patch_names(names) when is_list(names) do
+    Enum.reduce_while(names, {:ok, []}, fn name, {:ok, acc} ->
+      case normalize_patch_name(name) do
+        {:ok, collection} -> {:cont, {:ok, acc ++ [collection]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp normalize_patch_name(name) when is_atom(name) do
+    if name in BaileysEx.Syncd.Codec.patch_names() do
+      {:ok, name}
+    else
+      {:error, {:unknown_patch_name, name}}
+    end
+  end
+
+  defp normalize_patch_name(name) when is_binary(name) do
+    case Enum.find(BaileysEx.Syncd.Codec.patch_names(), &(Atom.to_string(&1) == name)) do
+      nil -> {:error, {:unknown_patch_name, name}}
+      collection -> {:ok, collection}
+    end
+  end
+
+  defp normalize_patch_name(name), do: {:error, {:unknown_patch_name, name}}
+
+  defp current_app_state_key_id(%State{} = state) do
+    state.store_ref
+    |> Store.get(:creds, %{})
+    |> Map.get(:my_app_state_key_id)
+  end
+
+  defp current_me(%State{} = state) do
+    state.store_ref
+    |> Store.get(:creds, %{})
+    |> Map.get(:me, %{})
+  end
+
+  defp socket_pid!(%State{} = state) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} -> socket_pid
+      :error -> raise "socket not available"
+    end
+  end
+
+  defp chat_id(%{id: id}) when is_binary(id), do: id
+  defp chat_id(%{"id" => id}) when is_binary(id), do: id
+  defp chat_id(_chat), do: nil
 
   defp maybe_put_callback(map, _key, nil), do: map
   defp maybe_put_callback(map, key, value), do: Map.put(map, key, value)

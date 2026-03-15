@@ -167,39 +167,26 @@ File: `lib/baileys_ex/feature/call.ex`
 
 ```elixir
 defmodule BaileysEx.Feature.Call do
-  def handle_call_offer(conn, node) do
-    call_info = parse_call_offer(node)
-    EventEmitter.emit(conn, {:call, :offer, call_info})
+  def handle_node(node, opts \\ []) do
+    # Parse `call` stanzas, map the Baileys status tags (`offer`, `terminate`,
+    # `reject`, `accept`, default `ringing`), cache offer metadata by call ID,
+    # emit `:call` events, and send the `ack` stanza through `opts[:send_node_fun]`.
   end
 
-  def reject_call(conn, call_id, caller_jid) do
-    node = build_call_reject_node(call_id, caller_jid)
-    Connection.Socket.send_node(conn, node)
+  def reject_call(conn, call_id, caller_jid, opts \\ []) do
+    # Query a `call` stanza with a `reject` child:
+    # <call from="me" to="caller"><reject call-id="..." call-creator="..." count="0"/></call>
   end
 
   @doc "Create a persistent call link (Baileys createCallLink/3)"
   def create_call_link(conn, type, opts \\ []) when type in [:audio, :video] do
-    event = Keyword.get(opts, :event)
-    timeout_ms = Keyword.get(opts, :timeout_ms)
-
-    node = %BinaryNode{
-      tag: "call",
-      attrs: %{"to" => "@call"},
-      content: [
-        %BinaryNode{
-          tag: "link_create",
-          attrs: %{"media" => to_string(type)},
-          content:
-            if event do
-              [%BinaryNode{tag: "event", attrs: %{"start_time" => to_string(event.start_time)}}]
-            end
-        }
-      ]
-    }
-
-    with {:ok, response} <- Connection.Socket.query(conn, node, timeout_ms) do
-      {:ok, extract_link_create_token(response)}
-    end
+    # Query:
+    # <call id="..." to="@call">
+    #   <link_create media="audio|video">
+    #     <event start_time="..."/>?
+    #   </link_create>
+    # </call>
+    # Returns the `token` attr from the response `link_create` child.
   end
 end
 ```
@@ -224,10 +211,10 @@ end
 - [ ] Business: cover photo upload via media upload pipeline
 - [ ] Business: product CRUD operations
 - [ ] Business: order-details query uses the `fb:thrift_iq` namespace from Baileys
-- [ ] Call: reject constructs correct call node
-- [ ] Call events emitted correctly
-- [ ] All node formats match Baileys reference
-- [ ] Call link creation uses `call/link_create` and returns token for audio/video with optional event (GAP-36)
+- [x] Call: reject constructs correct call node
+- [x] Call events emitted correctly
+- [x] All node formats match Baileys reference
+- [x] Call link creation uses `call/link_create` and returns token for audio/video with optional event (GAP-36)
 
 ## Files Created/Modified
 
@@ -235,7 +222,9 @@ end
 - `lib/baileys_ex/feature/newsletter.ex`
 - `lib/baileys_ex/feature/community.ex`
 - `lib/baileys_ex/feature/call.ex`
+- `lib/baileys_ex/connection/coordinator.ex`
 - `test/baileys_ex/feature/business_test.exs`
 - `test/baileys_ex/feature/newsletter_test.exs`
 - `test/baileys_ex/feature/community_test.exs`
 - `test/baileys_ex/feature/call_test.exs`
+- `test/baileys_ex/connection/supervisor_test.exs`

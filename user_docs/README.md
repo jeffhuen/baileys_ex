@@ -333,6 +333,12 @@ the reader needs to know, not how it's implemented.
 
 > Update this table whenever you add a page. A page not listed here is effectively invisible.
 
+### Overview
+
+| Page | Description |
+|---|---|
+| [glossary.md](glossary.md) | Plain-language definitions for WhatsApp and BaileysEx terms |
+
 ### Getting Started
 
 | Page | Description |
@@ -343,7 +349,8 @@ the reader needs to know, not how it's implemented.
 
 | Page | Description |
 |---|---|
-| *(Phase 12)* | Messages, media, groups, presence, events, auth, advanced |
+| [guides/manage-app-state-sync.md](guides/manage-app-state-sync.md) | Drive advanced Syncd resync and patch flows from an existing connection runtime |
+| *(Phase 12)* | Messages, media, groups, presence, events, auth |
 
 ### Reference
 
@@ -355,6 +362,7 @@ the reader needs to know, not how it's implemented.
 
 | Page | Description |
 |---|---|
+| [troubleshooting/app-state-sync-issues.md](troubleshooting/app-state-sync-issues.md) | Fix missing Syncd keys, MAC mismatches, and missing emitted updates |
 | *(Phase 12)* | Connection issues, authentication, encryption |
 
 ---

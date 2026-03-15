@@ -12,7 +12,7 @@ defmodule BaileysEx.Protocol.USync do
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID
 
-  @protocols [:devices, :contact, :status, :disappearing_mode, :lid]
+  @protocols [:devices, :contact, :status, :disappearing_mode, :lid, :bot]
   @contexts [:interactive, :background, :message, :notification]
   @modes [:query, :delta]
 
@@ -32,7 +32,7 @@ defmodule BaileysEx.Protocol.USync do
     defstruct [:id, :lid, :phone, :type, :persona_id]
   end
 
-  @type protocol :: :devices | :contact | :status | :disappearing_mode | :lid
+  @type protocol :: :devices | :contact | :status | :disappearing_mode | :lid | :bot
   @type context :: :interactive | :background | :message | :notification
   @type mode :: :query | :delta
   @type user_result :: %{required(:id) => String.t(), optional(atom()) => term()}
@@ -195,7 +195,7 @@ defmodule BaileysEx.Protocol.USync do
     user_node
     |> BinaryNodeUtil.children()
     |> Enum.reduce_while({:ok, entry}, fn child, {:ok, acc} ->
-      case parse_protocol_node(child, protocols) do
+      case parse_protocol_node(child, protocols, entry[:id]) do
         {:ok, nil} -> {:cont, {:ok, acc}}
         {:ok, {key, value}} -> {:cont, {:ok, Map.put(acc, key, value)}}
         {:error, _} = error -> {:halt, error}
@@ -203,16 +203,16 @@ defmodule BaileysEx.Protocol.USync do
     end)
   end
 
-  defp parse_protocol_node(%BinaryNode{tag: "error"}, _protocols), do: {:ok, nil}
+  defp parse_protocol_node(%BinaryNode{tag: "error"}, _protocols, _jid), do: {:ok, nil}
 
-  defp parse_protocol_node(%BinaryNode{tag: tag} = node, protocols) do
+  defp parse_protocol_node(%BinaryNode{tag: tag} = node, protocols, jid) do
     protocol = protocol_for_tag(tag)
 
     if is_nil(protocol) or protocol not in protocols do
       {:ok, nil}
     else
       with :ok <- BinaryNodeUtil.assert_error_free(node) do
-        {:ok, {protocol, parse_protocol_value(protocol, node)}}
+        {:ok, {protocol, parse_protocol_value(protocol, node, jid)}}
       end
     end
   end
@@ -265,6 +265,27 @@ defmodule BaileysEx.Protocol.USync do
 
   defp parse_protocol_value(:lid, %BinaryNode{attrs: attrs}), do: attrs["val"]
 
+  defp parse_protocol_value(:bot, %BinaryNode{} = node, jid) do
+    profile = BinaryNodeUtil.child(node, "profile")
+    commands_node = BinaryNodeUtil.child(profile, "commands")
+    prompts_node = BinaryNodeUtil.child(profile, "prompts")
+
+    %{
+      jid: jid,
+      name: BinaryNodeUtil.child_string(profile, "name"),
+      attributes: BinaryNodeUtil.child_string(profile, "attributes"),
+      description: BinaryNodeUtil.child_string(profile, "description"),
+      category: BinaryNodeUtil.child_string(profile, "category"),
+      is_default: match?(%BinaryNode{}, BinaryNodeUtil.child(profile, "default")),
+      prompts: parse_bot_prompts(prompts_node),
+      persona_id: profile && profile.attrs["persona_id"],
+      commands: parse_bot_commands(commands_node),
+      commands_description: BinaryNodeUtil.child_string(commands_node, "description")
+    }
+  end
+
+  defp parse_protocol_value(protocol, node, _jid), do: parse_protocol_value(protocol, node)
+
   defp protocol_query_node(:devices), do: %BinaryNode{tag: "devices", attrs: %{"version" => "2"}}
   defp protocol_query_node(:contact), do: %BinaryNode{tag: "contact", attrs: %{}}
   defp protocol_query_node(:status), do: %BinaryNode{tag: "status", attrs: %{}}
@@ -273,6 +294,14 @@ defmodule BaileysEx.Protocol.USync do
     do: %BinaryNode{tag: "disappearing_mode", attrs: %{}}
 
   defp protocol_query_node(:lid), do: %BinaryNode{tag: "lid", attrs: %{}}
+
+  defp protocol_query_node(:bot) do
+    %BinaryNode{
+      tag: "bot",
+      attrs: %{},
+      content: [%BinaryNode{tag: "profile", attrs: %{"v" => "1"}}]
+    }
+  end
 
   defp user_query_node(%User{} = user, protocols) do
     attrs =
@@ -295,6 +324,14 @@ defmodule BaileysEx.Protocol.USync do
 
   defp protocol_user_node(:lid, %User{lid: lid}) when is_binary(lid) do
     %BinaryNode{tag: "lid", attrs: %{"jid" => lid}}
+  end
+
+  defp protocol_user_node(:bot, %User{persona_id: persona_id}) when is_binary(persona_id) do
+    %BinaryNode{
+      tag: "bot",
+      attrs: %{},
+      content: [%BinaryNode{tag: "profile", attrs: %{"persona_id" => persona_id}}]
+    }
   end
 
   defp protocol_user_node(_protocol, _user), do: nil
@@ -332,6 +369,7 @@ defmodule BaileysEx.Protocol.USync do
   defp protocol_for_tag("status"), do: :status
   defp protocol_for_tag("disappearing_mode"), do: :disappearing_mode
   defp protocol_for_tag("lid"), do: :lid
+  defp protocol_for_tag("bot"), do: :bot
   defp protocol_for_tag(_tag), do: nil
 
   defp content_bytes({:binary, bytes}) when is_binary(bytes), do: bytes
@@ -358,12 +396,33 @@ defmodule BaileysEx.Protocol.USync do
     end
   end
 
-  defp unix_datetime(nil), do: nil
+  defp unix_datetime(nil), do: DateTime.from_unix!(0)
 
   defp unix_datetime(value) when is_binary(value) do
     case parse_int(value) do
       nil -> nil
       seconds -> DateTime.from_unix!(seconds)
     end
+  end
+
+  defp parse_bot_commands(commands_node) do
+    commands_node
+    |> BinaryNodeUtil.children("command")
+    |> Enum.map(fn command ->
+      %{
+        name: BinaryNodeUtil.child_string(command, "name"),
+        description: BinaryNodeUtil.child_string(command, "description")
+      }
+    end)
+  end
+
+  defp parse_bot_prompts(prompts_node) do
+    prompts_node
+    |> BinaryNodeUtil.children("prompt")
+    |> Enum.map(fn prompt ->
+      [BinaryNodeUtil.child_string(prompt, "emoji"), BinaryNodeUtil.child_string(prompt, "text")]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" ")
+    end)
   end
 end

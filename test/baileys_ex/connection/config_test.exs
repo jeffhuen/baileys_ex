@@ -26,9 +26,13 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.country_code == "US"
     assert config.sync_full_history == true
     assert config.print_qr_in_terminal == false
+    assert config.should_sync_history_message.(%{sync_type: :RECENT}) == true
+    assert config.should_sync_history_message.(%{sync_type: :FULL}) == false
   end
 
   test "new/1 applies overrides" do
+    should_sync_history_message = fn %{sync_type: sync_type} -> sync_type == :ON_DEMAND end
+
     config =
       Config.new(
         ws_url: "wss://example.test/ws",
@@ -46,7 +50,8 @@ defmodule BaileysEx.Connection.ConfigTest do
         browser: {"Ubuntu", "Firefox", "24.04"},
         version: [2, 24, 7],
         country_code: "GB",
-        sync_full_history: false
+        sync_full_history: false,
+        should_sync_history_message: should_sync_history_message
       )
 
     assert config.ws_url == "wss://example.test/ws"
@@ -65,6 +70,8 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.version == [2, 24, 7]
     assert config.country_code == "GB"
     assert config.sync_full_history == false
+    assert config.should_sync_history_message.(%{sync_type: :ON_DEMAND}) == true
+    assert config.should_sync_history_message.(%{sync_type: :RECENT}) == false
   end
 
   test "platform_type/1 maps browsers and host platforms to the expected atoms" do

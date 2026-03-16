@@ -31,14 +31,15 @@ defmodule BaileysEx do
           _other -> :ok
         end)
 
-      {:ok, _sent} =
-        BaileysEx.send_message(connection, "1234567890@s.whatsapp.net", %{text: "Hello!"})
-
       unsubscribe.()
       :ok = BaileysEx.disconnect(connection)
 
   Advanced callers can obtain the raw socket transport tuple via `queryable/1`
   and pass it directly to the lower-level feature modules.
+
+  Outbound `send_message/4` and `send_status/3` require `connect/2` to be started
+  with either `:signal_repository` or `:signal_repository_adapter`. BaileysEx does
+  not wire a default Signal repository adapter into the runtime yet.
   """
 
   alias BaileysEx.Connection.Supervisor, as: ConnectionSupervisor
@@ -79,10 +80,10 @@ defmodule BaileysEx do
     {callback_opts, connection_opts} =
       Keyword.split(opts, [:on_connection, :on_event, :on_message, :on_qr])
 
-    with {:ok, connection} <- ConnectionSupervisor.start_connection(auth_state, connection_opts) do
-      :ok = maybe_attach_callbacks(connection, callback_opts)
-      {:ok, connection}
-    end
+    auth_state
+    |> ConnectionSupervisor.start_connection(
+      maybe_put_initial_event_subscribers(connection_opts, callback_opts)
+    )
   end
 
   @doc "Stop a running connection runtime."
@@ -133,10 +134,7 @@ defmodule BaileysEx do
   @spec subscribe_raw(connection(), (map() -> term())) ::
           unsubscribe_fun() | {:error, :event_emitter_not_available}
   def subscribe_raw(connection, handler) when is_function(handler, 1) do
-    case event_emitter(connection) do
-      {:ok, _pid} -> ConnectionSupervisor.subscribe(connection, handler)
-      {:error, _reason} = error -> error
-    end
+    ConnectionSupervisor.subscribe(connection, handler)
   end
 
   @doc """
@@ -163,7 +161,12 @@ defmodule BaileysEx do
     ConnectionSupervisor.request_pairing_code(connection, phone_number, opts)
   end
 
-  @doc "Send a message to a WhatsApp JID through the coordinator-managed runtime."
+  @doc """
+  Send a message to a WhatsApp JID through the coordinator-managed runtime.
+
+  This requires `connect/2` to be started with `:signal_repository` or
+  `:signal_repository_adapter`.
+  """
   @spec send_message(connection(), String.t() | JID.t(), map() | struct(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def send_message(connection, jid, content, opts \\ []) when is_list(opts) do
@@ -172,7 +175,12 @@ defmodule BaileysEx do
     end
   end
 
-  @doc "Send a status update through the `status@broadcast` fanout path."
+  @doc """
+  Send a status update through the `status@broadcast` fanout path.
+
+  This requires `connect/2` to be started with `:signal_repository` or
+  `:signal_repository_adapter`.
+  """
   @spec send_status(connection(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def send_status(connection, content, opts \\ []) when is_map(content) and is_list(opts) do
     ConnectionSupervisor.send_status(connection, content, opts)
@@ -328,28 +336,17 @@ defmodule BaileysEx do
     end)
   end
 
-  defp maybe_attach_callbacks(_connection, []), do: :ok
-
-  defp maybe_attach_callbacks(connection, callback_opts) do
-    unsubscribe =
-      ConnectionSupervisor.subscribe(connection, fn events ->
-        dispatch_callback_events(events, callback_opts)
-      end)
-
-    _cleanup_pid = spawn_callback_cleanup(connection, unsubscribe)
-    :ok
+  defp maybe_put_initial_event_subscribers(connection_opts, callback_opts) do
+    if callback_handlers?(callback_opts) do
+      handler = fn events -> dispatch_callback_events(events, callback_opts) end
+      Keyword.update(connection_opts, :initial_event_subscribers, [handler], &[handler | &1])
+    else
+      connection_opts
+    end
   end
 
-  defp spawn_callback_cleanup(connection, unsubscribe)
-       when is_pid(connection) and is_function(unsubscribe, 0) do
-    spawn(fn ->
-      ref = Process.monitor(connection)
-
-      receive do
-        {:DOWN, ^ref, :process, ^connection, _reason} ->
-          unsubscribe.()
-      end
-    end)
+  defp callback_handlers?(callback_opts) when is_list(callback_opts) do
+    Enum.any?(callback_opts, fn {_key, callback} -> is_function(callback, 1) end)
   end
 
   defp dispatch_callback_events(events, callback_opts) do

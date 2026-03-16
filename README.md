@@ -57,12 +57,13 @@ unsubscribe =
     _other -> :ok
   end)
 
-{:ok, _sent} =
-  BaileysEx.send_message(connection, "1234567890@s.whatsapp.net", %{text: "Hello from Elixir"})
-
 unsubscribe.()
 :ok = BaileysEx.disconnect(connection)
 ```
+
+Outbound `send_message/4` and `send_status/3` require `connect/2` to be started with
+either `:signal_repository` or `:signal_repository_adapter`. BaileysEx does not
+wire a default Signal repository adapter into the runtime yet.
 
 ## Public API
 

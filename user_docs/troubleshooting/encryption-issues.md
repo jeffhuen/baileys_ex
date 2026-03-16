@@ -1,5 +1,24 @@
 # Troubleshooting: Encryption Issues
 
+## `send_message/4` returns `{:error, :signal_repository_not_ready}`
+
+**What you see:**
+```elixir
+{:error, :signal_repository_not_ready}
+```
+
+**Why this happens:** The connection was started without `:signal_repository` or
+`:signal_repository_adapter`, so the runtime has no Signal repository for outbound
+end-to-end encryption.
+
+**Fix:**
+
+Start `BaileysEx.connect/2` with either a prebuilt `signal_repository:` or a
+`signal_repository_adapter:` plus `signal_repository_adapter_state:`. BaileysEx
+does not attach a default adapter during connection startup.
+
+---
+
 ## `send_message/4` returns `{:error, :invalid_jid}`
 
 **What you see:**

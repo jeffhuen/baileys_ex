@@ -47,7 +47,19 @@ defmodule BaileysEx.Connection.Supervisor do
             {term(), :restarting | :undefined | pid(), :supervisor | :worker,
              :dynamic | [module()]}
           ]
-  def which_children(supervisor), do: Elixir.Supervisor.which_children(supervisor)
+  def which_children(supervisor) do
+    case resolve_pid(supervisor) do
+      pid when is_pid(pid) ->
+        try do
+          Elixir.Supervisor.which_children(pid)
+        catch
+          :exit, _reason -> []
+        end
+
+      _ ->
+        []
+    end
+  end
 
   @doc "Return a child pid by supervisor child id."
   @spec child_pid(GenServer.server(), term()) :: pid() | nil
@@ -125,14 +137,19 @@ defmodule BaileysEx.Connection.Supervisor do
   end
 
   @doc "Subscribe to raw event maps emitted by the connection runtime."
-  @spec subscribe(GenServer.server(), (map() -> term())) :: (-> :ok)
+  @spec subscribe(GenServer.server(), (map() -> term())) ::
+          (-> :ok) | {:error, :event_emitter_not_available}
   def subscribe(supervisor, handler) when is_function(handler, 1) do
     case event_emitter(supervisor) do
       pid when is_pid(pid) ->
-        EventEmitter.process(pid, handler)
+        try do
+          EventEmitter.process(pid, handler)
+        catch
+          :exit, _reason -> {:error, :event_emitter_not_available}
+        end
 
       _ ->
-        raise ArgumentError, "connection #{inspect(supervisor)} does not have an event emitter"
+        {:error, :event_emitter_not_available}
     end
   end
 
@@ -183,7 +200,13 @@ defmodule BaileysEx.Connection.Supervisor do
 
     socket_opts =
       opts
-      |> Keyword.drop([:name, :socket_module, :signal_store_module, :signal_store_opts])
+      |> Keyword.drop([
+        :name,
+        :socket_module,
+        :signal_store_module,
+        :signal_store_opts,
+        :initial_event_subscribers
+      ])
       |> Keyword.put(:config, config)
       |> Keyword.put_new(:event_emitter, emitter_name)
       |> Keyword.put_new(:signal_store, {signal_store_module, signal_store_name})
@@ -194,7 +217,14 @@ defmodule BaileysEx.Connection.Supervisor do
       Elixir.Supervisor.child_spec({Store, [name: store_name, auth_state: opts[:auth_state]]},
         id: Store
       ),
-      Elixir.Supervisor.child_spec({EventEmitter, [name: emitter_name]}, id: EventEmitter),
+      Elixir.Supervisor.child_spec(
+        {EventEmitter,
+         [
+           name: emitter_name,
+           initial_subscribers: Keyword.get(opts, :initial_event_subscribers, [])
+         ]},
+        id: EventEmitter
+      ),
       Elixir.Supervisor.child_spec(
         {signal_store_module, Keyword.put_new(signal_store_opts, :name, signal_store_name)},
         id: signal_store_module

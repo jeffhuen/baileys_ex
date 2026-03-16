@@ -106,6 +106,61 @@ defmodule BaileysEx.PublicApiTest do
     end
   end
 
+  defmodule StartupEmitSignalStore do
+    @behaviour BaileysEx.Signal.Store
+
+    alias BaileysEx.Connection.EventEmitter
+    alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
+
+    def child_spec(opts) do
+      %{
+        id: __MODULE__,
+        start: {__MODULE__, :start_link, [opts]},
+        type: :worker,
+        restart: :permanent,
+        shutdown: 5_000
+      }
+    end
+
+    @impl true
+    def start_link(opts) do
+      startup_events =
+        Keyword.get(opts, :startup_events, [%{connection: :connecting}, %{qr: "startup-qr"}])
+
+      event_emitter = Keyword.fetch!(opts, :event_emitter)
+
+      case SignalStoreMemory.start_link(Keyword.drop(opts, [:event_emitter, :startup_events])) do
+        {:ok, pid} ->
+          Enum.each(startup_events, fn update ->
+            :ok = EventEmitter.emit(event_emitter, :connection_update, update)
+          end)
+
+          {:ok, pid}
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+
+    @impl true
+    def wrap(pid), do: SignalStoreMemory.wrap(pid)
+
+    @impl true
+    def get(ref, type, ids), do: SignalStoreMemory.get(ref, type, ids)
+
+    @impl true
+    def set(ref, data), do: SignalStoreMemory.set(ref, data)
+
+    @impl true
+    def clear(ref), do: SignalStoreMemory.clear(ref)
+
+    @impl true
+    def transaction(ref, key, fun), do: SignalStoreMemory.transaction(ref, key, fun)
+
+    @impl true
+    def in_transaction?(ref), do: SignalStoreMemory.in_transaction?(ref)
+  end
+
   test "connect/2 wires convenience callbacks and subscribe/2 emits friendly events" do
     parent = self()
 
@@ -143,6 +198,50 @@ defmodule BaileysEx.PublicApiTest do
 
     unsubscribe.()
     assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "connect/2 delivers startup callback events emitted before the runtime returns" do
+    parent = self()
+    connection_name = {:phase12_startup_callbacks, System.unique_integer([:positive])}
+
+    event_emitter =
+      {:global, {BaileysEx.Connection.Supervisor, connection_name, EventEmitter}}
+
+    assert {:ok, connection} =
+             BaileysEx.connect(%{creds: %{}},
+               name: connection_name,
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               signal_store_module: StartupEmitSignalStore,
+               signal_store_opts: [event_emitter: event_emitter],
+               test_pid: self(),
+               on_connection: &send(parent, {:startup_on_connection, &1}),
+               on_qr: &send(parent, {:startup_on_qr, &1})
+             )
+
+    assert_receive {:startup_on_connection, %{connection: :connecting}}
+    assert_receive {:startup_on_qr, "startup-qr"}
+    assert_receive :fake_socket_connect
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "subscribe/2 and subscribe_raw/2 return an error after disconnect" do
+    assert {:ok, connection} =
+             BaileysEx.connect(%{creds: %{}},
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+    assert :ok = BaileysEx.disconnect(connection)
+
+    assert {:error, :event_emitter_not_available} =
+             BaileysEx.subscribe_raw(connection, fn _events -> :ok end)
+
+    assert {:error, :event_emitter_not_available} =
+             BaileysEx.subscribe(connection, fn _event -> :ok end)
   end
 
   test "send_message/4 and send_status/3 report when the signal repository is not ready" do

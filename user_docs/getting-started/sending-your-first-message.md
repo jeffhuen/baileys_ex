@@ -7,12 +7,16 @@ You will finish this page with a text message sent from a live BaileysEx connect
 - Your connection reaches WhatsApp successfully
 - Your session is already paired
 - You know the recipient [JID](../glossary.md#jid)
+- Your connection was started with `:signal_repository` or `:signal_repository_adapter`
 
 ## Steps
 
 ### 1. Send a text message
 
 Call `BaileysEx.send_message/4` with a user JID and a content map.
+
+BaileysEx does not attach a default Signal repository adapter during `connect/2`, so
+outbound sends only work after you configure one of those connection options.
 
 ```elixir
 {:ok, sent} =

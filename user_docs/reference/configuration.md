@@ -104,29 +104,32 @@ on_event: fn events -> IO.inspect(events, label: "raw events") end
 
 Receives the buffered raw event map before the public facade normalizes it.
 
+Outbound `send_message/4` and `send_status/3` require one of the Signal repository
+options below. BaileysEx does not build a default repository adapter during `connect/2`.
+
 ### `signal_repository`
 
 - **Type:** `BaileysEx.Signal.Repository.t()`
-- **Default:** runtime-managed repository
+- **Default:** `nil`
 - **Example:**
 
 ```elixir
 signal_repository: repository
 ```
 
-Use this only if you need to inject a prebuilt repository into the coordinator.
+Use this when you want to inject a prebuilt repository into the coordinator.
 
 ### `signal_repository_adapter`
 
 - **Type:** `module()`
-- **Default:** runtime default
+- **Default:** `nil`
 - **Example:**
 
 ```elixir
 signal_repository_adapter: MyApp.SignalAdapter
 ```
 
-Advanced only. This swaps the repository adapter used for end-to-end encryption operations.
+Advanced only. This sets the repository adapter used for end-to-end encryption operations.
 
 ### `signal_repository_adapter_state`
 

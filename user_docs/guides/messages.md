@@ -6,6 +6,9 @@ Use this guide when you want to send anything that is not primarily a media uplo
 
 Send a plain text message with `BaileysEx.send_message/4`.
 
+All outbound send examples on this page assume the connection was started with
+`connect/2` using `:signal_repository` or `:signal_repository_adapter`.
+
 ```elixir
 {:ok, _sent} =
   BaileysEx.send_message(connection, "15551234567@s.whatsapp.net", %{text: "Hello from BaileysEx"})
@@ -77,6 +80,7 @@ These options matter most for everyday message sending:
 - The public facade sends message payloads that `BaileysEx.Message.Builder` supports today. It does not add a second abstraction layer over the builder.
 - Outbound interactive templates are not covered by the top-level facade. The currently supported reply payloads are listed in the message-types reference.
 - If you pass an invalid JID, `BaileysEx.send_message/4` returns `{:error, :invalid_jid}`.
+- If the connection was started without `:signal_repository` or `:signal_repository_adapter`, `BaileysEx.send_message/4` returns `{:error, :signal_repository_not_ready}`.
 
 ---
 

@@ -6,6 +6,9 @@ Use this guide when you need to upload or download images, video, audio, documen
 
 Send a file by passing a media field to `BaileysEx.send_message/4`.
 
+All outbound send examples on this page assume the connection was started with
+`connect/2` using `:signal_repository` or `:signal_repository_adapter`.
+
 ```elixir
 {:ok, _sent} =
   BaileysEx.send_message(connection, "15551234567@s.whatsapp.net", %{
@@ -68,6 +71,7 @@ The file-based download path keeps memory use lower for larger payloads.
 ## Limitations
 
 - Media sending requires a live connection because BaileysEx uploads encrypted blobs before it relays the message.
+- Media sending also requires `connect/2` to be started with `:signal_repository` or `:signal_repository_adapter`.
 - `download_media/2` and `download_media_to_file/3` need a valid media message with `url` or `direct_path` and a `media_key`.
 - Thumbnail generation depends on the available thumbnail helpers for the selected media type.
 

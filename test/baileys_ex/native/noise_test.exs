@@ -47,9 +47,47 @@ defmodule BaileysEx.Native.NoiseTest do
       assert Noise.decrypt(responder, ciphertext) == "payload"
     end
 
-    # Smoke-test resource teardown; this is not a proof of leak freedom.
     :erlang.garbage_collect(self())
     assert true
+  end
+
+  test "NoiseSession ResourceArc resources are freed when references are dropped" do
+    # Record baseline — other tests may have live sessions
+    :erlang.garbage_collect(self())
+    baseline = Noise.session_count()
+
+    # Create sessions in a spawned process so they become unreachable on exit
+    test_pid = self()
+
+    pid =
+      spawn(fn ->
+        sessions =
+          for _ <- 1..20 do
+            {i, r} = complete_raw_handshake()
+            {i, r}
+          end
+
+        send(test_pid, {:created, length(sessions) * 2})
+      end)
+
+    ref = Process.monitor(pid)
+    assert_receive {:created, 40}, 5_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+
+    # Force GC on ourselves (shouldn't matter — sessions were in the spawned process)
+    :erlang.garbage_collect(self())
+
+    # The spawned process is dead; its heap has been freed. The BEAM's resource
+    # destructor calls Rust Drop, decrementing the atomic counter.
+    # Allow a small window for the destructor to run.
+    final_count =
+      Enum.reduce_while(1..50, nil, fn _, _ ->
+        count = Noise.session_count()
+        if count <= baseline, do: {:halt, count}, else: {:cont, Process.sleep(10)}
+      end)
+
+    assert final_count <= baseline,
+           "expected session count to return to #{baseline}, got #{Noise.session_count()}"
   end
 
   test "fixed private keys produce pinned handshake messages" do

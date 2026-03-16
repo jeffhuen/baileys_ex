@@ -7,6 +7,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
   alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.Group.SenderKeyRecord
   alias BaileysEx.Signal.Store
+  alias BaileysEx.TestHelpers.TelemetryHelpers
 
   defmodule FakeAdapter do
     @behaviour Repository.Adapter
@@ -256,6 +257,60 @@ defmodule BaileysEx.Signal.RepositoryTest do
 
       assert {:ok, %{exists: false, reason: :no_session}} =
                Repository.validate_session(repo, "5511999887766@s.whatsapp.net")
+    end
+
+    test "encrypt and decrypt emit signal telemetry" do
+      telemetry_id =
+        TelemetryHelpers.attach_events(self(), [
+          [:baileys_ex, :nif, :signal, :encrypt],
+          [:baileys_ex, :nif, :signal, :decrypt]
+        ])
+
+      on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+      repo = new_repo()
+
+      session = %{
+        registration_id: 42,
+        identity_key: fixed_bytes(32, 1),
+        signed_pre_key: %{
+          key_id: 7,
+          public_key: fixed_bytes(32, 2),
+          signature: fixed_bytes(64, 3)
+        },
+        pre_key: %{
+          key_id: 8,
+          public_key: fixed_bytes(32, 4)
+        }
+      }
+
+      assert {:ok, repo} =
+               Repository.inject_e2e_session(repo, %{
+                 jid: "5511999887766@s.whatsapp.net",
+                 session: session
+               })
+
+      assert {:ok, repo, %{ciphertext: ciphertext}} =
+               Repository.encrypt_message(repo, %{
+                 jid: "5511999887766@s.whatsapp.net",
+                 data: "hello"
+               })
+
+      assert_receive {:telemetry, [:baileys_ex, :nif, :signal, :encrypt], %{bytes: 5},
+                      %{jid: "5511999887766@s.whatsapp.net", mode: :direct}}
+
+      assert {:ok, _repo, "hello"} =
+               Repository.decrypt_message(repo, %{
+                 jid: "5511999887766@s.whatsapp.net",
+                 type: :pkmsg,
+                 ciphertext: ciphertext
+               })
+
+      ciphertext_bytes = byte_size(ciphertext)
+
+      assert_receive {:telemetry, [:baileys_ex, :nif, :signal, :decrypt],
+                      %{bytes: ^ciphertext_bytes},
+                      %{jid: "5511999887766@s.whatsapp.net", mode: :direct}}
     end
 
     test "returns a structured missing-session response" do

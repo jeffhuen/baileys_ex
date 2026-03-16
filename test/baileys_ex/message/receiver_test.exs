@@ -19,6 +19,7 @@ defmodule BaileysEx.Message.ReceiverTest do
   alias BaileysEx.Signal.Store
   alias BaileysEx.Signal.Repository
   alias BaileysEx.TestHelpers.MessageSignalHelpers
+  alias BaileysEx.TestHelpers.TelemetryHelpers
 
   test "process_node/3 decrypts a direct message node and emits messages_upsert" do
     assert {:ok, emitter} = EventEmitter.start_link()
@@ -181,6 +182,62 @@ defmodule BaileysEx.Message.ReceiverTest do
                     }}
 
     unsubscribe.()
+  end
+
+  test "process_node/3 emits receive telemetry" do
+    assert {:ok, emitter} = EventEmitter.start_link()
+
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :message, :receive]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    assert {:ok, repo} =
+             Repository.inject_e2e_session(repo, %{
+               jid: "15551234567:1@s.whatsapp.net",
+               session: session
+             })
+
+    plaintext = Builder.build(%{text: "telemetry receive"}) |> Message.encode()
+
+    assert {:ok, repo, %{ciphertext: ciphertext}} =
+             Repository.encrypt_message(repo, %{
+               jid: "15551234567:1@s.whatsapp.net",
+               data: plaintext
+             })
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "msg-telemetry",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => "15551234567:1@s.whatsapp.net",
+        "t" => "1710000002"
+      },
+      content: [
+        %BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg"}, content: {:binary, ciphertext}}
+      ]
+    }
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid"
+    }
+
+    assert {:ok, _message, _context} = Receiver.process_node(node, context)
+
+    assert_receive {:telemetry, [:baileys_ex, :message, :receive], %{count: 1},
+                    %{
+                      message_id: "msg-telemetry",
+                      remote_jid: "15551234567@s.whatsapp.net"
+                    }}
   end
 
   test "process_node/3 emits protocol-message side effects for revoke, edit, ephemeral settings, and app-state sync key shares" do

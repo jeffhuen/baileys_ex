@@ -112,4 +112,14 @@ defmodule BaileysEx.Native.Noise do
   """
   @spec decrypt(session(), binary()) :: binary()
   def decrypt(session, ciphertext), do: Native.noise_decrypt(session, ciphertext)
+
+  @doc """
+  Return the number of live `NoiseSession` NIF resources.
+
+  Tracked via an atomic counter on the Rust side: incremented on creation,
+  decremented on `Drop`. Used by leak verification tests to confirm that
+  the BEAM garbage collector properly frees `ResourceArc` resources.
+  """
+  @spec session_count() :: non_neg_integer()
+  def session_count, do: Native.noise_session_count()
 end

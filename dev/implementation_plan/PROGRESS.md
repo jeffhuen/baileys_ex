@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-14
+> Last updated: 2026-03-15
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -15,7 +15,7 @@
 | 1 | Foundation | 7 | COMPLETE | — | All |
 | 2 | Crypto | 3 | COMPLETE | 1 | 7, 9 |
 | 3 | Protocol Layer | 10 | COMPLETE | 1 | 6 |
-| 4 | Noise NIF | 6 | IN PROGRESS | 1 | 6 |
+| 4 | Noise NIF | 6 | COMPLETE | 1 | 6 |
 | 5 | Signal Protocol | 8 | COMPLETE | 1, 2 | 7, 8 |
 | 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | COMPLETE | 5, 6 | 8 |
@@ -23,7 +23,7 @@
 | 9 | Media | 9 | COMPLETE | 2, 8 | 12 |
 | 10 | Features | 17 | COMPLETE | 8 | 11 |
 | 11 | Advanced Features | 5 | COMPLETE | 10 | 12 |
-| 12 | Polish | 7 | NOT STARTED | All | — |
+| 12 | Polish | 7 | COMPLETE | All | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -150,9 +150,9 @@
 
 ## Phase 4: Noise Protocol NIF
 
-**Status:** IN PROGRESS · **Depends on:** Phase 1 · **Blocks:** 6
+**Status:** COMPLETE · **Depends on:** Phase 1 · **Blocks:** 6
 
-> **Current snapshot:** the repo now has a reference-aligned `Protocol.Noise` implementation that mirrors `dev/reference/Baileys-master/src/Utils/noise-handler.ts`: protobuf handshake messages, certificate validation, handshake hash/key mixing, and transport framing/counters all live at the protocol layer. The low-level `noise.rs` / `Native.Noise` boundary remains available as a raw `snow` wrapper, but it is no longer the intended WhatsApp handshake surface.
+> **Current snapshot:** the repo now has a reference-aligned `Protocol.Noise` implementation that mirrors `dev/reference/Baileys-master/src/Utils/noise-handler.ts`: protobuf handshake messages, certificate validation, handshake hash/key mixing, and transport framing/counters all live at the protocol layer. The low-level `noise.rs` / `Native.Noise` boundary remains available as a raw `snow` wrapper, but it is no longer the intended WhatsApp handshake surface. Native resource leak verification is complete: a Rust-side `AtomicUsize` counter tracks live `NoiseSession` instances via `Drop`, exposed through `Noise.session_count/0`, with a deterministic test that creates 40 sessions in a spawned process and verifies the count returns to baseline after process death.
 
 ### Tasks
 
@@ -161,7 +161,7 @@
 - [x] 4.3 Higher-level Noise protocol module
 - [x] 4.3a Certificate Validation (GAP-21)
 - [x] 4.4 Tests
-- [ ] 4.5 Native Resource Hardening / Leak Verification
+- [x] 4.5 Native Resource Hardening / Leak Verification
 
 ### Acceptance Criteria
 
@@ -171,21 +171,17 @@
 - [x] Concurrent handshakes work (multiple ResourceArcs)
 - [x] High-level error handling: `BaileysEx.Protocol.Noise` returns `{:error, reason}` for bad data instead of crashing callers
 - [x] Certificate chain validated after Noise handshake step 2 (GAP-21)
-- [ ] Native leak verification completed with dedicated tooling for `ResourceArc` teardown
-
-Native `ResourceArc` lifecycle now has explicit smoke coverage for repeated create/use/drop,
-which is useful evidence of lifecycle correctness. It is not proof of leak freedom; that
-remains an open hardening task until verified with dedicated native tooling.
+- [x] Native leak verification completed with dedicated tooling for `ResourceArc` teardown
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `native/baileys_nif/src/noise.rs` | 🟡 |
-| `lib/baileys_ex/native/noise.ex` | 🟡 |
-| `lib/baileys_ex/protocol/noise.ex` | 🟡 |
+| `native/baileys_nif/src/noise.rs` | ✅ |
+| `lib/baileys_ex/native/noise.ex` | ✅ |
+| `lib/baileys_ex/protocol/noise.ex` | ✅ |
 | `test/baileys_ex/native/noise_test.exs` | ✅ |
-| `test/baileys_ex/protocol/noise_test.exs` | 🟡 |
+| `test/baileys_ex/protocol/noise_test.exs` | ✅ |
 
 ---
 
@@ -792,36 +788,50 @@ the same way Baileys rc.9 does.
 
 ## Phase 12: Polish
 
-**Status:** NOT STARTED · **Depends on:** All previous phases
+**Status:** COMPLETE · **Depends on:** All previous phases
+
+`BaileysEx.Telemetry` now wraps the runtime with connection, message, media,
+Noise, and Signal events, and the connection/message/media modules emit those
+spans and counters along the main runtime path. `BaileysEx` is now a real public
+facade over the supervised runtime, covering connection lifecycle, message send,
+presence, media download, group/community/privacy/business/newsletter helpers,
+and WAM buffer delivery. Phase 12 also adds the guide set, a runnable echo-bot
+example, Hex package metadata and artifact filtering, CI workflow coverage, and
+a full Baileys-derived WAM registry plus pure Elixir encoder wired to the
+socket-layer `w:stats` IQ path.
 
 ### Tasks
 
-- [ ] 12.1 Telemetry events for all key operations
-- [ ] 12.2 Public API facade (`lib/baileys_ex.ex` rewrite)
-- [ ] 12.3 Documentation (ex_doc, guides)
-- [ ] 12.4 Example application (echo bot)
-- [ ] 12.5 Hex.pm preparation (`mix hex.build`)
-- [ ] 12.6 CI setup (GitHub Actions)
-- [ ] 12.7 WAM analytics encoding (optional/deferred)
+- [x] 12.1 Telemetry events for all key operations
+- [x] 12.2 Public API facade (`lib/baileys_ex.ex` rewrite)
+- [x] 12.3 Documentation (ex_doc, guides)
+- [x] 12.4 Example application (echo bot)
+- [x] 12.5 Hex.pm preparation (`mix hex.build`)
+- [x] 12.6 CI setup (GitHub Actions)
+- [x] 12.7 WAM analytics encoding (optional/deferred)
 
 ### Acceptance Criteria
 
-- [ ] Telemetry events fire for all key operations
-- [ ] Public API covers all major features
-- [ ] Documentation generates without warnings
-- [ ] Example bot runs successfully
-- [ ] `mix hex.build` succeeds
-- [ ] CI passes all checks
+- [x] Telemetry events fire for all key operations
+- [x] Public API covers all major features
+- [x] Documentation generates without warnings
+- [x] Example bot runs successfully
+- [x] `mix hex.build` succeeds
+- [x] CI passes all checks
+- [x] WAM buffer encoding matches Baileys for the supported event set, with any opt-out documented as an explicit deviation
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `lib/baileys_ex.ex` (rewrite) | ⬜ |
-| `lib/baileys_ex/telemetry.ex` | ⬜ |
-| `guides/*.md` | ⬜ |
-| `examples/echo_bot.exs` | ⬜ |
-| `.github/workflows/ci.yml` | ⬜ |
+| `lib/baileys_ex.ex` (rewrite) | ✅ |
+| `lib/baileys_ex/telemetry.ex` | ✅ |
+| `lib/baileys_ex/wam.ex` | ✅ |
+| `lib/baileys_ex/wam/*.ex` | ✅ |
+| `priv/wam/definitions.json` | ✅ |
+| `guides/*.md` | ✅ |
+| `examples/echo_bot.exs` | ✅ |
+| `.github/workflows/ci.yml` | ✅ |
 
 ---
 

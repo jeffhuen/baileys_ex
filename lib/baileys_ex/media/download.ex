@@ -6,6 +6,7 @@ defmodule BaileysEx.Media.Download do
   alias BaileysEx.Crypto, as: CoreCrypto
   alias BaileysEx.Media.HTTP
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Telemetry
 
   @mmg_host "https://mmg.whatsapp.net"
   @aes_chunk_size 16
@@ -37,15 +38,22 @@ defmodule BaileysEx.Media.Download do
   use `BaileysEx.Media.Crypto.decrypt/3`.
   """
   def download(media_message, opts \\ []) do
-    with {:ok, media_type} <- media_type(media_message, opts),
-         {:ok, url} <- media_url(media_message),
-         media_key when is_binary(media_key) <- Map.get(media_message, :media_key),
-         {:ok, iodata} <- download_into(media_key, media_type, url, opts, [], &collect_chunk/2) do
-      {:ok, IO.iodata_to_binary(Enum.reverse(iodata))}
-    else
-      nil -> {:error, :missing_media_key}
-      {:error, _reason} = error -> error
-    end
+    Telemetry.span(
+      [:media, :download],
+      %{media_type: telemetry_media_type(media_message, opts), target: :memory},
+      fn ->
+        with {:ok, media_type} <- media_type(media_message, opts),
+             {:ok, url} <- media_url(media_message),
+             media_key when is_binary(media_key) <- Map.get(media_message, :media_key),
+             {:ok, iodata} <-
+               download_into(media_key, media_type, url, opts, [], &collect_chunk/2) do
+          {:ok, IO.iodata_to_binary(Enum.reverse(iodata))}
+        else
+          nil -> {:error, :missing_media_key}
+          {:error, _reason} = error -> error
+        end
+      end
+    )
   end
 
   @spec download_to_file(media_message(), Path.t(), keyword()) ::
@@ -58,41 +66,20 @@ defmodule BaileysEx.Media.Download do
   the trailing media MAC while streaming.
   """
   def download_to_file(media_message, path, opts \\ []) do
-    with {:ok, media_type} <- media_type(media_message, opts),
-         {:ok, url} <- media_url(media_message),
-         media_key when is_binary(media_key) <- Map.get(media_message, :media_key) do
-      File.mkdir_p!(Path.dirname(path))
-
-      case File.open(path, [:write, :binary]) do
-        {:ok, device} ->
-          try do
-            case download_into(media_key, media_type, url, opts, device, &write_chunk/2) do
-              {:ok, _device} ->
-                {:ok, path}
-
-              {:error, reason} ->
-                File.rm(path)
-                {:error, reason}
-            end
-          rescue
-            error ->
-              File.rm(path)
-              reraise(error, __STACKTRACE__)
-          catch
-            kind, reason ->
-              File.rm(path)
-              :erlang.raise(kind, reason, __STACKTRACE__)
-          after
-            File.close(device)
-          end
-
-        {:error, reason} ->
-          {:error, reason}
+    Telemetry.span(
+      [:media, :download],
+      %{media_type: telemetry_media_type(media_message, opts), path: path, target: :file},
+      fn ->
+        with {:ok, media_type} <- media_type(media_message, opts),
+             {:ok, url} <- media_url(media_message),
+             media_key when is_binary(media_key) <- Map.get(media_message, :media_key) do
+          stream_download_to_file(media_key, media_type, url, path, opts)
+        else
+          nil -> {:error, :missing_media_key}
+          {:error, _reason} = error -> error
+        end
       end
-    else
-      nil -> {:error, :missing_media_key}
-      {:error, _reason} = error -> error
-    end
+    )
   end
 
   defp media_type(%Message.ImageMessage{}, _opts), do: {:ok, :image}
@@ -107,6 +94,13 @@ defmodule BaileysEx.Media.Download do
       media_type -> {:ok, media_type}
     end
   end
+
+  defp telemetry_media_type(%Message.ImageMessage{}, _opts), do: :image
+  defp telemetry_media_type(%Message.VideoMessage{}, _opts), do: :video
+  defp telemetry_media_type(%Message.AudioMessage{}, _opts), do: :audio
+  defp telemetry_media_type(%Message.DocumentMessage{}, _opts), do: :document
+  defp telemetry_media_type(%Message.StickerMessage{}, _opts), do: :sticker
+  defp telemetry_media_type(_media_message, opts), do: opts[:media_type]
 
   defp media_url(%{url: url, direct_path: direct_path})
        when is_binary(url) and byte_size(url) > 0 and is_binary(direct_path) and
@@ -131,6 +125,47 @@ defmodule BaileysEx.Media.Download do
        do: {:ok, @mmg_host <> direct_path}
 
   defp media_url(_media_message), do: {:error, :missing_media_url}
+
+  defp stream_download_to_file(media_key, media_type, url, path, opts) do
+    File.mkdir_p!(Path.dirname(path))
+
+    with_open_file(path, [:write, :binary], fn device ->
+      case download_into(media_key, media_type, url, opts, device, &write_chunk/2) do
+        {:ok, _device} ->
+          {:ok, path}
+
+        {:error, reason} ->
+          cleanup_download_file(path, {:error, reason})
+      end
+    end)
+  end
+
+  defp with_open_file(path, modes, fun) when is_function(fun, 1) do
+    case File.open(path, modes) do
+      {:ok, device} ->
+        try do
+          fun.(device)
+        rescue
+          error ->
+            _ = File.rm(path)
+            reraise(error, __STACKTRACE__)
+        catch
+          kind, reason ->
+            _ = File.rm(path)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        after
+          File.close(device)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp cleanup_download_file(path, {:error, reason}) do
+    _ = File.rm(path)
+    {:error, reason}
+  end
 
   defp download_into(media_key, media_type, url, opts, acc, sink_fun) do
     %{iv: iv, cipher_key: cipher_key} = CoreCrypto.expand_media_key(media_key, media_type)

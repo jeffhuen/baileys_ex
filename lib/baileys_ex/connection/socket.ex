@@ -167,6 +167,25 @@ defmodule BaileysEx.Connection.Socket do
     :gen_statem.call(server, {:send_presence_update, type})
   end
 
+  @doc "Send a WAM analytics buffer through the `w:stats` IQ path."
+  @spec send_wam_buffer(GenServer.server(), binary()) ::
+          {:ok, BinaryNode.t()} | {:error, :not_connected | :timeout | term()}
+  def send_wam_buffer(server, wam_buffer) when is_binary(wam_buffer) do
+    ref = make_ref()
+
+    case :gen_statem.call(server, {:send_wam_buffer, wam_buffer, {self(), ref}, 60_000}, 61_000) do
+      :ok ->
+        receive do
+          {__MODULE__, ^ref, result} -> result
+        after
+          60_100 -> {:error, :timeout}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   @spec state(GenServer.server()) :: state()
   def state(server), do: :gen_statem.call(server, :state)
 
@@ -361,6 +380,20 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  defp handle_call(:connected, from, {:send_wam_buffer, wam_buffer, reply_to, timeout}, data)
+       when is_binary(wam_buffer) and is_integer(timeout) and timeout > 0 do
+    {node, query_id} = ensure_query_id(wam_buffer_node(wam_buffer, data), data)
+
+    case send_node_internal(data, node) do
+      {:ok, data} ->
+        data = register_pending_query(data, query_id, reply_to, timeout)
+        {:keep_state, data, [{:reply, from, :ok}]}
+
+      {:error, reason, data} ->
+        {:keep_state, data, [{:reply, from, {:error, reason}}]}
+    end
+  end
+
   defp handle_call(:authenticating, from, {:request_pairing_code, phone_number, opts}, data)
        when is_binary(phone_number) and is_list(opts) do
     with {:ok, %{pairing_code: pairing_code, creds_update: creds_update, node: node}} <-
@@ -392,6 +425,15 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp handle_call(_current_state, from, {:send_presence_update, _type}, data) do
+    {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
+  end
+
+  defp handle_call(
+         _current_state,
+         from,
+         {:send_wam_buffer, _wam_buffer, _reply_to, _timeout},
+         data
+       ) do
     {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
   end
 
@@ -1333,6 +1375,24 @@ defmodule BaileysEx.Connection.Socket do
           attrs: %{"jid" => jid, "reason" => "user_initiated"},
           content: nil
         }
+      ]
+    }
+  end
+
+  defp wam_buffer_node(wam_buffer, data) do
+    timestamp =
+      clock_ms(data)
+      |> div(1_000)
+      |> Integer.to_string()
+
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{
+        "to" => @s_whatsapp_net,
+        "xmlns" => "w:stats"
+      },
+      content: [
+        %BinaryNode{tag: "add", attrs: %{"t" => timestamp}, content: {:binary, wam_buffer}}
       ]
     }
   end

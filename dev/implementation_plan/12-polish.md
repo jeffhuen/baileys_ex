@@ -1,7 +1,9 @@
 # Phase 12: Polish
 
 **Goal:** Telemetry instrumentation, public API finalization, documentation,
-example application, hex.pm preparation.
+example application, hex.pm preparation, and WAM analytics parity.
+
+**Status:** COMPLETE
 
 **Depends on:** All previous phases
 
@@ -139,18 +141,22 @@ default behavior, not an undocumented omission.
 
 ## Acceptance Criteria
 
-- [ ] Telemetry events fire for all key operations
-- [ ] Public API covers all major features
-- [ ] Documentation generates without warnings
-- [ ] Example bot runs successfully
-- [ ] `mix hex.build` succeeds
-- [ ] CI passes all checks
-- [ ] WAM buffer encoding matches Baileys for the supported event set, with any opt-out documented as an explicit deviation
+- [x] Telemetry events fire for all key operations
+- [x] Public API covers all major features
+- [x] Documentation generates without warnings
+- [x] Example bot runs successfully
+- [x] `mix hex.build` succeeds
+- [x] CI passes all checks
+- [x] WAM buffer encoding matches Baileys for the supported event set, with any opt-out documented as an explicit deviation
 
 ## Files Created/Modified
 
 - `lib/baileys_ex.ex` (rewrite)
 - `lib/baileys_ex/telemetry.ex`
+- `lib/baileys_ex/wam.ex`
+- `lib/baileys_ex/wam/*.ex`
+- `priv/wam/definitions.json`
+- `dev/scripts/generate_wam_definitions.mjs`
 - `guides/*.md`
 - `examples/echo_bot.exs`
 - `.github/workflows/ci.yml`

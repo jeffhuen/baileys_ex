@@ -10,6 +10,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
   alias BaileysEx.Message.Builder
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.TestHelpers.MessageSignalHelpers
+  alias BaileysEx.TestHelpers.TelemetryHelpers
 
   defmodule ReconnectTransport do
     @behaviour BaileysEx.Connection.Transport
@@ -135,6 +136,61 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert EventEmitter in child_ids
   end
 
+  test "start_connection/2 and stop_connection/1 emit connection telemetry" do
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :connection, :start, :start],
+        [:baileys_ex, :connection, :start, :stop],
+        [:baileys_ex, :connection, :stop, :start],
+        [:baileys_ex, :connection, :stop, :stop]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    assert {:ok, supervisor} =
+             Supervisor.start_connection(%{creds: %{}},
+               config: Config.new(fire_init_queries: false),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :start, :start],
+                    %{system_time: start_time}, _metadata}
+
+    assert is_integer(start_time)
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :start, :stop], %{duration: duration},
+                    %{status: :ok}}
+
+    assert is_integer(duration)
+
+    assert :ok = Supervisor.stop_connection(supervisor)
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :stop, :start],
+                    %{system_time: stop_time}, %{connection_pid: ^supervisor}}
+
+    assert is_integer(stop_time)
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :stop, :stop],
+                    %{duration: stop_duration}, %{connection_pid: ^supervisor, status: :ok}}
+
+    assert is_integer(stop_duration)
+  end
+
+  test "start_connection/2 injects a default config into the coordinator when none is supplied" do
+    assert {:ok, supervisor} =
+             Supervisor.start_connection(%{creds: %{}},
+               socket_module: FakeSocket,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+
+    coordinator = Supervisor.coordinator(supervisor)
+    assert %Config{} = :sys.get_state(coordinator).config
+
+    assert :ok = Supervisor.stop_connection(supervisor)
+  end
+
   test "crashing the store restarts the store and event emitter while preserving the socket" do
     name = {:phase6_test, System.unique_integer([:positive])}
 
@@ -158,6 +214,13 @@ defmodule BaileysEx.Connection.SupervisorTest do
   end
 
   test "supervisor auto-connects the socket and reconnects after unexpected close" do
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :connection, :reconnect]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
     name = {:phase6_test, System.unique_integer([:positive])}
 
     assert {:ok, supervisor} =
@@ -172,6 +235,9 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     socket_pid = child_pid!(supervisor, Socket)
     Kernel.send(socket_pid, {:emit_closed, :tcp_closed})
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :reconnect], %{count: 1},
+                    %{reason: :tcp_closed, retry_delay_ms: 10}}
 
     assert_receive :transport_connected_attempt, 200
   end

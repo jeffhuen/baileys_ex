@@ -19,6 +19,7 @@ defmodule BaileysEx.Protocol.Noise do
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientFinish
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientHello
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ServerHello
+  alias BaileysEx.Telemetry
 
   @noise_mode "Noise_XX_25519_AESGCM_SHA256\0\0\0\0"
   @noise_wa_header <<87, 65, 6, 3>>
@@ -309,6 +310,12 @@ defmodule BaileysEx.Protocol.Noise do
 
   defp maybe_encrypt_transport(%__MODULE__{transport: transport} = state, data) do
     with {:ok, transport, ciphertext} <- transport_encrypt(transport, data) do
+      Telemetry.execute(
+        [:nif, :noise, :encrypt],
+        %{bytes: byte_size(data)},
+        %{phase: :transport}
+      )
+
       {:ok, %{state | transport: transport}, ciphertext}
     end
   end
@@ -328,6 +335,12 @@ defmodule BaileysEx.Protocol.Noise do
 
   defp maybe_decrypt_transport(%__MODULE__{transport: transport} = state, data) do
     with {:ok, transport, plaintext} <- transport_decrypt(transport, data) do
+      Telemetry.execute(
+        [:nif, :noise, :decrypt],
+        %{bytes: byte_size(plaintext)},
+        %{phase: :transport}
+      )
+
       {:ok, %{state | transport: transport}, plaintext}
     end
   end

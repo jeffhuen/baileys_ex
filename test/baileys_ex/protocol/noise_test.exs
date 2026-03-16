@@ -11,6 +11,7 @@ defmodule BaileysEx.Protocol.NoiseTest do
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientFinish
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientHello
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ServerHello
+  alias BaileysEx.TestHelpers.TelemetryHelpers
 
   @noise_mode "Noise_XX_25519_AESGCM_SHA256\0\0\0\0"
   @noise_header Noise.noise_header()
@@ -133,6 +134,37 @@ defmodule BaileysEx.Protocol.NoiseTest do
 
     assert {:ok, {noise, []}} = Noise.decode_frames(noise, part1)
     assert {:ok, {_noise, ["one", "two"]}} = Noise.decode_frames(noise, part2)
+  end
+
+  test "transport encode and decode emit noise telemetry" do
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :nif, :noise, :encrypt],
+        [:baileys_ex, :nif, :noise, :decrypt]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    {noise, server_transport} = complete_handshake()
+
+    assert {:ok, {noise, client_frame}} = Noise.encode_frame(noise, "client telemetry")
+
+    assert_receive {:telemetry, [:baileys_ex, :nif, :noise, :encrypt], %{bytes: 16},
+                    %{phase: :transport}}
+
+    header_size = byte_size(@noise_header)
+    <<_intro_header::binary-size(header_size), rest::binary>> = client_frame
+
+    assert {:ok, server_transport, ["client telemetry"], @empty} =
+             decode_server_frames(server_transport, rest)
+
+    assert {:ok, _server_transport, server_frame} =
+             encode_server_frame(server_transport, "server telemetry")
+
+    assert {:ok, {_noise, ["server telemetry"]}} = Noise.decode_frames(noise, server_frame)
+
+    assert_receive {:telemetry, [:baileys_ex, :nif, :noise, :decrypt], %{bytes: 16},
+                    %{phase: :transport}}
   end
 
   defp complete_handshake do

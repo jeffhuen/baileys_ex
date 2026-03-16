@@ -5,9 +5,13 @@ defmodule BaileysEx.MixProject do
     [
       app: :baileys_ex,
       version: "0.1.0",
+      description: description(),
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      homepage_url: "https://github.com/jeffhuen/baileys_ex",
+      source_url: "https://github.com/jeffhuen/baileys_ex",
+      package: package(),
       docs: docs()
     ]
   end
@@ -53,15 +57,61 @@ defmodule BaileysEx.MixProject do
       main: "readme",
       extras: [
         "README.md",
+        "guides/getting-started.md",
+        "guides/authentication.md",
+        "guides/sending-messages.md",
+        "guides/receiving-messages.md",
+        "guides/media.md",
+        "guides/groups.md",
+        "guides/custom-persistence.md",
         "user_docs/glossary.md",
         "user_docs/guides/manage-app-state-sync.md",
         "user_docs/troubleshooting/app-state-sync-issues.md"
       ],
       groups_for_extras: [
         Overview: ["README.md", "user_docs/glossary.md"],
-        Guides: ~r/user_docs\/guides\//,
+        Guides: [
+          "guides/getting-started.md",
+          "guides/authentication.md",
+          "guides/sending-messages.md",
+          "guides/receiving-messages.md",
+          "guides/media.md",
+          "guides/groups.md",
+          "guides/custom-persistence.md",
+          "user_docs/guides/manage-app-state-sync.md"
+        ],
         Troubleshooting: ~r/user_docs\/troubleshooting\//
       ]
+    ]
+  end
+
+  defp description do
+    "Behavior-accurate Elixir port of Baileys 7.00rc9 for WhatsApp Web automation"
+  end
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      files: [
+        ".formatter.exs",
+        "LICENSE",
+        "README.md",
+        "examples",
+        "guides",
+        "lib",
+        "mix.exs",
+        "native/baileys_nif/.cargo",
+        "native/baileys_nif/Cargo.lock",
+        "native/baileys_nif/Cargo.toml",
+        "native/baileys_nif/src",
+        "priv/proto",
+        "priv/wam",
+        "user_docs"
+      ],
+      links: %{
+        "GitHub" => "https://github.com/jeffhuen/baileys_ex",
+        "Baileys Reference" => "https://github.com/WhiskeySockets/Baileys"
+      }
     ]
   end
 end

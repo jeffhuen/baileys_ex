@@ -27,6 +27,8 @@ defmodule BaileysEx.Connection.Store do
           | :last_account_sync_timestamp
           | :privacy_settings
           | :props
+          | {:app_state_sync_key, String.t()}
+          | {:app_state_sync_version, atom()}
           | atom()
 
   @spec wrap(GenServer.server()) :: Ref.t()
@@ -63,6 +65,59 @@ defmodule BaileysEx.Connection.Store do
   @spec snapshot(GenServer.server() | Ref.t()) :: map()
   def snapshot(%Ref{pid: pid}), do: snapshot(pid)
   def snapshot(server), do: GenServer.call(server, :snapshot)
+
+  # ============================================================================
+  # App State Sync helpers — Syncd key and version storage
+  # ============================================================================
+
+  @doc """
+  Fetch an app state sync key by its base64-encoded key ID.
+
+  Returns `{:ok, %{key_data: binary()}}` or `{:error, {:key_not_found, key_id}}`.
+  Keys are stored under `{:app_state_sync_key, key_id}` in the ETS table.
+  """
+  @spec get_app_state_sync_key(Ref.t() | GenServer.server(), String.t()) ::
+          {:ok, %{key_data: binary()}} | {:error, term()}
+  def get_app_state_sync_key(%Ref{} = ref, key_id) do
+    case get(ref, {:app_state_sync_key, key_id}) do
+      nil -> {:error, {:key_not_found, key_id}}
+      value -> {:ok, value}
+    end
+  end
+
+  def get_app_state_sync_key(server, key_id) do
+    get_app_state_sync_key(wrap(server), key_id)
+  end
+
+  @doc """
+  Store an app state sync key by its base64-encoded key ID.
+  """
+  @spec put_app_state_sync_key(GenServer.server() | Ref.t(), String.t(), map()) :: :ok
+  def put_app_state_sync_key(server_or_ref, key_id, key_data) do
+    put(server_or_ref, {:app_state_sync_key, key_id}, key_data)
+  end
+
+  @doc """
+  Fetch the LTHash sync version state for a collection.
+
+  Returns `nil` if the collection has not been synced yet.
+  """
+  @spec get_app_state_sync_version(Ref.t() | GenServer.server(), atom()) :: map() | nil
+  def get_app_state_sync_version(%Ref{} = ref, collection_name) do
+    get(ref, {:app_state_sync_version, collection_name})
+  end
+
+  def get_app_state_sync_version(server, collection_name) do
+    get_app_state_sync_version(wrap(server), collection_name)
+  end
+
+  @doc """
+  Persist the LTHash sync version state for a collection.
+  """
+  @spec put_app_state_sync_version(GenServer.server() | Ref.t(), atom(), map() | nil) :: :ok
+  def put_app_state_sync_version(server_or_ref, collection_name, state) do
+    put(server_or_ref, {:app_state_sync_version, collection_name}, state)
+  end
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do

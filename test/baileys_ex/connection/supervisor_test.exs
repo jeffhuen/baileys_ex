@@ -283,8 +283,173 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) == false end)
   end
 
+  test "pending notifications do not wait for history when should_sync_history_message disables RECENT" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   initial_sync_timeout_ms: 5_000,
+                   should_sync_history_message: fn
+                     %{sync_type: :RECENT} -> false
+                     _history_message -> true
+                   end
+                 ),
+               auth_state: %{creds: %{}},
+               transport: {NoopTransport, %{}}
+             )
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_eventually(fn ->
+      :sys.get_state(coordinator_pid).sync_state == :online and
+        EventEmitter.buffering?(emitter_pid) == false
+    end)
+  end
+
+  test "server_sync notifications trigger the built-in app state resync callback" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "sync", attrs: %{}, content: []}]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               query_handler: query_handler,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+
+    notification = %BinaryNode{
+      tag: "notification",
+      attrs: %{"type" => "server_sync", "from" => "s.whatsapp.net"},
+      content: [
+        %BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}, content: nil}
+      ]
+    }
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{node: notification, state: :connected})
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "w:sync:app:state"},
+                      content: [
+                        %BinaryNode{
+                          tag: "sync",
+                          content: [
+                            %BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}}
+                          ]
+                        }
+                      ]
+                    }, _timeout}
+  end
+
+  test "app state key arrival while syncing triggers an initial app state resync" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "sync", attrs: %{}, content: []}]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   fire_init_queries: false,
+                   mark_online_on_connect: false,
+                   initial_sync_timeout_ms: 50
+                 ),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               query_handler: query_handler,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_eventually(fn ->
+      :sys.get_state(coordinator_pid).sync_state == :awaiting_initial_sync
+    end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :messaging_history_set, %{
+               chats: [%{id: "chat-1", conversation_timestamp: 1_710_000_000}],
+               contacts: [],
+               messages: [],
+               sync_type: :recent
+             })
+
+    assert_eventually(fn -> :sys.get_state(coordinator_pid).sync_state == :syncing end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "AQIDBA=="})
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "w:sync:app:state"},
+                      content: [
+                        %BinaryNode{
+                          tag: "sync",
+                          content: collections
+                        }
+                      ]
+                    }, _timeout}
+
+    assert Enum.map(collections, & &1.attrs["name"]) ==
+             ["critical_block", "critical_unblock_low", "regular_high", "regular_low", "regular"]
+
+    assert_eventually(fn -> :sys.get_state(coordinator_pid).sync_state == :online end)
+  end
+
   test "connection open fires init queries, updates store caches, and marks presence available" do
     name = {:phase6_test, System.unique_integer([:positive])}
+    parent = self()
 
     query_handler = fn
       %BinaryNode{attrs: %{"xmlns" => "w"}, content: [%BinaryNode{tag: "props"}]}, _timeout ->
@@ -364,10 +529,18 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
     store_ref = supervisor |> child_pid!(Store) |> Store.wrap()
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
 
     assert :ok = EventEmitter.emit(emitter_pid, :connection_update, %{connection: :open})
 
     assert_receive {:fake_socket_presence_update, :available}
+
+    assert_receive {:processed_events,
+                    %{
+                      blocklist_set: %{
+                        blocklist: ["11111@s.whatsapp.net", "22222@s.whatsapp.net"]
+                      }
+                    }}
 
     assert_eventually_xmlns(["w", "blocklist", "privacy"])
 
@@ -377,6 +550,8 @@ defmodule BaileysEx.Connection.SupervisorTest do
         Store.get(store_ref, :privacy_settings) == %{"last" => "contacts"} and
         Store.get(store_ref, :creds)[:last_prop_hash] == "next-prop-hash"
     end)
+
+    unsubscribe.()
   end
 
   test "creds updates that change push name send a presence node through the socket" do
@@ -443,8 +618,46 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end)
   end
 
-  test "community dirty notifications reuse the groups clean bucket" do
+  test "community dirty notifications refetch communities, emit groups_update, and clean the groups bucket" do
     name = {:phase6_test, System.unique_integer([:positive])}
+    parent = self()
+
+    query_handler = fn
+      %BinaryNode{content: [%BinaryNode{tag: "participating"}]}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "communities",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "community",
+                   attrs: %{
+                     "id" => "1234567890",
+                     "subject" => "Phase 10 Community",
+                     "s_t" => "1710000000",
+                     "creation" => "1709999999",
+                     "size" => "1"
+                   },
+                   content: [
+                     %BinaryNode{tag: "parent", attrs: %{}},
+                     %BinaryNode{
+                       tag: "participant",
+                       attrs: %{"jid" => "15550001111@s.whatsapp.net"}
+                     }
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
 
     assert {:ok, supervisor} =
              Supervisor.start_link(
@@ -452,13 +665,23 @@ defmodule BaileysEx.Connection.SupervisorTest do
                config: Config.new(),
                auth_state: %{creds: %{}},
                socket_module: FakeSocket,
+               query_handler: query_handler,
                test_pid: self(),
                transport: {NoopTransport, %{}}
              )
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
+    unsubscribe = EventEmitter.process(emitter_pid, &Kernel.send(parent, {:processed_events, &1}))
+    assert_receive :fake_socket_connect
 
     assert :ok = EventEmitter.emit(emitter_pid, :dirty_update, %{type: "communities"})
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{"to" => "@g.us", "type" => "get", "xmlns" => "w:g2"},
+                      content: [%BinaryNode{tag: "participating"}]
+                    }, 60_000}
 
     assert_receive {:fake_socket_send_node,
                     %BinaryNode{
@@ -466,6 +689,176 @@ defmodule BaileysEx.Connection.SupervisorTest do
                       attrs: %{"xmlns" => "urn:xmpp:whatsapp:dirty", "type" => "set"},
                       content: [%BinaryNode{tag: "clean", attrs: %{"type" => "groups"}}]
                     }}
+
+    assert_receive {:processed_events,
+                    %{
+                      groups_update: [
+                        %{id: "1234567890@g.us", subject: "Phase 10 Community", is_community: true}
+                      ]
+                    }}
+
+    assert :ok = unsubscribe.()
+  end
+
+  test "lid_mapping_update events are persisted into the signal store" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{}},
+               transport: {NoopTransport, %{}}
+             )
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+
+    signal_store_ref =
+      supervisor
+      |> child_pid!(BaileysEx.Signal.Store.Memory)
+      |> BaileysEx.Signal.Store.Memory.wrap()
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :lid_mapping_update, %{
+               lid: "123456789@lid",
+               pn: "15551234567@s.whatsapp.net"
+             })
+
+    assert_eventually(fn ->
+      BaileysEx.Signal.Store.Memory.get(signal_store_ref, :"lid-mapping", [
+        "15551234567",
+        "123456789_reverse"
+      ]) == %{
+        "15551234567" => "123456789",
+        "123456789_reverse" => "15551234567"
+      }
+    end)
+  end
+
+  test "group dirty notifications refetch participating groups, emit groups_update, and clean the groups bucket" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+    parent = self()
+
+    query_handler = fn
+      %BinaryNode{content: [%BinaryNode{tag: "participating"}]}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "groups",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "group",
+                   attrs: %{
+                     "id" => "1234567890",
+                     "subject" => "Phase 10",
+                     "s_t" => "1710000000",
+                     "creation" => "1709999999",
+                     "size" => "1"
+                   },
+                   content: [
+                     %BinaryNode{
+                       tag: "participant",
+                       attrs: %{"jid" => "15550001111@s.whatsapp.net"}
+                     }
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{}},
+               socket_module: FakeSocket,
+               query_handler: query_handler,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    unsubscribe = EventEmitter.process(emitter_pid, &Kernel.send(parent, {:processed_events, &1}))
+
+    assert :ok = EventEmitter.emit(emitter_pid, :dirty_update, %{type: "groups"})
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{"to" => "@g.us", "type" => "get", "xmlns" => "w:g2"},
+                      content: [%BinaryNode{tag: "participating"}]
+                    }, 60_000}
+
+    assert_receive {:processed_events,
+                    %{
+                      groups_update: [
+                        %{id: "1234567890@g.us", subject: "Phase 10"}
+                      ]
+                    }}
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{"xmlns" => "urn:xmpp:whatsapp:dirty", "type" => "set"},
+                      content: [%BinaryNode{tag: "clean", attrs: %{"type" => "groups"}}]
+                    }}
+
+    assert :ok = unsubscribe.()
+  end
+
+  test "socket presence nodes are translated into presence_update events" do
+    name = {:phase10_presence_test, System.unique_integer([:positive])}
+    parent = self()
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{}},
+               transport: {NoopTransport, %{}}
+             )
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    unsubscribe = EventEmitter.process(emitter_pid, &Kernel.send(parent, {:processed_events, &1}))
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{
+               node: %BinaryNode{
+                 tag: "chatstate",
+                 attrs: %{
+                   "from" => "120363001234567890@g.us",
+                   "participant" => "15557654321@s.whatsapp.net"
+                 },
+                 content: [
+                   %BinaryNode{
+                     tag: "composing",
+                     attrs: %{"media" => "audio"},
+                     content: nil
+                   }
+                 ]
+               }
+             })
+
+    assert_receive {:processed_events,
+                    %{
+                      presence_update: %{
+                        id: "120363001234567890@g.us",
+                        presences: %{
+                          "15557654321@s.whatsapp.net" => %{last_known_presence: :recording}
+                        }
+                      }
+                    }}
+
+    assert :ok = unsubscribe.()
   end
 
   test "socket_node message events are routed through the receiver and send delivery receipts" do
@@ -624,20 +1017,30 @@ defmodule BaileysEx.Connection.SupervisorTest do
                state: :connected
              })
 
-    assert_receive {:events,
-                    %{
-                      messages_update: [
-                        %{key: %{id: "receipt-msg-1"}, update: %{status: :delivery_ack}}
-                      ]
-                    }}
+    assert_receive(
+      {:events,
+       %{
+         messages_update: [
+           %{key: %{id: "receipt-msg-1"}, update: %{status: :delivery_ack}}
+         ]
+       }},
+      500
+    )
 
-    assert_receive {:events,
-                    %{messages_update: [%{key: %{id: "ack-msg-1"}, update: %{status: :ERROR}}]}}
+    assert_receive(
+      {:events, %{messages_update: [%{key: %{id: "ack-msg-1"}, update: %{status: :ERROR}}]}},
+      500
+    )
 
-    assert_receive {:events, %{contacts_update: [%{id: "12345-67890@g.us", img_url: :changed}]}}
+    assert_receive(
+      {:events, %{contacts_update: [%{id: "12345-67890@g.us", img_url: :changed}]}},
+      500
+    )
 
-    assert_receive {:events,
-                    %{messages_upsert: %{messages: [%{message_stub_type: :GROUP_CHANGE_ICON}]}}}
+    assert_receive(
+      {:events, %{messages_upsert: %{messages: [%{message_stub_type: :GROUP_CHANGE_ICON}]}}},
+      500
+    )
 
     assert_eventually(fn ->
       BaileysEx.Signal.Store.Memory.get(signal_store, :tctoken, ["15551234567@s.whatsapp.net"])[
@@ -646,6 +1049,71 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end)
 
     unsubscribe.()
+  end
+
+  test "socket_node call events are routed through call handling and emit call updates" do
+    name = {:phase6_test, System.unique_integer([:positive])}
+    parent = self()
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: parent,
+               query_handler: fn _node, _timeout ->
+                 {:ok, %BinaryNode{tag: "call", attrs: %{"type" => "result"}, content: nil}}
+               end,
+               transport: {NoopTransport, %{}}
+             )
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:events, &1}))
+
+    call_node = %BinaryNode{
+      tag: "call",
+      attrs: %{"id" => "call-node-1", "from" => "15551234567@s.whatsapp.net", "t" => "1710000000"},
+      content: [
+        %BinaryNode{
+          tag: "offer",
+          attrs: %{
+            "call-id" => "call-1",
+            "from" => "15551234567@s.whatsapp.net",
+            "caller_pn" => "15551234567@s.whatsapp.net"
+          },
+          content: [%BinaryNode{tag: "video", attrs: %{}, content: nil}]
+        }
+      ]
+    }
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{node: call_node, state: :connected})
+
+    assert_receive {:events,
+                    %{
+                      call: [
+                        %{
+                          id: "call-1",
+                          status: :offer,
+                          caller_pn: "15551234567@s.whatsapp.net",
+                          is_video: true
+                        }
+                      ]
+                    }}
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{
+                        "id" => "call-node-1",
+                        "to" => "15551234567@s.whatsapp.net",
+                        "class" => "call"
+                      }
+                    }}
+
+    unsubscribe.()
+    Process.exit(supervisor, :shutdown)
   end
 
   test "encrypt notifications from peers trigger session refresh through the coordinator runtime" do

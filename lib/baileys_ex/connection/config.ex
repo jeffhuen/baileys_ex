@@ -5,6 +5,7 @@ defmodule BaileysEx.Connection.Config do
 
   @type browser :: {String.t(), String.t(), String.t()}
   @type version :: [non_neg_integer()]
+  @type should_sync_history_message_fun :: (map() -> boolean())
   @type platform ::
           :CHROME
           | :FIREFOX
@@ -37,6 +38,7 @@ defmodule BaileysEx.Connection.Config do
           version: version(),
           country_code: String.t(),
           sync_full_history: boolean(),
+          should_sync_history_message: should_sync_history_message_fun(),
           print_qr_in_terminal: boolean()
         }
 
@@ -86,10 +88,16 @@ defmodule BaileysEx.Connection.Config do
             version: [2, 3000, 1_033_846_690],
             country_code: "US",
             sync_full_history: true,
+            should_sync_history_message: &__MODULE__.default_should_sync_history_message/1,
             print_qr_in_terminal: false
 
   @spec new(keyword()) :: t()
   def new(opts \\ []) when is_list(opts), do: struct(__MODULE__, opts)
+
+  @spec default_should_sync_history_message(map()) :: boolean()
+  def default_should_sync_history_message(history_message) when is_map(history_message) do
+    history_sync_type(history_message) != :FULL
+  end
 
   @spec platform_type(String.t()) :: platform()
   def platform_type(browser_name) when is_binary(browser_name) do
@@ -119,4 +127,9 @@ defmodule BaileysEx.Connection.Config do
   end
 
   def web_sub_platform(%__MODULE__{}), do: 0
+
+  defp history_sync_type(history_message) do
+    history_message[:sync_type] || history_message["sync_type"] || history_message[:syncType] ||
+      history_message["syncType"]
+  end
 end

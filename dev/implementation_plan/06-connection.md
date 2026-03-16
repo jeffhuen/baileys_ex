@@ -476,6 +476,8 @@ surface from `dev/reference/Baileys-master/src/Socket/socket.ts` and
 - handle `CB:ib,,offline` by emitting `receivedPendingNotifications: true`
 - handle `CB:ib,,edge_routing` by persisting updated routing info
 - run init queries (`fetchProps`, `fetchBlocklist`, `fetchPrivacySettings`) on open
+- trigger built-in app-state resync when sync keys arrive and on `server_sync`
+  notifications, using the same coordinator/runtime path that Baileys `chats.ts` uses
 - handle dirty-bit refreshes for `account_sync`, `groups`, and `communities`
 - coordinate the runtime sync states `connecting -> awaiting_initial_sync -> syncing -> online`
 
@@ -483,8 +485,8 @@ Downstream work remains, but it is no longer Phase 6 work:
 
 - Phase 7: auth state struct, durable credential persistence, phone pairing code flow,
   login/registration node builders, pre-key upload, transactional key-store semantics
-- Phase 8+: message receive/send pipeline, per-message ACK/NACK rules, app-state resync
-  side effects driven by decrypted history/app-state messages
+- Phase 8+: message receive/send pipeline, per-message ACK/NACK rules, and the remaining
+  history-sync receive path driven by decrypted history/app-state messages
 
 ### 6.3 Frame handling
 
@@ -606,6 +608,7 @@ defmodule BaileysEx.Connection.EventEmitter do
     :presence_update,            # %{id: jid, presences: %{participant_jid => presence_data}}
 
     # Privacy
+    :blocklist_set,              # %{blocklist: [jid]}
     :blocklist_update,           # %{blocklist: [jid], type: :add | :remove}
     :settings_update,            # %{setting: atom, value: term}
 

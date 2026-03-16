@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -21,7 +21,7 @@
 | 7 | Authentication | 10 | COMPLETE | 5, 6 | 8 |
 | 8 | Messaging Core | 13 | COMPLETE | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | COMPLETE | 2, 8 | 12 |
-| 10 | Features | 17 | NOT STARTED | 8 | 11 |
+| 10 | Features | 17 | COMPLETE | 8 | 11 |
 | 11 | Advanced Features | 5 | NOT STARTED | 10 | 12 |
 | 12 | Polish | 7 | NOT STARTED | All | — |
 
@@ -587,95 +587,160 @@ full-payload verified decrypts still go through `BaileysEx.Media.Crypto.decrypt/
 
 ## Phase 10: Features
 
-**Status:** NOT STARTED · **Depends on:** Phase 8 · **Parallel with:** Phase 9 · **Blocks:** 11
+**Status:** COMPLETE · **Depends on:** Phase 8 · **Parallel with:** Phase 9 · **Blocks:** 11
+
+**Current branch note:** Phase 10 is complete in the current worktree.
+`BaileysEx.Feature.Group` now covers the core `groups.ts` query surface:
+group CRUD/query helpers, participant mutations, invite v3/v4 operations,
+invite-v4 invalidation plus synthetic `GROUP_PARTICIPANT_ADD` side effects,
+the relay-backed `GROUP_MEMBER_LABEL_CHANGE` path, ephemeral/settings toggles,
+metadata extraction, participating-group fetch, and coordinator-driven
+dirty-group refetch/clean behavior.
+`BaileysEx.Feature.PhoneValidation` now implements `on_whatsapp/3` via the
+USync contact protocol and filters to confirmed contacts only. `BaileysEx.Feature.Chat`
+plus `BaileysEx.Feature.AppState`, `BaileysEx.Syncd.Keys`,
+`BaileysEx.Syncd.Codec`, `BaileysEx.Syncd.ActionMapper`, and
+`BaileysEx.Util.LTHash` now cover the full Syncd surface: key expansion,
+wire-compatible protobuf decode/encode, external snapshot and mutation blobs,
+MAC/LTHash verification, mutation-to-event mapping, and coordinator-driven
+initial sync plus `server_sync` resync/app-patch runtime behavior.
+`BaileysEx.Feature.Presence` now covers Baileys-style availability/chatstate
+sends, presence subscribe with explicit message tags, incoming presence/chatstate
+parsing, and coordinator event emission. `BaileysEx.Feature.BotDirectory` now
+mirrors `getBotListV2`. `BaileysEx.Feature.TcToken` now covers direct-message
+relay attachment, presence-subscribe attachment, privacy-token fetch/storage,
+and notification handling. `BaileysEx.Feature.Profile.picture_url/4` now
+covers the Baileys profile-picture URL query with TC-token attachment and
+response parsing. `BaileysEx.Feature.Privacy` now covers all eight privacy IQ
+categories, blocklist fetch/update, default disappearing mode, disappearing
+duration USync queries, and the link-preview privacy app-state path.
+`BaileysEx.Feature.Profile` now also covers profile-picture updates/removals,
+push-name app-state updates, status fetch/update, and business-profile queries.
+`BaileysEx.Feature.Label`, `BaileysEx.Feature.Contact`, and
+`BaileysEx.Feature.QuickReply` now cover the remaining chat-modify app-state
+surfaces, and `BaileysEx.Syncd.ActionMapper` now decodes Baileys
+`label_jid`/`label_message` association indexes correctly. The follow-up parity
+pass also fixed the remaining Phase 10 review gaps that were still in scope:
+fresh Syncd resyncs now preserve version-0 mutations, patch decode keeps inner
+mutation MAC validation even when outer patch MAC checks are disabled,
+`unarchiveChats` replay mutates later archive handling in-order, community dirty
+refreshes now parse `communities/community`, `lid_mapping_update` events are
+auto-persisted to the signal store, `should_sync_history_message/1` is exposed
+through connection config for initial-sync gating, and USync now supports the
+bot profile protocol surface.
 
 ### Tasks
 
-- [ ] 10.1 Group management (CRUD, participants, invites v3/v4)
-- [ ] 10.1a Phone number validation (`on_whatsapp` via USync)
-- [ ] 10.2 Chat operations (archive, mute, pin, star, clear, delete)
-- [ ] 10.3 Presence (online/offline/composing/recording)
-- [ ] 10.3a Trusted Contact Tokens (GAP-23)
-- [ ] 10.3b Bot Directory (GAP-37)
-- [ ] 10.4 Privacy settings (8 categories + block list + disappearing)
-- [ ] 10.5a App state sync — key expansion + snapshot decode
-- [ ] 10.5b App state sync — patch encode/decode + MAC verification
-- [ ] 10.5c App state sync — ChatMutationMap + process patches → emit events
-- [ ] 10.5d App state sync — full resync + push patch flow
-- [ ] 10.6 LTHash utility
-- [ ] 10.7 Profile management (picture, name, status, business)
-- [ ] 10.8 Label management (CRUD, associations)
-- [ ] 10.9 Contact management (add/edit/remove via app state)
-- [ ] 10.10 Quick replies
-- [ ] 10.11 Tests
+- [x] 10.1 Group management (CRUD, participants, invites v3/v4)
+- [x] 10.1a Phone number validation (`on_whatsapp` via USync)
+- [x] 10.2 Chat operations (archive, mute, pin, star, clear, delete)
+- [x] 10.3 Presence (online/offline/composing/recording)
+- [x] 10.3a Trusted Contact Tokens (GAP-23)
+- [x] 10.3b Bot Directory (GAP-37)
+- [x] 10.4 Privacy settings (8 categories + block list + disappearing)
+- [x] 10.5a App state sync — key expansion + snapshot decode
+- [x] 10.5b App state sync — patch encode/decode + MAC verification
+- [x] 10.5c App state sync — ChatMutationMap + process patches → emit events
+- [x] 10.5d App state sync — full resync + push patch flow
+- [x] 10.6 LTHash utility
+- [x] 10.7 Profile management (picture, name, status, business)
+- [x] 10.8 Label management (CRUD, associations)
+- [x] 10.9 Contact management (add/edit/remove via app state)
+- [x] 10.10 Quick replies
+- [x] 10.11 Tests
 
 ### Acceptance Criteria
 
-- [ ] Group operations construct correct binary nodes
-- [ ] Presence updates send and receive correctly
-- [ ] Chat operations integrate with app state sync
-- [ ] Privacy: all 8 categories query and update via IQ nodes
-- [ ] Privacy: default disappearing mode set/fetch
-- [ ] Privacy: block list fetch/block/unblock
-- [ ] App state sync initial fetch works
-- [ ] LTHash verification matches Baileys
-- [ ] Sync actions emit contacts, LID mappings, labels, settings, and chat-lock updates correctly
-- [ ] Profile: update/remove picture constructs correct IQ
-- [ ] Profile: picture URL query and response parsing
-- [ ] Profile: update name via app state sync
-- [ ] Profile: update status text via IQ
-- [ ] Profile: fetch status via USync query
-- [ ] Profile: business profile query and response parsing
-- [ ] Labels: CRUD via app state patches
-- [ ] Labels: chat/message association via app state patches
-- [ ] Contacts: add/edit/remove via app state patches
-- [ ] Quick replies: add/edit/remove via app state patches
-- [ ] `on_whatsapp` validates phone numbers via USync
-- [ ] Group setting update (announcement/locked toggles)
-- [ ] Group member add mode and join approval mode
-- [ ] Pending join request list and approve/reject
-- [ ] V4 invite accept and revoke operations
-- [ ] TC tokens built and attached to presence/profile queries (GAP-23)
-- [ ] Privacy token notifications stored correctly (GAP-23)
-- [ ] Bot directory fetched via IQ query (GAP-37)
-- [ ] Group member label update constructs correct protocol message (GAP-39)
-- [ ] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`
+- [x] Group operations construct correct binary nodes
+- [x] Presence updates send and receive correctly
+- [x] Chat operations build Baileys-aligned app-state patches
+- [x] Privacy: all 8 categories query and update via IQ nodes
+- [x] Privacy: default disappearing mode set/fetch
+- [x] Privacy: block list fetch/block/unblock
+- [x] App state sync initial fetch works
+- [x] LTHash verification matches Baileys
+- [x] Sync actions emit contacts, LID mappings, labels, settings, and chat-lock updates correctly
+- [x] Profile: update/remove picture constructs correct IQ
+- [x] Profile: picture URL query and response parsing
+- [x] Profile: update name via app state sync
+- [x] Profile: update status text via IQ
+- [x] Profile: fetch status via USync query
+- [x] Profile: business profile query and response parsing
+- [x] Labels: CRUD via app state patches
+- [x] Labels: chat/message association via app state patches
+- [x] Contacts: add/edit/remove via app state patches
+- [x] Quick replies: add/edit/remove via app state patches
+- [x] `on_whatsapp` validates phone numbers via USync
+- [x] Group setting update (announcement/locked toggles)
+- [x] Group member add mode and join approval mode
+- [x] Pending join request list and approve/reject
+- [x] V4 invite accept and revoke operations, including invite invalidation side effects
+- [x] Group dirty updates refetch participating groups, emit `groups.update`, and clean the `groups` bucket
+- [x] App-state patch timestamps live under `sync_action`, and last-message ranges are validated/normalized
+- [x] TC tokens built and attached to presence/profile queries (GAP-23)
+- [x] Privacy token notifications stored correctly (GAP-23)
+- [x] Bot directory fetched via IQ query (GAP-37)
+- [x] Group member label update constructs correct protocol message (GAP-39)
+- [x] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `lib/baileys_ex/feature/group.ex` | ⬜ |
-| `lib/baileys_ex/feature/chat.ex` | ⬜ |
-| `lib/baileys_ex/feature/presence.ex` | ⬜ |
-| `lib/baileys_ex/feature/privacy.ex` | ⬜ |
-| `lib/baileys_ex/feature/profile.ex` | ⬜ |
-| `lib/baileys_ex/feature/label.ex` | ⬜ |
-| `lib/baileys_ex/feature/contact.ex` | ⬜ |
-| `lib/baileys_ex/feature/quick_reply.ex` | ⬜ |
-| `lib/baileys_ex/feature/app_state.ex` | ⬜ |
-| `lib/baileys_ex/feature/phone_validation.ex` | ⬜ |
-| `lib/baileys_ex/feature/tc_token.ex` | ⬜ |
-| `lib/baileys_ex/util/lt_hash.ex` | ⬜ |
-| `test/baileys_ex/feature/group_test.exs` | ⬜ |
-| `test/baileys_ex/feature/presence_test.exs` | ⬜ |
-| `test/baileys_ex/feature/privacy_test.exs` | ⬜ |
-| `test/baileys_ex/feature/profile_test.exs` | ⬜ |
-| `test/baileys_ex/feature/app_state_test.exs` | ⬜ |
-| `test/baileys_ex/util/lt_hash_test.exs` | ⬜ |
+| `lib/baileys_ex/feature/group.ex` | ✅ |
+| `lib/baileys_ex/feature/chat.ex` | ✅ |
+| `lib/baileys_ex/feature/presence.ex` | ✅ |
+| `lib/baileys_ex/feature/bot_directory.ex` | ✅ |
+| `lib/baileys_ex/feature/privacy.ex` | ✅ |
+| `lib/baileys_ex/feature/profile.ex` | ✅ |
+| `lib/baileys_ex/feature/label.ex` | ✅ |
+| `lib/baileys_ex/feature/contact.ex` | ✅ |
+| `lib/baileys_ex/feature/quick_reply.ex` | ✅ |
+| `lib/baileys_ex/feature/app_state.ex` | ✅ |
+| `lib/baileys_ex/feature/phone_validation.ex` | ✅ |
+| `lib/baileys_ex/feature/tc_token.ex` | ✅ |
+| `lib/baileys_ex/protocol/proto/syncd_messages.ex` | ✅ |
+| `lib/baileys_ex/syncd/keys.ex` | ✅ |
+| `lib/baileys_ex/syncd/codec.ex` | ✅ |
+| `lib/baileys_ex/syncd/action_mapper.ex` | ✅ |
+| `lib/baileys_ex/connection/store.ex` | ✅ |
+| `lib/baileys_ex/connection/coordinator.ex` | ✅ |
+| `lib/baileys_ex/connection/event_emitter.ex` | ✅ |
+| `lib/baileys_ex/protocol/usync.ex` | ✅ |
+| `lib/baileys_ex/util/lt_hash.ex` | ✅ |
+| `test/baileys_ex/feature/group_test.exs` | ✅ |
+| `test/baileys_ex/feature/presence_test.exs` | ✅ |
+| `test/baileys_ex/feature/bot_directory_test.exs` | ✅ |
+| `test/baileys_ex/feature/privacy_test.exs` | ✅ |
+| `test/baileys_ex/feature/profile_test.exs` | ✅ |
+| `test/baileys_ex/feature/chat_test.exs` | ✅ |
+| `test/baileys_ex/feature/phone_validation_test.exs` | ✅ |
+| `test/baileys_ex/feature/tc_token_test.exs` | ✅ |
+| `test/baileys_ex/feature/app_state_test.exs` | ✅ |
+| `test/baileys_ex/feature/label_test.exs` | ✅ |
+| `test/baileys_ex/feature/contact_test.exs` | ✅ |
+| `test/baileys_ex/feature/quick_reply_test.exs` | ✅ |
+| `test/baileys_ex/protocol/proto/syncd_messages_test.exs` | ✅ |
+| `test/baileys_ex/syncd/keys_test.exs` | ✅ |
+| `test/baileys_ex/syncd/codec_test.exs` | ✅ |
+| `test/baileys_ex/syncd/action_mapper_test.exs` | ✅ |
+| `test/baileys_ex/syncd/runtime_test.exs` | ✅ |
+| `test/baileys_ex/connection/supervisor_test.exs` | ✅ |
+| `test/baileys_ex/protocol/usync_test.exs` | ✅ |
+| `test/baileys_ex/util/lt_hash_test.exs` | ✅ |
 
 ---
 
 ## Phase 11: Advanced Features
 
-**Status:** NOT STARTED · **Depends on:** Phase 10 · **Blocks:** 12
+**Status:** IN PROGRESS · **Depends on:** Phase 10 · **Blocks:** 12
 
 ### Tasks
 
 - [ ] 11.1 Business operations (profile update, cover, catalog, products, orders)
 - [ ] 11.2 Newsletters (19 functions, mixed WMex/IQ/message transport)
 - [ ] 11.3 Communities (23 functions, subgroup linking)
-- [ ] 11.4 Call handling (offer/reject, call links — GAP-36)
+- [x] 11.4 Call handling (offer/reject, call links — GAP-36)
 - [ ] 11.5 Tests
 
 ### Acceptance Criteria
@@ -688,10 +753,10 @@ full-payload verified decrypts still go through `BaileysEx.Media.Crypto.decrypt/
 - [ ] Business: cover photo upload via media upload pipeline
 - [ ] Business: product CRUD operations
 - [ ] Business: order-details query uses the `fb:thrift_iq` namespace from Baileys
-- [ ] Call: reject constructs correct call node
-- [ ] Call events emitted correctly
-- [ ] All node formats match Baileys reference
-- [ ] Call link creation uses `call/link_create` and returns token for audio/video (GAP-36)
+- [x] Call: reject constructs correct call node
+- [x] Call events emitted correctly
+- [x] All node formats match Baileys reference
+- [x] Call link creation uses `call/link_create` and returns token for audio/video (GAP-36)
 
 ### Files
 
@@ -700,11 +765,11 @@ full-payload verified decrypts still go through `BaileysEx.Media.Crypto.decrypt/
 | `lib/baileys_ex/feature/business.ex` | ⬜ |
 | `lib/baileys_ex/feature/newsletter.ex` | ⬜ |
 | `lib/baileys_ex/feature/community.ex` | ⬜ |
-| `lib/baileys_ex/feature/call.ex` | ⬜ |
+| `lib/baileys_ex/feature/call.ex` | ✅ |
 | `test/baileys_ex/feature/business_test.exs` | ⬜ |
 | `test/baileys_ex/feature/newsletter_test.exs` | ⬜ |
 | `test/baileys_ex/feature/community_test.exs` | ⬜ |
-| `test/baileys_ex/feature/call_test.exs` | ⬜ |
+| `test/baileys_ex/feature/call_test.exs` | ✅ |
 
 ---
 

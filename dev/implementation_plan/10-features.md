@@ -28,6 +28,43 @@ into 4 sub-tasks (10.5a–10.5d) to manage complexity. The key reference files a
 exported function, and verify it has a home in this plan. The plan is the skeleton —
 the Baileys source is the spec for filling in the details.
 
+**Current status:** `10.1`, `10.1a`, `10.2`, `10.3`, `10.3a`, `10.3b`, `10.4`, `10.5a`,
+`10.5b`, `10.5c`, `10.5d`, `10.6`, `10.7`, `10.8`, `10.9`, `10.10`, and `10.11` are
+complete. The Phase 10 runtime now has the core group/query surface, Baileys-style
+presence handling, the full privacy surface, the remaining profile/label/contact/
+quick-reply feature set, and the full Syncd pipeline: key expansion, protobuf/wire
+parity, snapshot/patch decode and encode, MAC/LTHash verification, mutation mapping,
+coordinator-driven initial sync, `server_sync` resync handling, outbound app-state
+patch pushes, and Baileys-aligned `label_jid`/`label_message` association decoding.
+`BaileysEx.Feature.Group` covers the main
+`groups.ts` IQ/query helpers, metadata extraction, invite v3/v4 operations, v4
+invite invalidation plus synthetic `GROUP_PARTICIPANT_ADD` side effects when
+callback hooks are provided, and the relay-backed `GROUP_MEMBER_LABEL_CHANGE`
+path with `member_tag` meta nodes, participating-group fetch, and coordinator-
+driven dirty-group refetch + clean behavior. `BaileysEx.Feature.PhoneValidation`
+implements `on_whatsapp/3` through the USync contact protocol, supports
+deterministic `sid` injection for tests, and returns only confirmed contacts.
+`BaileysEx.Feature.Chat` and `BaileysEx.Feature.AppState` build and send
+Baileys-aligned chat-modification patches with timestamps nested inside
+`sync_action`, validated last-message ranges, and the same stored Syncd
+version/hash flow Baileys uses. `BaileysEx.Feature.Presence`
+covers availability/chatstate sends, presence subscribe, incoming presence parsing,
+and coordinator event emission. `BaileysEx.Feature.TcToken` covers direct-message
+relay attachment, presence-subscribe attachment, privacy-token fetch/storage, and
+notification handling. `BaileysEx.Feature.Profile` now covers the Baileys
+profile-picture update/remove/query paths, push-name app-state updates, status
+fetch/update, and business-profile queries. `BaileysEx.Feature.Label`,
+`BaileysEx.Feature.Contact`, and `BaileysEx.Feature.QuickReply` mirror the
+remaining chat-modify app-state surfaces, and `BaileysEx.Feature.BotDirectory`
+mirrors `getBotListV2`. The Phase 10 parity pass also now matches the Baileys
+runtime details the deep review flagged: fresh Syncd resyncs no longer seed
+version-0 minimums, outer patch-MAC disabling still keeps inner mutation MAC
+validation on, `unarchiveChats` settings replay in-order through later archive
+mutations, community dirty refreshes parse the `communities/community` shape,
+`lid_mapping_update` events are auto-persisted into the signal store, the
+connection config exposes Baileys-style `should_sync_history_message/1`
+gating, and the USync protocol surface now includes bot profile queries.
+
 ---
 
 ## Tasks
@@ -73,12 +110,12 @@ defmodule BaileysEx.Feature.Group do
   def join_approval_mode(conn, group_jid, mode) when mode in [:on, :off], do: ...
   def request_participants_list(conn, group_jid), do: ...
   def request_participants_update(conn, group_jid, jids, action) when action in [:approve, :reject], do: ...
-  def accept_invite_v4(conn, key, invite_message), do: ...
+  def accept_invite_v4(conn, key, invite_message, opts \\ []), do: ...
   def revoke_invite_v4(conn, group_jid, invited_jid), do: ...
 
   @doc "Set custom label/tag on a group member"
   def update_member_label(conn, group_jid, member_label) do
-    # Sends ProtocolMessage.GROUP_MEMBER_LABEL_CHANGE
+    # Relays ProtocolMessage.GROUP_MEMBER_LABEL_CHANGE
     # with meta node: tag_reason='user_update', appdata='member_tag'
   end
 
@@ -101,9 +138,11 @@ defmodule BaileysEx.Feature.PhoneValidation do
   @moduledoc "Check if phone numbers are registered on WhatsApp."
 
   @doc "Check one or more phone numbers. Returns [{exists?, jid}]"
-  def on_whatsapp(conn, phone_numbers) when is_list(phone_numbers) do
+  def on_whatsapp(conn, phone_numbers, opts \\ []) when is_list(phone_numbers) do
     query = USync.build_query([:contact], phone_numbers, context: :interactive)
-    {:ok, response} = Connection.Socket.query(conn, query)
+    sid = Keyword.get(opts, :sid, Integer.to_string(System.unique_integer([:positive])))
+    {:ok, node} = USync.to_node(query, sid)
+    {:ok, response} = Connection.Socket.query(conn, node)
     USync.parse_response(response, :contact)
     # Returns [%{exists: true, jid: "1234@s.whatsapp.net"}, ...]
     # v7 note: this is PN/contact discovery, not a source of truth for LIDs
@@ -119,7 +158,7 @@ File: `lib/baileys_ex/feature/chat.ex`
 defmodule BaileysEx.Feature.Chat do
   @moduledoc """
   Chat-level operations. All use app state sync patches (Syncd protocol)
-  via AppState.push_patch/4. Maps 1:1 to Baileys chatModify types.
+  via AppState.push_patch/5. Maps 1:1 to Baileys chatModify types.
   """
 
   @doc "Archive or unarchive a chat. Requires last_messages for sync."
@@ -285,6 +324,12 @@ Reference: `dev/reference/Baileys-master/src/Socket/chats.ts` L211-244
 
 File: `lib/baileys_ex/feature/privacy.ex`
 
+Status: complete. Implemented in `BaileysEx.Feature.Privacy` with direct
+Baileys-aligned IQ helpers for the 8 privacy categories, blocklist fetch/update,
+default disappearing-mode updates, and disappearing-duration USync queries. Link-
+preview privacy remains on the Baileys app-state path and is exposed through the
+privacy module without changing the underlying wire behavior.
+
 All privacy functions use an internal `privacy_query/3` helper that builds IQ nodes
 with `xmlns: "privacy"`.
 
@@ -297,7 +342,9 @@ defmodule BaileysEx.Feature.Privacy do
   # --- Fetch all settings ---
 
   @doc "Fetch all privacy settings from server"
-  def fetch_settings(conn, force \\ false) do
+  def fetch_settings(conn, opts \\ [])
+  def fetch_settings(conn, force) when is_boolean(force)
+  def fetch_settings(conn, force, opts) do
     # IQ: xmlns=privacy, type=get
     # Returns map: %{"last" => "contacts", "online" => "all", ...}
   end
@@ -650,45 +697,63 @@ end
 - Contact patches (add/edit/remove)
 - Quick reply patches
 
+**Syncd protobuf tests** (`test/baileys_ex/protocol/proto/syncd_messages_test.exs`):
+- Local roundtrip encode/decode for Syncd wire types
+- WAProto wire-format parity for `SyncdMutation` and `SyncActionData`
+
+**Syncd key/LTHash tests** (`test/baileys_ex/syncd/keys_test.exs`, `test/baileys_ex/util/lt_hash_test.exs`):
+- Node.js HKDF pinned vectors for app-state key expansion
+- Node.js pinned LTHash states for add/remove verification
+
+**Syncd codec tests** (`test/baileys_ex/syncd/codec_test.exs`):
+- Node.js pinned MAC vectors for mutation, snapshot, and patch verification
+- Snapshot/patch encode-decode roundtrips
+- Tamper detection and external blob expansion paths
+
+**Syncd action/runtime tests** (`test/baileys_ex/syncd/action_mapper_test.exs`, `test/baileys_ex/syncd/runtime_test.exs`):
+- 23+ sync action types mapped to the correct emitted result set
+- Store helpers, `resync_app_state/4`, `app_patch/4`, and `chat_modify/6`
+
 ---
 
 ## Acceptance Criteria
 
-- [ ] Group operations construct correct binary nodes
-- [ ] Presence updates send and receive correctly
-- [ ] Chat operations integrate with app state sync
-- [ ] **Privacy: all 8 categories** query and update via IQ nodes
-- [ ] **Privacy: default disappearing mode** set/fetch
-- [ ] **Privacy: block list** fetch/block/unblock
-- [ ] App state sync initial fetch works
-- [ ] LTHash verification matches Baileys
-- [ ] Sync actions emit contacts, LID mappings, labels, settings, and chat-lock updates correctly
-- [ ] **Profile: update/remove picture** constructs correct IQ
-- [ ] **Profile: picture URL** query and response parsing
-- [ ] **Profile: update name** via app state sync
-- [ ] **Profile: update status text** via IQ
-- [ ] **Profile: fetch status** via USync query
-- [ ] **Profile: business profile** query and response parsing
-- [ ] **Labels: CRUD** via app state patches
-- [ ] **Labels: chat/message association** via app state patches
-- [ ] **Contacts: add/edit/remove** via app state patches
-- [ ] **Quick replies: add/edit/remove** via app state patches
-- [ ] `on_whatsapp` validates phone numbers via USync contact protocol
-- [ ] Group setting update (announcement/locked toggles) constructs correct IQ
-- [ ] Group member add mode and join approval mode supported
-- [ ] Pending join request list and approve/reject operations work
-- [ ] V4 invite accept and revoke operations work
-- [ ] Group dirty updates refetch participating groups, emit `groups.update`, and clean the `groups` bucket
-- [ ] TC tokens built and attached to presence/profile queries (GAP-23)
-- [ ] Privacy token notifications stored correctly (GAP-23)
-- [ ] Bot directory fetched via IQ query (GAP-37)
-- [ ] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`
-- [ ] Group member label update constructs correct protocol message (GAP-39)
+- [x] Group operations construct correct binary nodes
+- [x] Presence updates send and receive correctly
+- [x] Chat operations integrate with app state sync
+- [x] **Privacy: all 8 categories** query and update via IQ nodes
+- [x] **Privacy: default disappearing mode** set/fetch
+- [x] **Privacy: block list** fetch/block/unblock
+- [x] App state sync initial fetch works
+- [x] LTHash verification matches Baileys
+- [x] Sync actions emit contacts, LID mappings, labels, settings, and chat-lock updates correctly
+- [x] **Profile: update/remove picture** constructs correct IQ
+- [x] **Profile: picture URL** query and response parsing
+- [x] **Profile: update name** via app state sync
+- [x] **Profile: update status text** via IQ
+- [x] **Profile: fetch status** via USync query
+- [x] **Profile: business profile** query and response parsing
+- [x] **Labels: CRUD** via app state patches
+- [x] **Labels: chat/message association** via app state patches
+- [x] **Contacts: add/edit/remove** via app state patches
+- [x] **Quick replies: add/edit/remove** via app state patches
+- [x] `on_whatsapp` validates phone numbers via USync contact protocol
+- [x] Group setting update (announcement/locked toggles) constructs correct IQ
+- [x] Group member add mode and join approval mode supported
+- [x] Pending join request list and approve/reject operations work
+- [x] V4 invite accept and revoke operations work
+- [x] Group dirty updates refetch participating groups, emit `groups.update`, and clean the `groups` bucket
+- [x] TC tokens built and attached to presence/profile queries (GAP-23)
+- [x] Privacy token notifications stored correctly (GAP-23)
+- [x] Bot directory fetched via IQ query (GAP-37)
+- [x] Link preview privacy toggle maps to Baileys `updateDisableLinkPreviewsPrivacy/1`
+- [x] Group member label update constructs correct protocol message (GAP-39)
 
 ## Files Created/Modified
 
 - `lib/baileys_ex/feature/group.ex`
 - `lib/baileys_ex/feature/chat.ex`
+- `lib/baileys_ex/feature/bot_directory.ex`
 - `lib/baileys_ex/feature/presence.ex`
 - `lib/baileys_ex/feature/privacy.ex`
 - `lib/baileys_ex/feature/profile.ex`
@@ -696,12 +761,35 @@ end
 - `lib/baileys_ex/feature/contact.ex`
 - `lib/baileys_ex/feature/quick_reply.ex`
 - `lib/baileys_ex/feature/app_state.ex`
+- `lib/baileys_ex/connection/store.ex`
+- `lib/baileys_ex/connection/coordinator.ex`
+- `lib/baileys_ex/connection/event_emitter.ex`
+- `lib/baileys_ex/protocol/usync.ex`
+- `lib/baileys_ex/protocol/proto/syncd_messages.ex`
+- `lib/baileys_ex/syncd/keys.ex`
+- `lib/baileys_ex/syncd/codec.ex`
+- `lib/baileys_ex/syncd/action_mapper.ex`
 - `lib/baileys_ex/util/lt_hash.ex`
 - `test/baileys_ex/feature/group_test.exs`
+- `test/baileys_ex/feature/chat_test.exs`
+- `test/baileys_ex/feature/bot_directory_test.exs`
+- `test/baileys_ex/feature/phone_validation_test.exs`
 - `test/baileys_ex/feature/presence_test.exs`
+- `test/baileys_ex/feature/tc_token_test.exs`
 - `test/baileys_ex/feature/privacy_test.exs`
 - `test/baileys_ex/feature/profile_test.exs`
 - `test/baileys_ex/feature/app_state_test.exs`
+- `test/baileys_ex/feature/label_test.exs`
+- `test/baileys_ex/feature/contact_test.exs`
+- `test/baileys_ex/feature/quick_reply_test.exs`
+- `test/baileys_ex/protocol/proto/syncd_messages_test.exs`
+- `test/baileys_ex/syncd/keys_test.exs`
+- `test/baileys_ex/syncd/codec_test.exs`
+- `test/baileys_ex/syncd/action_mapper_test.exs`
+- `test/baileys_ex/syncd/runtime_test.exs`
+- `test/baileys_ex/connection/supervisor_test.exs`
+- `test/baileys_ex/protocol/usync_test.exs`
 - `test/baileys_ex/util/lt_hash_test.exs`
 - `lib/baileys_ex/feature/phone_validation.ex`
 - `lib/baileys_ex/feature/tc_token.ex`
+- `dev/scripts/generate_syncd_vectors.mjs`

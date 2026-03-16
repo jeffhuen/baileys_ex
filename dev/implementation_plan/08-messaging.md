@@ -1100,7 +1100,7 @@ defmodule BaileysEx.Message.NotificationHandler do
   end
 
   defp handle_account_sync(node, conn) do
-    # Disappearing mode changes, blocklist updates → emit :blocklist_update
+    # Disappearing mode changes, blocklist set/update → emit :blocklist_set / :blocklist_update
   end
 
   defp handle_media_retry(node, conn) do

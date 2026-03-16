@@ -36,7 +36,8 @@ defmodule BaileysEx.Connection.EventEmitter do
   end
 
   @type event ::
-          :blocklist_update
+          :blocklist_set
+          | :blocklist_update
           | :call
           | :chats_delete
           | :chats_lock

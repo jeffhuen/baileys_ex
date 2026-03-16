@@ -4,51 +4,93 @@ Canonical definitions for terms used throughout BaileysEx documentation.
 
 ---
 
-**Auth State** — The collection of cryptographic keys and identity data that represents
-your connection to WhatsApp. Persisted between sessions so you don't need to re-pair.
+## App State Sync (Syncd)
 
-**Binary Node** — WhatsApp's wire format for communication. A compact binary encoding
-of XML-like structures with a tag, attributes, and content (children or binary data).
+WhatsApp's cross-device settings sync system. It keeps state such as archived chats,
+mute and pin settings, labels, contact updates, and similar metadata consistent across
+your linked devices.
 
-**Connection** — An active, authenticated session with WhatsApp servers. Managed by
-BaileysEx's supervision tree. One connection = one WhatsApp account.
+## Auth State
 
-**Device** — A single client (phone, desktop, web) linked to a WhatsApp account.
-WhatsApp's multi-device protocol means each device has its own encryption session.
+The collection of cryptographic keys and identity data that represents your connection
+to WhatsApp. Persisted between sessions so you do not need to re-pair.
 
-**Double Ratchet** — The Signal protocol algorithm that generates unique encryption keys
-for every message. Provides forward secrecy — past messages can't be decrypted even if
-current keys are compromised.
+## Binary Node
 
-**Event** — A notification emitted by a connection when something happens: message received,
-presence changed, group updated, etc. You subscribe to events to react to WhatsApp activity.
+WhatsApp's wire format for communication. A compact binary encoding of XML-like
+structures with a tag, attributes, and content.
 
-**JID** — Jabber ID. The address format WhatsApp uses for users, groups, and broadcasts.
-Format: `user@server` (e.g., `5511999887766@s.whatsapp.net` for a user,
-`120363001234567890@g.us` for a group).
+## Connection
 
-**LID** — Logical ID. An alternative addressing mode WhatsApp uses internally for
-multi-device routing. Mapped to phone numbers (PN) by the protocol.
+An active, authenticated session with WhatsApp servers. Managed by BaileysEx's
+supervision tree. One connection maps to one WhatsApp account.
 
-**Noise Protocol** — The transport encryption layer. Establishes an encrypted tunnel
-over WebSocket before any application data is exchanged. Uses Curve25519 key exchange
-and AES-256-GCM encryption.
+## Device
 
-**Pairing** — The process of linking BaileysEx to your WhatsApp account. Done once via
-QR code scan or phone number verification code.
+A single client such as a phone, desktop app, or web session linked to a WhatsApp
+account. WhatsApp's multi-device protocol gives each device its own encryption session.
 
-**Pre-Key** — A one-time-use public key uploaded to WhatsApp servers. Allows other devices
-to establish encrypted sessions with you without being online simultaneously.
+## Double Ratchet
 
-**Sender Key** — A shared secret used for group message encryption. One encryption
-operation covers all group members, instead of encrypting separately for each device.
+The Signal protocol algorithm that generates unique encryption keys for every message.
+This gives you forward secrecy, which means older messages stay protected even if newer
+keys are later exposed.
 
-**Signal Protocol** — The end-to-end encryption protocol used by WhatsApp. Each message
-is encrypted individually per recipient device. BaileysEx implements this in pure Elixir.
+## Event
 
-**X3DH** — Extended Triple Diffie-Hellman. The Signal protocol's key agreement mechanism
-for establishing a shared secret between two devices that may never have communicated before.
+A notification emitted by a connection when something happens, such as a received
+message, a presence change, or a group update. You subscribe to events to react to
+WhatsApp activity in your application.
 
-**XEdDSA** — A signature scheme that allows Curve25519 keys (used for key exchange) to
-also produce Ed25519-compatible signatures. Required because WhatsApp identity keys are
-Curve25519 but must sign pre-keys.
+## JID
+
+Jabber ID. The address format WhatsApp uses for users, groups, and broadcasts.
+Examples: `5511999887766@s.whatsapp.net` for a user and `120363001234567890@g.us`
+for a group.
+
+## LID
+
+Logical ID. An alternative addressing mode WhatsApp uses internally for multi-device
+routing. The protocol maps LIDs to phone-number-based identities when needed.
+
+## LTHash
+
+The integrity check WhatsApp uses for app state sync. Instead of trusting every patch
+blindly, BaileysEx recomputes this rolling hash so it can detect drift or tampering
+before applying Syncd updates.
+
+## Noise Protocol
+
+The transport encryption layer. It establishes an encrypted tunnel over WebSocket
+before any application data is exchanged.
+
+## Pairing
+
+The process of linking BaileysEx to your WhatsApp account. You do this once with a
+QR code or phone-number verification code, then reuse the saved auth state.
+
+## Pre-Key
+
+A one-time-use public key uploaded to WhatsApp servers. It lets other devices start
+an encrypted session with you even when you are offline.
+
+## Sender Key
+
+A shared secret used for group message encryption. It lets one encrypted send cover
+the whole group instead of encrypting separately for every device.
+
+## Signal Protocol
+
+The end-to-end encryption protocol used by WhatsApp. Each message is encrypted
+individually for the recipient device, and BaileysEx handles that workflow for you.
+
+## X3DH
+
+Extended Triple Diffie-Hellman. The Signal protocol's key agreement mechanism for
+establishing a shared secret between two devices that may never have talked before.
+
+## XEdDSA
+
+A signature scheme that lets Curve25519 keys also produce Ed25519-compatible
+signatures. WhatsApp uses this because its identity keys must both exchange keys and
+sign pre-keys.

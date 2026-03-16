@@ -5,6 +5,7 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
   alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.State
   alias BaileysEx.TestSupport.DeterministicAuth
+  alias BaileysEx.Signal.SessionRecord
 
   @tag :tmp_dir
   test "load_credentials/1 initializes fresh credentials when creds.json is missing", %{
@@ -58,6 +59,24 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
   end
 
   @tag :tmp_dir
+  test "session records with non-UTF-8 binary keys roundtrip through key persistence", %{
+    tmp_dir: tmp_dir
+  } do
+    session_key =
+      <<5, 47, 94, 146, 126, 20, 145, 64, 167, 132, 196, 186, 86, 38, 23, 215, 31, 144, 133, 214,
+        230, 196, 84, 64, 227, 163, 144, 29, 239, 76, 133, 227, 35>>
+
+    session_record =
+      SessionRecord.new()
+      |> SessionRecord.put_session(session_key, session(session_key))
+
+    assert :ok = FilePersistence.save_keys(tmp_dir, :session, "16268980123.0", session_record)
+
+    assert {:ok, ^session_record} =
+             FilePersistence.load_keys(tmp_dir, :session, "16268980123.0")
+  end
+
+  @tag :tmp_dir
   test "concurrent writes to the same creds file remain decodable", %{tmp_dir: tmp_dir} do
     first_state = DeterministicAuth.state(60) |> Map.put(:platform, "alpha")
     second_state = DeterministicAuth.state(70) |> Map.put(:platform, "beta")
@@ -94,5 +113,29 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
 
     assert :ok = persisted_auth.save_creds.(updated_state)
     assert {:ok, %State{pairing_code: "ABC-123"}} = FilePersistence.load_credentials(tmp_dir)
+  end
+
+  defp session(base_key) do
+    %{
+      current_ratchet: %{
+        root_key: :binary.copy(<<0xAA>>, 32),
+        ephemeral_key_pair: %{
+          public: :binary.copy(<<0x01>>, 32),
+          private: :binary.copy(<<0x02>>, 32)
+        },
+        last_remote_ephemeral: :binary.copy(<<0x03>>, 32),
+        previous_counter: 0
+      },
+      index_info: %{
+        remote_identity_key: <<5>> <> :binary.copy(<<0x04>>, 32),
+        local_identity_key: <<5>> <> :binary.copy(<<0x05>>, 32),
+        base_key: base_key,
+        base_key_type: :sending,
+        closed: nil
+      },
+      chains: %{},
+      pending_pre_key: nil,
+      registration_id: 42
+    }
   end
 end

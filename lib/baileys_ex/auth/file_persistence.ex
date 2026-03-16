@@ -370,6 +370,14 @@ defmodule BaileysEx.Auth.FilePersistence do
   defp maybe_track_atom_key(atom_keys, false, _json_key), do: atom_keys
 
   defp json_object_key(key) when is_atom(key), do: {:ok, Atom.to_string(key), true}
-  defp json_object_key(key) when is_binary(key), do: {:ok, key, false}
+
+  defp json_object_key(key) when is_binary(key) do
+    if String.valid?(key) do
+      {:ok, key, false}
+    else
+      :error
+    end
+  end
+
   defp json_object_key(_key), do: :error
 end

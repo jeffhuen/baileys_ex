@@ -36,6 +36,16 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Telemetry
 
   @s_whatsapp_net "s.whatsapp.net"
+  @device_identity_account_keys %{
+    :details => :details,
+    :account_signature_key => :account_signature_key,
+    :account_signature => :account_signature,
+    :device_signature => :device_signature,
+    "details" => :details,
+    "account_signature_key" => :account_signature_key,
+    "account_signature" => :account_signature,
+    "device_signature" => :device_signature
+  }
 
   defmodule State do
     @moduledoc false
@@ -178,7 +188,8 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  def handle_call(_request, _from, %State{} = state) do
+  def handle_call(request, _from, %State{} = state) do
+    Logger.warning("unsupported coordinator request: #{inspect(request)}")
     {:reply, {:error, :unsupported_request}, state}
   end
 
@@ -1109,33 +1120,85 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp encoded_device_identity(%{account: %ADVSignedDeviceIdentity{} = account}) do
     account
-    |> Map.put(:account_signature_key, nil)
+    |> normalize_account_signature_key()
     |> ADVSignedDeviceIdentity.encode()
+    |> empty_identity_to_nil()
   end
 
   defp encoded_device_identity(%{account: %{} = account}) do
-    account
-    |> Map.put(:account_signature_key, nil)
-    |> then(&struct(ADVSignedDeviceIdentity, &1))
-    |> ADVSignedDeviceIdentity.encode()
-  rescue
-    _error -> nil
+    case normalize_device_identity_account(account) do
+      {:ok, normalized} when map_size(normalized) > 0 ->
+        normalized
+        |> normalize_account_signature_key()
+        |> then(&struct(ADVSignedDeviceIdentity, &1))
+        |> ADVSignedDeviceIdentity.encode()
+        |> empty_identity_to_nil()
+
+      {:ok, _normalized} ->
+        nil
+
+      {:error, reason} ->
+        Logger.warning("dropping invalid device identity account: #{inspect(reason)}")
+        nil
+    end
   end
 
   defp encoded_device_identity(%{"account" => account}) when is_map(account) do
-    account
-    |> Enum.map(fn {key, value} -> {normalize_account_key(key), value} end)
-    |> Map.new()
-    |> encoded_device_identity()
+    encoded_device_identity(%{account: account})
+  end
+
+  defp encoded_device_identity(%{account: account}) when not is_nil(account) do
+    Logger.warning("dropping invalid device identity account: #{inspect(account)}")
+    nil
+  end
+
+  defp encoded_device_identity(%{"account" => account}) when not is_nil(account) do
+    Logger.warning("dropping invalid device identity account: #{inspect(account)}")
+    nil
   end
 
   defp encoded_device_identity(_creds), do: nil
 
-  defp normalize_account_key(key) when is_atom(key), do: key
+  defp normalize_device_identity_account(account) when is_map(account) do
+    Enum.reduce_while(account, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case normalize_account_key(key) do
+        {:ok, normalized_key} ->
+          normalize_device_identity_value(acc, normalized_key, value)
 
-  defp normalize_account_key(key) when is_binary(key) do
-    String.to_existing_atom(key)
-  rescue
-    _error -> key
+        :skip ->
+          {:cont, {:ok, acc}}
+      end
+    end)
   end
+
+  defp normalize_account_key(key) when is_atom(key) or is_binary(key) do
+    case Map.get(@device_identity_account_keys, key) do
+      nil -> :skip
+      normalized_key -> {:ok, normalized_key}
+    end
+  end
+
+  defp normalize_account_key(_key), do: :skip
+
+  defp normalize_device_identity_value(acc, normalized_key, value)
+       when is_binary(value) or is_nil(value) do
+    {:cont, {:ok, Map.put(acc, normalized_key, value)}}
+  end
+
+  defp normalize_device_identity_value(_acc, normalized_key, value) do
+    {:halt, {:error, {:invalid_account_value, normalized_key, value}}}
+  end
+
+  defp normalize_account_signature_key(account) when is_map(account) do
+    case Map.get(account, :account_signature_key) do
+      signature_key when is_binary(signature_key) and byte_size(signature_key) > 0 ->
+        account
+
+      _ ->
+        Map.put(account, :account_signature_key, nil)
+    end
+  end
+
+  defp empty_identity_to_nil(<<>>), do: nil
+  defp empty_identity_to_nil(identity), do: identity
 end

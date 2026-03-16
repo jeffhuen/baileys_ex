@@ -19,16 +19,36 @@ end
 ```elixir
 alias BaileysEx.Auth.FilePersistence
 alias BaileysEx.Auth.State
+alias BaileysEx.Connection.Transport.MintWebSocket
 
 auth_path = "tmp/baileys_auth"
+parent = self()
 
 {:ok, auth_state} = FilePersistence.load_credentials(auth_path)
 
 {:ok, connection} =
   BaileysEx.connect(auth_state,
+    transport: {MintWebSocket, []},
     on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
-    on_connection: fn update -> IO.inspect(update, label: "connection") end
+    on_connection: fn update ->
+      IO.inspect(update, label: "connection")
+      send(parent, {:connection_update, update})
+    end
   )
+
+_unsubscribe =
+  BaileysEx.subscribe_raw(connection, fn events ->
+    if Map.has_key?(events, :creds_update) do
+      {:ok, latest_auth_state} = BaileysEx.auth_state(connection)
+      :ok = FilePersistence.save_credentials(auth_path, struct(State, latest_auth_state))
+    end
+  end)
+
+receive do
+  {:connection_update, %{connection: :open}} -> :ok
+after
+  30_000 -> raise "connection did not open"
+end
 
 unsubscribe =
   BaileysEx.subscribe(connection, fn
@@ -39,9 +59,6 @@ unsubscribe =
 
 {:ok, _sent} =
   BaileysEx.send_message(connection, "1234567890@s.whatsapp.net", %{text: "Hello from Elixir"})
-
-{:ok, latest_auth_state} = BaileysEx.auth_state(connection)
-:ok = FilePersistence.save_credentials(auth_path, struct(State, latest_auth_state))
 
 unsubscribe.()
 :ok = BaileysEx.disconnect(connection)
@@ -97,19 +114,21 @@ Implemented event families:
 
 ## Guides
 
-- [Getting Started](guides/getting-started.md)
-- [Authentication](guides/authentication.md)
-- [Sending Messages](guides/sending-messages.md)
-- [Receiving Messages](guides/receiving-messages.md)
-- [Media](guides/media.md)
-- [Groups and Communities](guides/groups.md)
-- [Custom Persistence](guides/custom-persistence.md)
-
-Legacy implementation notes remain under `user_docs/`.
+- [Installation](user_docs/getting-started/installation.md)
+- [First Connection](user_docs/getting-started/first-connection.md)
+- [Send Your First Message](user_docs/getting-started/sending-your-first-message.md)
+- [Messages](user_docs/guides/messages.md)
+- [Media](user_docs/guides/media.md)
+- [Groups and Communities](user_docs/guides/groups.md)
+- [Presence](user_docs/guides/presence.md)
+- [Events and Subscriptions](user_docs/guides/events-and-subscriptions.md)
+- [Authentication and Persistence](user_docs/guides/authentication-and-persistence.md)
+- [Advanced Features](user_docs/guides/advanced-features.md)
+- [Manage App State Sync](user_docs/guides/manage-app-state-sync.md)
 
 ## Example App
 
-An end-to-end echo bot example is included at [`examples/echo_bot.exs`](examples/echo_bot.exs).
+An end-to-end echo bot example is included at [`examples/echo_bot.exs`](examples/echo_bot.exs) with a companion docs page at [`examples/echo-bot.md`](examples/echo-bot.md).
 
 Show usage:
 

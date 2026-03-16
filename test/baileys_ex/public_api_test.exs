@@ -1,10 +1,13 @@
 defmodule BaileysEx.PublicApiTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Supervisor
+  alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
@@ -254,5 +257,152 @@ defmodule BaileysEx.PublicApiTest do
              )
 
     assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "send_message/4 ignores unknown account identity keys and still relays device identity" do
+    auth_state = %{
+      creds: %{
+        me: %{id: "15550001111:1@s.whatsapp.net", name: "Bailey"},
+        account: %{
+          "details" => <<1, 2>>,
+          "account_signature_key" => <<9, 9>>,
+          "account_signature" => <<3, 4>>,
+          "device_signature" => <<5, 6>>,
+          "extra" => "ignored"
+        }
+      }
+    }
+
+    assert {:ok, connection} = connect_runtime_with_fake_signal(auth_state)
+    assert_receive :fake_socket_connect
+    assert :ok = seed_runtime_device_list(connection)
+
+    assert {:ok, %{id: "3EB0STRINGKEYS"}} =
+             BaileysEx.send_message(connection, "15551234567@s.whatsapp.net", %{text: "hello"},
+               message_id_fun: fn _me_id -> "3EB0STRINGKEYS" end
+             )
+
+    assert_receive {:fake_socket_send_node, %BinaryNode{content: content}}
+
+    assert %BinaryNode{tag: "device-identity", content: {:binary, encoded_device_identity}} =
+             Enum.find(content, &match?(%BinaryNode{tag: "device-identity"}, &1))
+
+    assert {:ok,
+            %ADVSignedDeviceIdentity{
+              details: <<1, 2>>,
+              account_signature_key: <<9, 9>>,
+              account_signature: <<3, 4>>,
+              device_signature: <<5, 6>>
+            }} = ADVSignedDeviceIdentity.decode(encoded_device_identity)
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "send_message/4 omits empty account signature keys from device identity" do
+    auth_state = %{
+      creds: %{
+        me: %{id: "15550001111:1@s.whatsapp.net", name: "Bailey"},
+        account: %{
+          "details" => <<1, 2>>,
+          "account_signature_key" => <<>>,
+          "account_signature" => <<3, 4>>,
+          "device_signature" => <<5, 6>>
+        }
+      }
+    }
+
+    assert {:ok, connection} = connect_runtime_with_fake_signal(auth_state)
+    assert_receive :fake_socket_connect
+    assert :ok = seed_runtime_device_list(connection)
+
+    assert {:ok, %{id: "3EB0EMPTYSIGKEY"}} =
+             BaileysEx.send_message(connection, "15551234567@s.whatsapp.net", %{text: "hello"},
+               message_id_fun: fn _me_id -> "3EB0EMPTYSIGKEY" end
+             )
+
+    assert_receive {:fake_socket_send_node, %BinaryNode{content: content}}
+
+    assert %BinaryNode{tag: "device-identity", content: {:binary, encoded_device_identity}} =
+             Enum.find(content, &match?(%BinaryNode{tag: "device-identity"}, &1))
+
+    assert {:ok,
+            %ADVSignedDeviceIdentity{
+              details: <<1, 2>>,
+              account_signature_key: nil,
+              account_signature: <<3, 4>>,
+              device_signature: <<5, 6>>
+            }} = ADVSignedDeviceIdentity.decode(encoded_device_identity)
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "send_message/4 logs and drops malformed account identity data" do
+    auth_state = %{
+      creds: %{
+        me: %{id: "15550001111:1@s.whatsapp.net", name: "Bailey"},
+        account: %{
+          "details" => 123,
+          "account_signature" => <<3, 4>>,
+          "device_signature" => <<5, 6>>
+        }
+      }
+    }
+
+    assert {:ok, connection} = connect_runtime_with_fake_signal(auth_state)
+    assert_receive :fake_socket_connect
+    assert :ok = seed_runtime_device_list(connection)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, %{id: "3EB0BADIDENTITY"}} =
+                 BaileysEx.send_message(
+                   connection,
+                   "15551234567@s.whatsapp.net",
+                   %{text: "hello"},
+                   message_id_fun: fn _me_id -> "3EB0BADIDENTITY" end
+                 )
+
+        assert_receive {:fake_socket_send_node, %BinaryNode{content: content}}
+
+        refute Enum.any?(content, &match?(%BinaryNode{tag: "device-identity"}, &1))
+      end)
+
+    assert log =~ "dropping invalid device identity account"
+    assert log =~ "details"
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  defp connect_runtime_with_fake_signal(auth_state) do
+    {repo, _store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    {:ok, repo} =
+      Repository.inject_e2e_session(repo, %{
+        jid: "15551234567:0@s.whatsapp.net",
+        session: session
+      })
+
+    {:ok, repo} =
+      Repository.inject_e2e_session(repo, %{
+        jid: "15550001111:2@s.whatsapp.net",
+        session: session
+      })
+
+    BaileysEx.connect(auth_state,
+      config: Config.new(fire_init_queries: false),
+      socket_module: FakeSocket,
+      test_pid: self(),
+      signal_repository_adapter: MessageSignalHelpers.FakeAdapter,
+      signal_repository_adapter_state: repo.adapter_state
+    )
+  end
+
+  defp seed_runtime_device_list(connection) do
+    assert %Store{} = signal_store = Supervisor.signal_store(connection)
+
+    Store.set(signal_store, %{
+      :"device-list" => %{"15551234567" => ["0"], "15550001111" => ["1", "2"]}
+    })
   end
 end

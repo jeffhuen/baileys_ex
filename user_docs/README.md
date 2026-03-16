@@ -343,27 +343,39 @@ the reader needs to know, not how it's implemented.
 
 | Page | Description |
 |---|---|
-| *(Phase 12)* | Installation, first connection, first message |
+| [getting-started/installation.md](getting-started/installation.md) | Install BaileysEx, compile the NIF, and choose a real transport plus auth path |
+| [getting-started/first-connection.md](getting-started/first-connection.md) | Start a real connection, pair by QR or phone code, and persist credentials |
+| [getting-started/sending-your-first-message.md](getting-started/sending-your-first-message.md) | Send a text message and subscribe to incoming events |
 
 ### Guides
 
 | Page | Description |
 |---|---|
+| [guides/messages.md](guides/messages.md) | Send text, replies, reactions, polls, forwards, and control messages |
+| [guides/media.md](guides/media.md) | Upload and download images, video, audio, documents, and stickers |
+| [guides/groups.md](guides/groups.md) | Create groups, inspect metadata, leave groups, and reach community helpers |
+| [guides/presence.md](guides/presence.md) | Send availability and chatstate updates and subscribe to presence feeds |
+| [guides/events-and-subscriptions.md](guides/events-and-subscriptions.md) | Work with normalized and raw connection events without blocking the emitter |
+| [guides/authentication-and-persistence.md](guides/authentication-and-persistence.md) | Persist auth state and swap the default Signal key store safely |
+| [guides/advanced-features.md](guides/advanced-features.md) | Use communities, newsletters, business helpers, WAM, and advanced Syncd surfaces |
 | [guides/manage-app-state-sync.md](guides/manage-app-state-sync.md) | Drive advanced Syncd resync and patch flows from an existing connection runtime |
-| *(Phase 12)* | Messages, media, groups, presence, events, auth |
 
 ### Reference
 
 | Page | Description |
 |---|---|
-| *(Phase 12)* | Configuration, events catalog, message types |
+| [reference/configuration.md](reference/configuration.md) | Public connection options and every `BaileysEx.Connection.Config` field |
+| [reference/event-catalog.md](reference/event-catalog.md) | Normalized `subscribe/2` tuples and raw `subscribe_raw/2` event keys |
+| [reference/message-types.md](reference/message-types.md) | Supported outbound content maps and inbound media download helpers |
 
 ### Troubleshooting
 
 | Page | Description |
 |---|---|
 | [troubleshooting/app-state-sync-issues.md](troubleshooting/app-state-sync-issues.md) | Fix missing Syncd keys, MAC mismatches, and missing emitted updates |
-| *(Phase 12)* | Connection issues, authentication, encryption |
+| [troubleshooting/connection-issues.md](troubleshooting/connection-issues.md) | Fix missing transports, not-connected errors, timeouts, and startup disconnects |
+| [troubleshooting/authentication-issues.md](troubleshooting/authentication-issues.md) | Fix repeated pairing, pairing-code timing, and auth-state drift |
+| [troubleshooting/encryption-issues.md](troubleshooting/encryption-issues.md) | Fix invalid JIDs, invalid Signal addresses, ciphertext errors, and media metadata issues |
 
 ---
 

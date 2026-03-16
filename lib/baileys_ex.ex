@@ -4,11 +4,25 @@ defmodule BaileysEx do
 
   ## Quick Start
 
+      alias BaileysEx.Connection.Transport.MintWebSocket
+
+      parent = self()
+
       {:ok, connection} =
         BaileysEx.connect(auth_state,
+          transport: {MintWebSocket, []},
           on_qr: fn qr -> IO.puts("Scan QR: \#{qr}") end,
-          on_connection: fn update -> IO.inspect({:connection, update}) end
+          on_connection: fn update ->
+            IO.inspect({:connection, update})
+            send(parent, {:connection_update, update})
+          end
         )
+
+      receive do
+        {:connection_update, %{connection: :open}} -> :ok
+      after
+        30_000 -> raise "connection did not open"
+      end
 
       unsubscribe =
         BaileysEx.subscribe(connection, fn
@@ -46,6 +60,10 @@ defmodule BaileysEx do
 
   @doc """
   Start a connection runtime and optionally attach convenience callbacks.
+
+  Pass a real `:transport` such as `{BaileysEx.Connection.Transport.MintWebSocket, []}`
+  when you want an actual WhatsApp connection. Without it, the default transport
+  returns `{:error, :transport_not_configured}`.
 
   Supported callback options:
   - `:on_connection` receives each `connection_update` payload

@@ -829,7 +829,8 @@ socket-layer `w:stats` IQ path.
 | `lib/baileys_ex/wam.ex` | ✅ |
 | `lib/baileys_ex/wam/*.ex` | ✅ |
 | `priv/wam/definitions.json` | ✅ |
-| `guides/*.md` | ✅ |
+| `user_docs/**/*.md` | ✅ |
+| `examples/echo-bot.md` | ✅ |
 | `examples/echo_bot.exs` | ✅ |
 | `.github/workflows/ci.yml` | ✅ |
 

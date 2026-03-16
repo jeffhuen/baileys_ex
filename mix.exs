@@ -56,31 +56,42 @@ defmodule BaileysEx.MixProject do
     [
       main: "readme",
       extras: [
-        "README.md",
-        "guides/getting-started.md",
-        "guides/authentication.md",
-        "guides/sending-messages.md",
-        "guides/receiving-messages.md",
-        "guides/media.md",
-        "guides/groups.md",
-        "guides/custom-persistence.md",
-        "user_docs/glossary.md",
-        "user_docs/guides/manage-app-state-sync.md",
-        "user_docs/troubleshooting/app-state-sync-issues.md"
+        {"README.md", [title: "BaileysEx"]},
+        {"user_docs/glossary.md", [title: "Glossary"]},
+        {"user_docs/getting-started/installation.md", [title: "Installation"]},
+        {"user_docs/getting-started/first-connection.md", [title: "First Connection"]},
+        {"user_docs/getting-started/sending-your-first-message.md",
+         [title: "Send Your First Message"]},
+        {"user_docs/guides/messages.md", [title: "Send Messages"]},
+        {"user_docs/guides/media.md", [title: "Send and Download Media"]},
+        {"user_docs/guides/groups.md", [title: "Work with Groups and Communities"]},
+        {"user_docs/guides/presence.md", [title: "Send Presence Updates"]},
+        {"user_docs/guides/events-and-subscriptions.md",
+         [title: "Event and Subscription Patterns"]},
+        {"user_docs/guides/authentication-and-persistence.md",
+         [title: "Manage Authentication and Persistence"]},
+        {"user_docs/guides/advanced-features.md", [title: "Use Advanced Features"]},
+        {"user_docs/guides/manage-app-state-sync.md", [title: "Manage App State Sync"]},
+        {"user_docs/reference/configuration.md", [title: "Configuration Reference"]},
+        {"user_docs/reference/event-catalog.md", [title: "Event Catalog Reference"]},
+        {"user_docs/reference/message-types.md", [title: "Message Types Reference"]},
+        {"user_docs/troubleshooting/connection-issues.md",
+         [title: "Troubleshooting: Connection Issues"]},
+        {"user_docs/troubleshooting/authentication-issues.md",
+         [title: "Troubleshooting: Authentication Issues"]},
+        {"user_docs/troubleshooting/encryption-issues.md",
+         [title: "Troubleshooting: Encryption Issues"]},
+        {"user_docs/troubleshooting/app-state-sync-issues.md",
+         [title: "Troubleshooting: App State Sync"]},
+        {"examples/echo-bot.md", [title: "Echo Bot Example"]}
       ],
       groups_for_extras: [
-        Overview: ["README.md", "user_docs/glossary.md"],
-        Guides: [
-          "guides/getting-started.md",
-          "guides/authentication.md",
-          "guides/sending-messages.md",
-          "guides/receiving-messages.md",
-          "guides/media.md",
-          "guides/groups.md",
-          "guides/custom-persistence.md",
-          "user_docs/guides/manage-app-state-sync.md"
-        ],
-        Troubleshooting: ~r/user_docs\/troubleshooting\//
+        {"Overview", ["README.md", "user_docs/glossary.md"]},
+        {"Getting Started", ~r/user_docs\/getting-started\//},
+        {"Guides", ~r/user_docs\/guides\//},
+        {"Reference", ~r/user_docs\/reference\//},
+        {"Troubleshooting", ~r/user_docs\/troubleshooting\//},
+        {"Examples", ~r/examples\//}
       ]
     ]
   end
@@ -97,7 +108,6 @@ defmodule BaileysEx.MixProject do
         "LICENSE",
         "README.md",
         "examples",
-        "guides",
         "lib",
         "mix.exs",
         "native/baileys_nif/.cargo",

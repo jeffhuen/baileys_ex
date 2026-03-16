@@ -1,6 +1,8 @@
 defmodule BaileysEx.Connection.SupervisorTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
@@ -187,6 +189,27 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     coordinator = Supervisor.coordinator(supervisor)
     assert %Config{} = :sys.get_state(coordinator).config
+
+    assert :ok = Supervisor.stop_connection(supervisor)
+  end
+
+  test "coordinator logs unsupported requests" do
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               config: Config.new(fire_init_queries: false),
+               auth_state: %{creds: %{}},
+               transport: {NoopTransport, %{}}
+             )
+
+    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+
+    log =
+      capture_log(fn ->
+        assert {:error, :unsupported_request} = GenServer.call(coordinator_pid, :unsupported)
+      end)
+
+    assert log =~ "unsupported coordinator request"
+    assert log =~ ":unsupported"
 
     assert :ok = Supervisor.stop_connection(supervisor)
   end

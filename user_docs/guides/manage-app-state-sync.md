@@ -2,7 +2,7 @@
 
 Use this guide when you need to drive WhatsApp's [app state sync](../glossary.md#app-state-sync-syncd) flow yourself. Most applications let the connection runtime do this automatically during initial history sync and when WhatsApp asks the client to resync cross-device state.
 
-## Before you start
+## Before you begin
 
 - Use an authenticated connection that has already received its app-state sync keys.
 - Reuse the same `query`, credential store, signal store, and event emitter from that running connection.

@@ -1,5 +1,6 @@
 alias BaileysEx.Auth.FilePersistence
 alias BaileysEx.Auth.State
+alias BaileysEx.Connection.Transport.MintWebSocket
 alias BaileysEx.Protocol.Proto.Message
 
 defmodule EchoBot do
@@ -28,6 +29,7 @@ defmodule EchoBot do
 
     {:ok, connection} =
       BaileysEx.connect(auth_state,
+        transport: {MintWebSocket, []},
         on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
         on_connection: fn update -> IO.inspect(update, label: "connection") end
       )

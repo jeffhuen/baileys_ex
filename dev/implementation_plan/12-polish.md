@@ -95,14 +95,25 @@ end
 - `@moduledoc` on every public module
 - `@doc` on every public function
 - Typespecs on all public functions
-- Guide pages in `guides/`:
-  - `getting-started.md`
-  - `authentication.md`
-  - `sending-messages.md`
-  - `receiving-messages.md`
-  - `media.md`
-  - `groups.md`
-  - `custom-persistence.md`
+- Published Layer 2 docs in `user_docs/`:
+  - `user_docs/getting-started/installation.md`
+  - `user_docs/getting-started/first-connection.md`
+  - `user_docs/getting-started/sending-your-first-message.md`
+  - `user_docs/guides/messages.md`
+  - `user_docs/guides/media.md`
+  - `user_docs/guides/groups.md`
+  - `user_docs/guides/presence.md`
+  - `user_docs/guides/events-and-subscriptions.md`
+  - `user_docs/guides/authentication-and-persistence.md`
+  - `user_docs/guides/advanced-features.md`
+  - `user_docs/guides/manage-app-state-sync.md`
+  - `user_docs/reference/configuration.md`
+  - `user_docs/reference/event-catalog.md`
+  - `user_docs/reference/message-types.md`
+  - `user_docs/troubleshooting/connection-issues.md`
+  - `user_docs/troubleshooting/authentication-issues.md`
+  - `user_docs/troubleshooting/encryption-issues.md`
+  - `user_docs/troubleshooting/app-state-sync-issues.md`
 
 ### 12.4 Example application
 
@@ -157,6 +168,7 @@ default behavior, not an undocumented omission.
 - `lib/baileys_ex/wam/*.ex`
 - `priv/wam/definitions.json`
 - `dev/scripts/generate_wam_definitions.mjs`
-- `guides/*.md`
+- `user_docs/**/*.md`
+- `examples/echo-bot.md`
 - `examples/echo_bot.exs`
 - `.github/workflows/ci.yml`

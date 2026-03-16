@@ -111,23 +111,27 @@ user_docs/
 │   ├── media.md                       ← images, video, audio, documents
 │   ├── groups.md                      ← group CRUD, participants, invites
 │   ├── presence.md                    ← online/offline/composing status
-│   ├── events.md                      ← event subscription, handling patterns
-│   ├── authentication.md             ← auth state, persistence, reconnection
-│   └── advanced.md                    ← newsletters, communities, app state sync
+│   ├── events-and-subscriptions.md    ← event subscription, handling patterns
+│   ├── authentication-and-persistence.md
+│   │                                   ← auth state, persistence, reconnection
+│   ├── advanced-features.md           ← newsletters, communities, business, WAM
+│   └── manage-app-state-sync.md       ← direct Syncd resync and patch workflows
 ├── reference/
 │   ├── configuration.md               ← connection options, all config keys
-│   ├── events.md                      ← complete event type catalog
+│   ├── event-catalog.md               ← complete event type catalog
 │   └── message-types.md               ← all supported message type structs
 └── troubleshooting/
     ├── connection-issues.md           ← WebSocket, Noise handshake, timeouts
-    ├── authentication.md              ← QR failures, pairing code issues
-    └── encryption.md                  ← Signal session errors, key mismatches
+    ├── authentication-issues.md       ← QR failures, pairing code issues
+    ├── encryption-issues.md           ← Signal session errors, key mismatches
+    └── app-state-sync-issues.md       ← Syncd verification and key-state failures
 ```
 
 **Examples:**
 ```
 examples/
-└── echo_bot.exs          — minimal working bot
+├── echo_bot.exs          — minimal working bot
+└── echo-bot.md           — published example guide linking to the runnable script
 ```
 
 **Included in `doc/` output via `mix.exs`:**
@@ -137,13 +141,14 @@ docs: [
     "user_docs/glossary.md": [title: "Glossary"],
     "user_docs/getting-started/installation.md": [title: "Installation"],
     "user_docs/getting-started/first-connection.md": [title: "First Connection"],
-    # ... added as pages are written
+    "examples/echo-bot.md": [title: "Echo Bot Example"]
   ],
   groups_for_extras: [
     "Getting Started": ~r/user_docs\/getting-started\//,
     "Guides": ~r/user_docs\/guides\//,
     "Reference": ~r/user_docs\/reference\//,
-    "Troubleshooting": ~r/user_docs\/troubleshooting\//
+    "Troubleshooting": ~r/user_docs\/troubleshooting\//,
+    "Examples": ~r/examples\//
   ]
 ]
 ```

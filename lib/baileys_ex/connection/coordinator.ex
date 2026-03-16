@@ -17,6 +17,7 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Connection.Store
   alias BaileysEx.Feature.AppState
   alias BaileysEx.Feature.Call
+  alias BaileysEx.Feature.Community
   alias BaileysEx.Feature.Group
   alias BaileysEx.Feature.Presence
   alias BaileysEx.Feature.Privacy
@@ -394,18 +395,16 @@ defmodule BaileysEx.Connection.Coordinator do
        when type in ["groups", "communities"] do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} ->
-        dirty_opts =
+        dirty_handler =
           case type do
-            "communities" -> [root_tag: "communities", item_tag: "community"]
-            _ -> []
+            "communities" -> Community
+            _ -> Group
           end
 
         _ =
-          Group.handle_dirty_update({state.socket_module, socket_pid}, %{type: type},
-            Keyword.merge(dirty_opts,
-              event_emitter: state.event_emitter,
-              sendable: {state.socket_module, socket_pid}
-            )
+          dirty_handler.handle_dirty_update({state.socket_module, socket_pid}, %{type: type},
+            event_emitter: state.event_emitter,
+            sendable: {state.socket_module, socket_pid}
           )
 
       :error ->

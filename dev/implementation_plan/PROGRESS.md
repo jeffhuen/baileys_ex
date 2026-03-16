@@ -22,7 +22,7 @@
 | 8 | Messaging Core | 13 | COMPLETE | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | COMPLETE | 2, 8 | 12 |
 | 10 | Features | 17 | COMPLETE | 8 | 11 |
-| 11 | Advanced Features | 5 | NOT STARTED | 10 | 12 |
+| 11 | Advanced Features | 5 | COMPLETE | 10 | 12 |
 | 12 | Polish | 7 | NOT STARTED | All | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
@@ -733,26 +733,42 @@ bot profile protocol surface.
 
 ## Phase 11: Advanced Features
 
-**Status:** IN PROGRESS · **Depends on:** Phase 10 · **Blocks:** 12
+**Status:** COMPLETE · **Depends on:** Phase 10 · **Blocks:** 12
+
+`BaileysEx.Feature.Business` now covers the full Baileys business socket
+surface from `business.ts`: business-profile mutations, cover-photo upload and
+removal, catalog and collection fetches, product create/update/delete, and
+order-details queries over `fb:thrift_iq`, with the matching catalog/product
+parsers ported from `Utils/business.ts`. `BaileysEx.Feature.Newsletter` now
+covers the mixed WMex/IQ/message transport surface from `newsletter.ts`,
+including CRUD, metadata/admin operations, follow/mute flows, message-history
+fetch, live-update subscription, reactions, and profile updates. 
+`BaileysEx.Feature.Community` now covers the full communities socket surface:
+community create/leave/update flows, subgroup create/link/unlink/fetch,
+participant and invite operations, community-specific metadata parsing, and the
+dirty-update runtime path wired through `BaileysEx.Connection.Coordinator` so
+community refetches emit `groups.update` and clean the shared `groups` bucket
+the same way Baileys rc.9 does.
 
 ### Tasks
 
-- [ ] 11.1 Business operations (profile update, cover, catalog, products, orders)
-- [ ] 11.2 Newsletters (19 functions, mixed WMex/IQ/message transport)
-- [ ] 11.3 Communities (23 functions, subgroup linking)
+- [x] 11.1 Business operations (profile update, cover, catalog, products, orders)
+- [x] 11.2 Newsletters (19 functions, mixed WMex/IQ/message transport)
+- [x] 11.3 Communities (23 functions, subgroup linking)
 - [x] 11.4 Call handling (offer/reject, call links — GAP-36)
-- [ ] 11.5 Tests
+- [x] 11.5 Tests
 
 ### Acceptance Criteria
 
-- [ ] Newsletter: all 19 functions construct correct WMex/IQ/message nodes
-- [ ] Community: all 23 functions construct correct IQ nodes
-- [ ] Community: subgroup linking/unlinking works
-- [ ] Community: fetch_linked_groups returns correct structure
-- [ ] Business: profile update with hours/website arrays
-- [ ] Business: cover photo upload via media upload pipeline
-- [ ] Business: product CRUD operations
-- [ ] Business: order-details query uses the `fb:thrift_iq` namespace from Baileys
+- [x] Newsletter: all 19 functions construct correct WMex/IQ/message nodes
+- [x] Community: all 23 functions construct correct IQ nodes
+- [x] Community: subgroup linking/unlinking works
+- [x] Community: fetch_linked_groups returns correct structure
+- [x] Community dirty updates refetch participating communities, emit `groups.update`, and clean the `groups` bucket
+- [x] Business: profile update with hours/website arrays
+- [x] Business: cover photo upload via media upload pipeline
+- [x] Business: product CRUD operations
+- [x] Business: order-details query uses the `fb:thrift_iq` namespace from Baileys
 - [x] Call: reject constructs correct call node
 - [x] Call events emitted correctly
 - [x] All node formats match Baileys reference
@@ -762,14 +778,15 @@ bot profile protocol surface.
 
 | File | Status |
 |------|--------|
-| `lib/baileys_ex/feature/business.ex` | ⬜ |
-| `lib/baileys_ex/feature/newsletter.ex` | ⬜ |
-| `lib/baileys_ex/feature/community.ex` | ⬜ |
+| `lib/baileys_ex/feature/business.ex` | ✅ |
+| `lib/baileys_ex/feature/newsletter.ex` | ✅ |
+| `lib/baileys_ex/feature/community.ex` | ✅ |
 | `lib/baileys_ex/feature/call.ex` | ✅ |
-| `test/baileys_ex/feature/business_test.exs` | ⬜ |
-| `test/baileys_ex/feature/newsletter_test.exs` | ⬜ |
-| `test/baileys_ex/feature/community_test.exs` | ⬜ |
+| `test/baileys_ex/feature/business_test.exs` | ✅ |
+| `test/baileys_ex/feature/newsletter_test.exs` | ✅ |
+| `test/baileys_ex/feature/community_test.exs` | ✅ |
 | `test/baileys_ex/feature/call_test.exs` | ✅ |
+| `test/baileys_ex/connection/supervisor_test.exs` | ✅ |
 
 ---
 

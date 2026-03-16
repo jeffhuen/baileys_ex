@@ -4,6 +4,7 @@
 
 **Depends on:** Phase 10 (Features)
 **Blocks:** Phase 12 (Polish)
+**Status:** COMPLETE
 
 **Baileys reference:**
 - `src/Socket/business.ts` — 9 functions (catalog, products, orders, cover photo)
@@ -202,15 +203,15 @@ end
 
 ## Acceptance Criteria
 
-- [ ] Newsletter: all exported newsletter operations construct correct WMex/IQ/message nodes
-- [ ] Community: all exported community operations construct correct IQ nodes
-- [ ] Community: subgroup linking/unlinking works
-- [ ] Community: fetch_linked_groups returns correct structure
-- [ ] Community dirty updates refetch participating communities, emit `groups.update`, and clean the `groups` bucket
-- [ ] Business: profile update with hours/website arrays
-- [ ] Business: cover photo upload via media upload pipeline
-- [ ] Business: product CRUD operations
-- [ ] Business: order-details query uses the `fb:thrift_iq` namespace from Baileys
+- [x] Newsletter: all exported newsletter operations construct correct WMex/IQ/message nodes
+- [x] Community: all exported community operations construct correct IQ nodes
+- [x] Community: subgroup linking/unlinking works
+- [x] Community: fetch_linked_groups returns correct structure
+- [x] Community dirty updates refetch participating communities, emit `groups.update`, and clean the `groups` bucket
+- [x] Business: profile update with hours/website arrays
+- [x] Business: cover photo upload via media upload pipeline
+- [x] Business: product CRUD operations
+- [x] Business: order-details query uses the `fb:thrift_iq` namespace from Baileys
 - [x] Call: reject constructs correct call node
 - [x] Call events emitted correctly
 - [x] All node formats match Baileys reference

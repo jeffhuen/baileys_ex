@@ -224,9 +224,7 @@ defmodule BaileysEx.Feature.AppStateTest do
 
   test "build_patch/4 omits disable_link_previews fields when the setting is false" do
     patch =
-      AppState.build_patch(:disable_link_previews, "", false,
-        timestamp: 1_710_111_222_333
-      )
+      AppState.build_patch(:disable_link_previews, "", false, timestamp: 1_710_111_222_333)
 
     assert patch.index == ["setting_disableLinkPreviews"]
     assert patch.type == :regular

@@ -882,9 +882,11 @@ defmodule BaileysEx.Feature.AppState do
     ordered_mutations = mutation_order(mutation_map, mutation_order)
 
     emit_fun = fn ->
-      Enum.reduce(ordered_mutations, opts, fn mutation, emit_opts ->
-        emit_one_mutation(event_emitter, mutation, me, emit_opts)
-      end)
+      _ =
+        Enum.reduce(ordered_mutations, opts, fn mutation, emit_opts ->
+          emit_one_mutation(event_emitter, mutation, me, emit_opts)
+        end)
+
       :ok
     end
 
@@ -904,7 +906,9 @@ defmodule BaileysEx.Feature.AppState do
   end
 
   defp mutation_order(_mutation_map, [_ | _] = mutation_order), do: mutation_order
-  defp mutation_order(mutation_map, _mutation_order), do: Enum.map(mutation_map, fn {_key, mutation} -> mutation end)
+
+  defp mutation_order(mutation_map, _mutation_order),
+    do: Enum.map(mutation_map, fn {_key, mutation} -> mutation end)
 
   defp update_mutation_opts(opts, events) do
     Enum.reduce(events, opts, fn

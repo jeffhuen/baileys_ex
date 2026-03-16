@@ -693,7 +693,11 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_receive {:processed_events,
                     %{
                       groups_update: [
-                        %{id: "1234567890@g.us", subject: "Phase 10 Community", is_community: true}
+                        %{
+                          id: "1234567890@g.us",
+                          subject: "Phase 10 Community",
+                          is_community: true
+                        }
                       ]
                     }}
 

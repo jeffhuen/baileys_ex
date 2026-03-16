@@ -1,6 +1,8 @@
 defmodule BaileysEx.Connection.SupervisorTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
@@ -10,6 +12,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
   alias BaileysEx.Message.Builder
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.TestHelpers.MessageSignalHelpers
+  alias BaileysEx.TestHelpers.TelemetryHelpers
 
   defmodule ReconnectTransport do
     @behaviour BaileysEx.Connection.Transport
@@ -116,6 +119,44 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end
   end
 
+  defmodule OneShotVia do
+    def register_name({registry, key}, pid) do
+      Agent.update(registry, &Map.put(&1, key, %{pid: pid, whereis_calls: 0}))
+      :yes
+    end
+
+    def unregister_name({registry, key}) do
+      Agent.update(registry, &Map.delete(&1, key))
+      :ok
+    end
+
+    def whereis_name({registry, key}) do
+      Agent.get_and_update(registry, fn state ->
+        case Map.get(state, key) do
+          %{pid: pid, whereis_calls: 0} = entry ->
+            {pid, Map.put(state, key, %{entry | whereis_calls: 1})}
+
+          %{whereis_calls: _count} ->
+            {:undefined, state}
+
+          nil ->
+            {:undefined, state}
+        end
+      end)
+    end
+
+    def send({registry, key}, message) do
+      case Agent.get(registry, &Map.get(&1, key)) do
+        %{pid: pid} when is_pid(pid) ->
+          Kernel.send(pid, message)
+          pid
+
+        _ ->
+          :undefined
+      end
+    end
+  end
+
   test "starts socket, store, and event emitter under a rest_for_one tree" do
     name = {:phase6_test, System.unique_integer([:positive])}
 
@@ -133,6 +174,116 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert Socket in child_ids
     assert Store in child_ids
     assert EventEmitter in child_ids
+  end
+
+  test "start_connection/2 and stop_connection/1 emit connection telemetry" do
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :connection, :start, :start],
+        [:baileys_ex, :connection, :start, :stop],
+        [:baileys_ex, :connection, :stop, :start],
+        [:baileys_ex, :connection, :stop, :stop]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    assert {:ok, supervisor} =
+             Supervisor.start_connection(%{creds: %{}},
+               config: Config.new(fire_init_queries: false),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :start, :start],
+                    %{system_time: start_time}, _metadata}
+
+    assert is_integer(start_time)
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :start, :stop], %{duration: duration},
+                    %{status: :ok}}
+
+    assert is_integer(duration)
+
+    assert :ok = Supervisor.stop_connection(supervisor)
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :stop, :start],
+                    %{system_time: stop_time}, %{connection_pid: ^supervisor}}
+
+    assert is_integer(stop_time)
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :stop, :stop],
+                    %{duration: stop_duration}, %{connection_pid: ^supervisor, status: :ok}}
+
+    assert is_integer(stop_duration)
+  end
+
+  test "stop_connection/1 resolves a named supervisor once before stopping it" do
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :connection, :stop, :start],
+        [:baileys_ex, :connection, :stop, :stop]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    {:ok, registry} = Agent.start_link(fn -> %{} end)
+    via_name = {:via, OneShotVia, {registry, :phase12_stop}}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_connection(%{creds: %{}},
+               name: via_name,
+               config: Config.new(fire_init_queries: false),
+               transport: {NoopTransport, %{}}
+             )
+
+    on_exit(fn ->
+      if Process.alive?(supervisor) do
+        Elixir.Supervisor.stop(supervisor)
+      end
+    end)
+
+    assert :ok = Supervisor.stop_connection(via_name)
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :stop, :start],
+                    %{system_time: _system_time}, %{connection_pid: ^supervisor}}
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :stop, :stop], %{duration: _duration},
+                    %{connection_pid: ^supervisor, status: :ok}}
+  end
+
+  test "start_connection/2 injects a default config into the coordinator when none is supplied" do
+    assert {:ok, supervisor} =
+             Supervisor.start_connection(%{creds: %{}},
+               socket_module: FakeSocket,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+
+    coordinator = Supervisor.coordinator(supervisor)
+    assert %Config{} = :sys.get_state(coordinator).config
+
+    assert :ok = Supervisor.stop_connection(supervisor)
+  end
+
+  test "coordinator logs unsupported requests" do
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               config: Config.new(fire_init_queries: false),
+               auth_state: %{creds: %{}},
+               transport: {NoopTransport, %{}}
+             )
+
+    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+
+    log =
+      capture_log(fn ->
+        assert {:error, :unsupported_request} = GenServer.call(coordinator_pid, :unsupported)
+      end)
+
+    assert log =~ "unsupported coordinator request"
+    assert log =~ ":unsupported"
+
+    assert :ok = Supervisor.stop_connection(supervisor)
   end
 
   test "crashing the store restarts the store and event emitter while preserving the socket" do
@@ -158,6 +309,13 @@ defmodule BaileysEx.Connection.SupervisorTest do
   end
 
   test "supervisor auto-connects the socket and reconnects after unexpected close" do
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :connection, :reconnect]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
     name = {:phase6_test, System.unique_integer([:positive])}
 
     assert {:ok, supervisor} =
@@ -172,6 +330,9 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     socket_pid = child_pid!(supervisor, Socket)
     Kernel.send(socket_pid, {:emit_closed, :tcp_closed})
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :reconnect], %{count: 1},
+                    %{reason: :tcp_closed, retry_delay_ms: 10}}
 
     assert_receive :transport_connected_attempt, 200
   end

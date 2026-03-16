@@ -13,6 +13,7 @@ defmodule BaileysEx.Signal.Repository do
   alias BaileysEx.Signal.Identity
   alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Store
+  alias BaileysEx.Telemetry
 
   @typedoc "Injected peer session bundle used to bootstrap an outgoing session."
   @type e2e_session :: %{
@@ -158,6 +159,12 @@ defmodule BaileysEx.Signal.Repository do
     with {:ok, address} <- Address.from_jid(jid),
          {:ok, adapter_state, encrypted} <-
            repository.adapter.encrypt_message(repository.adapter_state, address, data) do
+      Telemetry.execute(
+        [:nif, :signal, :encrypt],
+        %{bytes: byte_size(data)},
+        %{jid: jid, mode: :direct}
+      )
+
       {:ok, %{repository | adapter_state: adapter_state}, encrypted}
     end
   end
@@ -171,6 +178,12 @@ defmodule BaileysEx.Signal.Repository do
     with {:ok, address} <- Address.from_jid(jid),
          {:ok, adapter_state, plaintext} <-
            repository.adapter.decrypt_message(repository.adapter_state, address, type, ciphertext) do
+      Telemetry.execute(
+        [:nif, :signal, :decrypt],
+        %{bytes: byte_size(ciphertext)},
+        %{jid: jid, mode: :direct}
+      )
+
       {:ok, %{repository | adapter_state: adapter_state}, plaintext}
     end
   end
@@ -239,6 +252,12 @@ defmodule BaileysEx.Signal.Repository do
              sender_key_name,
              data
            ) do
+      Telemetry.execute(
+        [:nif, :signal, :encrypt],
+        %{bytes: byte_size(data)},
+        %{jid: group, mode: :group}
+      )
+
       {:ok, %{repository | adapter_state: adapter_state}, encrypted}
     end
   end
@@ -292,6 +311,12 @@ defmodule BaileysEx.Signal.Repository do
              sender_key_name,
              msg
            ) do
+      Telemetry.execute(
+        [:nif, :signal, :decrypt],
+        %{bytes: byte_size(msg)},
+        %{jid: group, mode: :group}
+      )
+
       {:ok, %{repository | adapter_state: adapter_state}, plaintext}
     end
   end

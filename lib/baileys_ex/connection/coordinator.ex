@@ -25,14 +25,27 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Message.NotificationHandler
   alias BaileysEx.Message.Receipt
   alias BaileysEx.Message.Receiver
+  alias BaileysEx.Message.Sender
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store, as: SignalStore
   alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
+  alias BaileysEx.Telemetry
 
   @s_whatsapp_net "s.whatsapp.net"
+  @device_identity_account_keys %{
+    :details => :details,
+    :account_signature_key => :account_signature_key,
+    :account_signature => :account_signature,
+    :device_signature => :device_signature,
+    "details" => :details,
+    "account_signature_key" => :account_signature_key,
+    "account_signature" => :account_signature,
+    "device_signature" => :device_signature
+  }
 
   defmodule State do
     @moduledoc false
@@ -83,6 +96,19 @@ defmodule BaileysEx.Connection.Coordinator do
     GenServer.start_link(__MODULE__, opts, genserver_opts)
   end
 
+  @doc "Send a message through the coordinator-owned runtime state."
+  @spec send_message(GenServer.server(), BaileysEx.JID.t(), map() | struct(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def send_message(server, jid, content, opts \\ []) when is_list(opts) do
+    GenServer.call(server, {:send_message, jid, content, opts}, :infinity)
+  end
+
+  @doc "Send a status message through the coordinator-owned runtime state."
+  @spec send_status(GenServer.server(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def send_status(server, content, opts \\ []) when is_map(content) and is_list(opts) do
+    GenServer.call(server, {:send_status, content, opts}, :infinity)
+  end
+
   @impl true
   def init(opts) do
     state = %State{
@@ -131,6 +157,48 @@ defmodule BaileysEx.Connection.Coordinator do
   @impl true
   def handle_continue(:connect_socket, %State{} = state) do
     {:noreply, connect_socket(state)}
+  end
+
+  @impl true
+  def handle_call(
+        {:send_message, jid, content, opts},
+        _from,
+        %State{signal_repository: %Repository{} = repository} = state
+      ) do
+    case Sender.send(sender_context(state, repository), jid, content, opts) do
+      {:ok, result, %{signal_repository: %Repository{} = updated_repository}} ->
+        {:reply, {:ok, result}, %{state | signal_repository: updated_repository}}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call(
+        {:send_status, content, opts},
+        _from,
+        %State{signal_repository: %Repository{} = repository} = state
+      ) do
+    case Sender.send_status(sender_context(state, repository), content, opts) do
+      {:ok, result, %{signal_repository: %Repository{} = updated_repository}} ->
+        {:reply, {:ok, result}, %{state | signal_repository: updated_repository}}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:send_message, _jid, _content, _opts}, _from, %State{} = state) do
+    {:reply, {:error, :signal_repository_not_ready}, state}
+  end
+
+  def handle_call({:send_status, _content, _opts}, _from, %State{} = state) do
+    {:reply, {:error, :signal_repository_not_ready}, state}
+  end
+
+  def handle_call(request, _from, %State{} = state) do
+    Logger.warning("unsupported coordinator request: #{inspect(request)}")
+    {:reply, {:error, :unsupported_request}, state}
   end
 
   @impl true
@@ -316,7 +384,7 @@ defmodule BaileysEx.Connection.Coordinator do
          %{connection_update: %{connection: :close, last_disconnect: %{reason: reason}}}
        ) do
     if reconnectable_reason?(reason) do
-      schedule_reconnect(state)
+      schedule_reconnect(state, reason)
     else
       cancel_reconnect(state)
     end
@@ -416,12 +484,18 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp handle_dirty_update(%State{} = state, _events), do: state
 
-  defp schedule_reconnect(%State{reconnect_timer: nil} = state) do
+  defp schedule_reconnect(%State{reconnect_timer: nil} = state, reason) do
+    Telemetry.execute(
+      [:connection, :reconnect],
+      %{count: 1},
+      %{reason: reason, retry_delay_ms: state.config.retry_delay_ms}
+    )
+
     timer = Process.send_after(self(), :reconnect_socket, state.config.retry_delay_ms)
     %{state | reconnect_timer: timer}
   end
 
-  defp schedule_reconnect(%State{} = state), do: state
+  defp schedule_reconnect(%State{} = state, _reason), do: state
 
   defp cancel_reconnect(%State{reconnect_timer: nil} = state), do: state
 
@@ -671,7 +745,7 @@ defmodule BaileysEx.Connection.Coordinator do
        do: repository
 
   defp build_signal_repository(nil, adapter, adapter_state, %SignalStore{} = signal_store)
-       when is_atom(adapter) do
+       when is_atom(adapter) and not is_nil(adapter) do
     Repository.new(
       adapter: adapter,
       adapter_state: adapter_state,
@@ -700,6 +774,20 @@ defmodule BaileysEx.Connection.Coordinator do
     |> maybe_put_callback(:get_message_fun, state.get_message_fun)
   end
 
+  defp sender_context(%State{} = state, %Repository{} = repository) do
+    creds = Store.get(state.store_ref, :creds, %{})
+
+    %{
+      signal_repository: repository,
+      signal_store: state.signal_store,
+      me_id: nested_id(creds),
+      me_lid: nested_lid(creds)
+    }
+    |> maybe_put(:device_identity, encoded_device_identity(creds))
+    |> maybe_put_callback(:query_fun, sender_query_fun(state))
+    |> maybe_put_callback(:send_node_fun, receipt_sender_fun(state))
+  end
+
   defp notification_context(%State{} = state) do
     resync_app_state_fun = state.resync_app_state_fun || built_in_resync_app_state_fun(state)
 
@@ -714,6 +802,18 @@ defmodule BaileysEx.Connection.Coordinator do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} -> fn node -> state.socket_module.send_node(socket_pid, node) end
       :error -> nil
+    end
+  end
+
+  defp sender_query_fun(%State{} = state) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        fn node ->
+          state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms)
+        end
+
+      :error ->
+        nil
     end
   end
 
@@ -1005,6 +1105,9 @@ defmodule BaileysEx.Connection.Coordinator do
   defp maybe_put_callback(map, _key, nil), do: map
   defp maybe_put_callback(map, key, value), do: Map.put(map, key, value)
 
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
   defp nested_name(%{me: %{name: name}}) when is_binary(name), do: name
   defp nested_name(%{me: %{"name" => name}}) when is_binary(name), do: name
   defp nested_name(%{"me" => %{name: name}}) when is_binary(name), do: name
@@ -1022,4 +1125,88 @@ defmodule BaileysEx.Connection.Coordinator do
   defp nested_lid(%{"me" => %{lid: lid}}) when is_binary(lid), do: lid
   defp nested_lid(%{"me" => %{"lid" => lid}}) when is_binary(lid), do: lid
   defp nested_lid(_creds), do: nil
+
+  defp encoded_device_identity(%{account: %ADVSignedDeviceIdentity{} = account}) do
+    account
+    |> normalize_account_signature_key()
+    |> ADVSignedDeviceIdentity.encode()
+    |> empty_identity_to_nil()
+  end
+
+  defp encoded_device_identity(%{account: %{} = account}) do
+    case normalize_device_identity_account(account) do
+      {:ok, normalized} when map_size(normalized) > 0 ->
+        normalized
+        |> normalize_account_signature_key()
+        |> then(&struct(ADVSignedDeviceIdentity, &1))
+        |> ADVSignedDeviceIdentity.encode()
+        |> empty_identity_to_nil()
+
+      {:ok, _normalized} ->
+        nil
+
+      {:error, reason} ->
+        Logger.warning("dropping invalid device identity account: #{inspect(reason)}")
+        nil
+    end
+  end
+
+  defp encoded_device_identity(%{"account" => account}) when is_map(account) do
+    encoded_device_identity(%{account: account})
+  end
+
+  defp encoded_device_identity(%{account: account}) when not is_nil(account) do
+    Logger.warning("dropping invalid device identity account: #{inspect(account)}")
+    nil
+  end
+
+  defp encoded_device_identity(%{"account" => account}) when not is_nil(account) do
+    Logger.warning("dropping invalid device identity account: #{inspect(account)}")
+    nil
+  end
+
+  defp encoded_device_identity(_creds), do: nil
+
+  defp normalize_device_identity_account(account) when is_map(account) do
+    Enum.reduce_while(account, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case normalize_account_key(key) do
+        {:ok, normalized_key} ->
+          normalize_device_identity_value(acc, normalized_key, value)
+
+        :skip ->
+          {:cont, {:ok, acc}}
+      end
+    end)
+  end
+
+  defp normalize_account_key(key) when is_atom(key) or is_binary(key) do
+    case Map.get(@device_identity_account_keys, key) do
+      nil -> :skip
+      normalized_key -> {:ok, normalized_key}
+    end
+  end
+
+  defp normalize_account_key(_key), do: :skip
+
+  defp normalize_device_identity_value(acc, normalized_key, value)
+       when is_binary(value) or is_nil(value) do
+    {:cont, {:ok, Map.put(acc, normalized_key, value)}}
+  end
+
+  defp normalize_device_identity_value(_acc, normalized_key, value) do
+    {:halt, {:error, {:invalid_account_value, normalized_key, value}}}
+  end
+
+  defp normalize_account_signature_key(account) when is_map(account) do
+    case Map.get(account, :account_signature_key) do
+      signature_key when is_binary(signature_key) and byte_size(signature_key) > 0 ->
+        account
+
+      _ ->
+        Map.put(account, :account_signature_key, nil)
+    end
+  end
+
+  defp empty_identity_to_nil(<<>>), do: nil
+  defp empty_identity_to_nil(identity), do: identity
 end

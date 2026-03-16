@@ -4,6 +4,7 @@ defmodule BaileysEx.Media.UploadTest do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Store
   alias BaileysEx.Media.Upload
+  alias BaileysEx.TestHelpers.TelemetryHelpers
 
   test "refresh_media_conn/2 issues the w:m media_conn iq and parses the response" do
     parent = self()
@@ -150,6 +151,63 @@ defmodule BaileysEx.Media.UploadTest do
 
     assert {"content-type", "application/octet-stream"} in headers
     assert {"origin", "https://web.whatsapp.com"} in headers
+  end
+
+  @tag :tmp_dir
+  test "upload/4 emits telemetry for successful uploads", %{tmp_dir: tmp_dir} do
+    enc_path = Path.join(tmp_dir, "enc.bin")
+    File.write!(enc_path, "ciphertext-with-mac")
+    file_enc_sha256 = :crypto.hash(:sha256, "ciphertext-with-mac")
+
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :media, :upload, :start],
+        [:baileys_ex, :media, :upload, :stop]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    query_fun = fn _node, _timeout ->
+      {:ok,
+       %BinaryNode{
+         tag: "iq",
+         attrs: %{"type" => "result"},
+         content: [
+           %BinaryNode{
+             tag: "media_conn",
+             attrs: %{"auth" => "auth-token", "ttl" => "3600"},
+             content: [%BinaryNode{tag: "host", attrs: %{"hostname" => "upload.example.com"}}]
+           }
+         ]
+       }}
+    end
+
+    request_fun = fn _request ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "url" => "https://mmg.whatsapp.net/mms/image/abc123",
+           "direct_path" => "/mms/image/abc123"
+         }
+       }}
+    end
+
+    assert {:ok, %{direct_path: "/mms/image/abc123"}} =
+             Upload.upload(query_fun, enc_path, :image,
+               file_enc_sha256: file_enc_sha256,
+               request_fun: request_fun
+             )
+
+    assert_receive {:telemetry, [:baileys_ex, :media, :upload, :start],
+                    %{system_time: system_time}, %{media_type: :image, path: ^enc_path}}
+
+    assert is_integer(system_time)
+
+    assert_receive {:telemetry, [:baileys_ex, :media, :upload, :stop], %{duration: duration},
+                    %{media_type: :image, path: ^enc_path, status: :ok}}
+
+    assert is_integer(duration)
   end
 
   @tag :tmp_dir

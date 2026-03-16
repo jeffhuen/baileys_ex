@@ -15,6 +15,7 @@ defmodule BaileysEx.Message.Sender do
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Device
   alias BaileysEx.Signal.Store
+  alias BaileysEx.Telemetry
 
   @status_broadcast %JID{user: "status", server: "broadcast"}
 
@@ -48,21 +49,39 @@ defmodule BaileysEx.Message.Sender do
   end
 
   def send(%{} = context, %JID{} = jid, content, opts) when is_map(content) do
-    media_opts =
-      opts
-      |> Keyword.put_new_lazy(:media_queryable, fn -> context[:query_fun] || context[:socket] end)
-      |> Keyword.put_new(:store_ref, context[:store_ref])
+    Telemetry.span_with_result(
+      [:message, :send],
+      send_telemetry_metadata(jid),
+      &send_result_metadata/1,
+      fn ->
+        media_opts =
+          opts
+          |> Keyword.put_new_lazy(:media_queryable, fn ->
+            context[:query_fun] || context[:socket]
+          end)
+          |> Keyword.put_new(:store_ref, context[:store_ref])
 
-    with {:ok, prepared_content} <- MediaMessageBuilder.prepare(content, media_opts),
-         %Message{} = proto_message <- Builder.build(prepared_content, opts) do
-      send_proto(context, jid, proto_message, opts)
-    end
+        with {:ok, prepared_content} <- MediaMessageBuilder.prepare(content, media_opts),
+             %Message{} = proto_message <- Builder.build(prepared_content, opts) do
+          do_send_proto(context, jid, proto_message, opts)
+        end
+      end
+    )
   end
 
   @spec send_proto(context(), JID.t(), proto_message(), keyword()) ::
           {:ok, send_result(), context()}
           | {:error, term()}
   def send_proto(%{} = context, %JID{} = jid, %Message{} = proto_message, opts \\ []) do
+    Telemetry.span_with_result(
+      [:message, :send],
+      send_telemetry_metadata(jid),
+      &send_result_metadata/1,
+      fn -> do_send_proto(context, jid, proto_message, opts) end
+    )
+  end
+
+  defp do_send_proto(%{} = context, %JID{} = jid, %Message{} = proto_message, opts) do
     with {:ok, message_id} <- generate_message_id(context, opts),
          {:ok, updated_context, stanza_children} <-
            relay_content(context, jid, proto_message, opts),
@@ -369,6 +388,27 @@ defmodule BaileysEx.Message.Sender do
   defp stringify_attrs(attrs) do
     Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
   end
+
+  defp send_telemetry_metadata(%JID{} = jid) do
+    %{
+      jid: JIDUtil.to_string(jid),
+      mode: send_mode(jid)
+    }
+  end
+
+  defp send_mode(%JID{} = jid) do
+    cond do
+      JIDUtil.group?(jid) -> :group
+      JIDUtil.status_broadcast?(jid) -> :status
+      true -> :direct
+    end
+  end
+
+  defp send_result_metadata({:ok, %{id: message_id}, _updated_context})
+       when is_binary(message_id),
+       do: %{message_id: message_id}
+
+  defp send_result_metadata(_result), do: %{}
 
   defp stanza_type(%Message{reaction_message: %Message.ReactionMessage{}}), do: "reaction"
   defp stanza_type(%Message{protocol_message: %Message.ProtocolMessage{}}), do: "protocol"

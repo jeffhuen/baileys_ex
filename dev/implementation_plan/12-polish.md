@@ -1,7 +1,9 @@
 # Phase 12: Polish
 
 **Goal:** Telemetry instrumentation, public API finalization, documentation,
-example application, hex.pm preparation.
+example application, hex.pm preparation, and WAM analytics parity.
+
+**Status:** COMPLETE
 
 **Depends on:** All previous phases
 
@@ -93,14 +95,25 @@ end
 - `@moduledoc` on every public module
 - `@doc` on every public function
 - Typespecs on all public functions
-- Guide pages in `guides/`:
-  - `getting-started.md`
-  - `authentication.md`
-  - `sending-messages.md`
-  - `receiving-messages.md`
-  - `media.md`
-  - `groups.md`
-  - `custom-persistence.md`
+- Published Layer 2 docs in `user_docs/`:
+  - `user_docs/getting-started/installation.md`
+  - `user_docs/getting-started/first-connection.md`
+  - `user_docs/getting-started/sending-your-first-message.md`
+  - `user_docs/guides/messages.md`
+  - `user_docs/guides/media.md`
+  - `user_docs/guides/groups.md`
+  - `user_docs/guides/presence.md`
+  - `user_docs/guides/events-and-subscriptions.md`
+  - `user_docs/guides/authentication-and-persistence.md`
+  - `user_docs/guides/advanced-features.md`
+  - `user_docs/guides/manage-app-state-sync.md`
+  - `user_docs/reference/configuration.md`
+  - `user_docs/reference/event-catalog.md`
+  - `user_docs/reference/message-types.md`
+  - `user_docs/troubleshooting/connection-issues.md`
+  - `user_docs/troubleshooting/authentication-issues.md`
+  - `user_docs/troubleshooting/encryption-issues.md`
+  - `user_docs/troubleshooting/app-state-sync-issues.md`
 
 ### 12.4 Example application
 
@@ -139,18 +152,23 @@ default behavior, not an undocumented omission.
 
 ## Acceptance Criteria
 
-- [ ] Telemetry events fire for all key operations
-- [ ] Public API covers all major features
-- [ ] Documentation generates without warnings
-- [ ] Example bot runs successfully
-- [ ] `mix hex.build` succeeds
-- [ ] CI passes all checks
-- [ ] WAM buffer encoding matches Baileys for the supported event set, with any opt-out documented as an explicit deviation
+- [x] Telemetry events fire for all key operations
+- [x] Public API covers all major features
+- [x] Documentation generates without warnings
+- [x] Example bot runs successfully
+- [x] `mix hex.build` succeeds
+- [x] CI passes all checks
+- [x] WAM buffer encoding matches Baileys for the supported event set, with any opt-out documented as an explicit deviation
 
 ## Files Created/Modified
 
 - `lib/baileys_ex.ex` (rewrite)
 - `lib/baileys_ex/telemetry.ex`
-- `guides/*.md`
+- `lib/baileys_ex/wam.ex`
+- `lib/baileys_ex/wam/*.ex`
+- `priv/wam/definitions.json`
+- `dev/scripts/generate_wam_definitions.mjs`
+- `user_docs/**/*.md`
+- `examples/echo-bot.md`
 - `examples/echo_bot.exs`
 - `.github/workflows/ci.yml`

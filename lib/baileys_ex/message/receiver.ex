@@ -21,6 +21,7 @@ defmodule BaileysEx.Message.Receiver do
   alias BaileysEx.Protocol.Proto.WebMessageInfo
   alias BaileysEx.Signal.Store
   alias BaileysEx.Signal.Repository
+  alias BaileysEx.Telemetry
 
   @type context :: %{
           required(:signal_repository) => Repository.t(),
@@ -56,6 +57,7 @@ defmodule BaileysEx.Message.Receiver do
              type: :notify,
              messages: [received_message]
            }),
+         :ok <- emit_receive_telemetry(node, envelope),
          :ok <- send_receipt(node, envelope, context) do
       {:ok, received_message, context}
     end
@@ -247,6 +249,17 @@ defmodule BaileysEx.Message.Receiver do
       me_lid: context[:me_lid],
       signal_repository: context[:signal_repository],
       get_message_fun: context[:get_message_fun]
+    )
+  end
+
+  defp emit_receive_telemetry(%BinaryNode{attrs: attrs}, envelope) do
+    Telemetry.execute(
+      [:message, :receive],
+      %{count: 1},
+      %{
+        message_id: attrs["id"],
+        remote_jid: envelope.remote_jid
+      }
     )
   end
 

@@ -23,6 +23,7 @@ defmodule BaileysEx.Native do
   def noise_finish(_session), do: :erlang.nif_error(:nif_not_loaded)
   def noise_encrypt(_session, _plaintext), do: :erlang.nif_error(:nif_not_loaded)
   def noise_decrypt(_session, _ciphertext), do: :erlang.nif_error(:nif_not_loaded)
+  def noise_session_count, do: :erlang.nif_error(:nif_not_loaded)
 
   # XEdDSA NIFs
   def xeddsa_sign(_private_key, _message), do: :erlang.nif_error(:nif_not_loaded)

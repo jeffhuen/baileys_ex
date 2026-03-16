@@ -4,6 +4,7 @@ defmodule BaileysEx.Media.DownloadTest do
   alias BaileysEx.Media.Crypto
   alias BaileysEx.Media.Download
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.TestHelpers.TelemetryHelpers
 
   @tag :tmp_dir
   test "download/2 decrypts media via direct_path fallback even when a non-mmg url is present",
@@ -33,6 +34,46 @@ defmodule BaileysEx.Media.DownloadTest do
 
     assert_receive {:download_request, "mmg.whatsapp.net", "/mms/image/file-1", headers}
     assert {"origin", "https://web.whatsapp.com"} in headers
+  end
+
+  @tag :tmp_dir
+  test "download/2 emits telemetry for in-memory downloads", %{tmp_dir: tmp_dir} do
+    media_key = :binary.copy(<<12>>, 32)
+    plaintext = "download telemetry payload"
+
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :media, :download, :start],
+        [:baileys_ex, :media, :download, :stop]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+
+    request_fun = fn _request ->
+      {:ok, %Req.Response{status: 200, body: encrypted}}
+    end
+
+    message = %Message.ImageMessage{
+      media_key: media_key,
+      direct_path: "/mms/image/file-telemetry"
+    }
+
+    assert {:ok, ^plaintext} = Download.download(message, request_fun: request_fun)
+
+    assert_receive {:telemetry, [:baileys_ex, :media, :download, :start],
+                    %{system_time: system_time}, %{media_type: :image, target: :memory}}
+
+    assert is_integer(system_time)
+
+    assert_receive {:telemetry, [:baileys_ex, :media, :download, :stop], %{duration: duration},
+                    %{media_type: :image, status: :ok, target: :memory}}
+
+    assert is_integer(duration)
   end
 
   @tag :tmp_dir

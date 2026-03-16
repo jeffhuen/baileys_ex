@@ -9,6 +9,7 @@ defmodule BaileysEx.Media.Upload do
   alias BaileysEx.Media.HTTP
   alias BaileysEx.Media.Types
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  alias BaileysEx.Telemetry
 
   @s_whatsapp_net "s.whatsapp.net"
 
@@ -74,20 +75,26 @@ defmodule BaileysEx.Media.Upload do
   """
   def upload(queryable, encrypted_path, media_type, opts \\ [])
       when is_binary(encrypted_path) do
-    request_fun = opts[:request_fun] || (&Req.post/1)
+    Telemetry.span(
+      [:media, :upload],
+      %{media_type: media_type, path: encrypted_path},
+      fn ->
+        request_fun = opts[:request_fun] || (&Req.post/1)
 
-    with {:ok, media_conn} <- refresh_media_conn(queryable, opts),
-         {:ok, token} <- encoded_sha256_token(opts[:file_enc_sha256]),
-         path when is_binary(path) <- Types.path(media_type) do
-      upload_hosts(
-        media_conn.hosts,
-        upload_state(queryable, media_conn, encrypted_path, path, token, request_fun, opts),
-        nil
-      )
-    else
-      nil -> {:error, :unsupported_media_type}
-      {:error, _reason} = error -> error
-    end
+        with {:ok, media_conn} <- refresh_media_conn(queryable, opts),
+             {:ok, token} <- encoded_sha256_token(opts[:file_enc_sha256]),
+             path when is_binary(path) <- Types.path(media_type) do
+          upload_hosts(
+            media_conn.hosts,
+            upload_state(queryable, media_conn, encrypted_path, path, token, request_fun, opts),
+            nil
+          )
+        else
+          nil -> {:error, :unsupported_media_type}
+          {:error, _reason} = error -> error
+        end
+      end
+    )
   end
 
   @spec encode_token(String.t()) :: String.t()

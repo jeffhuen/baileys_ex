@@ -1,5 +1,6 @@
 use rustler::{Atom, Binary, Env, NewBinary, NifResult, Resource, ResourceArc};
 use snow::{params::NoiseParams, Builder};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 mod atoms {
@@ -15,6 +16,10 @@ const NOISE_PATTERN: &str = "Noise_XX_25519_AESGCM_SHA256";
 /// snow uses a 65535-byte buffer internally.
 const MAX_MSG_SIZE: usize = 65535;
 
+/// Global counter tracking live `NoiseSession` instances.
+/// Incremented on creation, decremented on `Drop`. Used by leak verification tests.
+static LIVE_SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Internal state machine for the Noise session.
 /// Transitions from Handshake to Transport after the XX pattern completes.
 enum NoiseState {
@@ -29,12 +34,34 @@ enum NoiseState {
 /// Opaque Noise session resource held by Elixir via ResourceArc.
 ///
 /// Uses Mutex for safe concurrent access (required by Rustler's Resource trait).
+/// Tracks live instance count via `LIVE_SESSION_COUNT` for leak verification.
 pub struct NoiseSession {
     state: Mutex<NoiseState>,
 }
 
+impl NoiseSession {
+    fn new(state: NoiseState) -> Self {
+        LIVE_SESSION_COUNT.fetch_add(1, Ordering::SeqCst);
+        NoiseSession {
+            state: Mutex::new(state),
+        }
+    }
+}
+
+impl Drop for NoiseSession {
+    fn drop(&mut self) {
+        LIVE_SESSION_COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 #[rustler::resource_impl]
 impl Resource for NoiseSession {}
+
+/// Return the number of live `NoiseSession` instances (for leak verification).
+#[rustler::nif(name = "noise_session_count")]
+fn session_count() -> usize {
+    LIVE_SESSION_COUNT.load(Ordering::SeqCst)
+}
 
 /// Initialize a Noise XX initiator session.
 ///
@@ -72,9 +99,7 @@ fn init(
         .build_initiator()
         .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("snow init failed: {e}"))))?;
 
-    Ok(ResourceArc::new(NoiseSession {
-        state: Mutex::new(NoiseState::Handshake(hs)),
-    }))
+    Ok(ResourceArc::new(NoiseSession::new(NoiseState::Handshake(hs))))
 }
 
 /// Initialize a Noise XX responder session (used only in tests).
@@ -109,9 +134,7 @@ fn init_responder(
         .build_responder()
         .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("snow init failed: {e}"))))?;
 
-    Ok(ResourceArc::new(NoiseSession {
-        state: Mutex::new(NoiseState::Handshake(hs)),
-    }))
+    Ok(ResourceArc::new(NoiseSession::new(NoiseState::Handshake(hs))))
 }
 
 fn local_private_key_bytes(

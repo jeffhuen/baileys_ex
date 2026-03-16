@@ -42,6 +42,12 @@ A notification emitted by a connection when something happens, such as a receive
 message, a presence change, or a group update. You subscribe to events to react to
 WhatsApp activity in your application.
 
+## Community
+
+A WhatsApp container that can organize one or more related groups. BaileysEx exposes
+community creation and metadata from the top-level facade and the fuller management
+surface through `BaileysEx.Feature.Community`.
+
 ## JID
 
 Jabber ID. The address format WhatsApp uses for users, groups, and broadcasts.
@@ -64,6 +70,11 @@ before applying Syncd updates.
 The transport encryption layer. It establishes an encrypted tunnel over WebSocket
 before any application data is exchanged.
 
+## Newsletter
+
+WhatsApp's channel-style broadcast surface. In BaileysEx, newsletter operations cover
+metadata lookups, follow and unfollow flows, reactions, and administration helpers.
+
 ## Pairing
 
 The process of linking BaileysEx to your WhatsApp account. You do this once with a
@@ -78,6 +89,12 @@ an encrypted session with you even when you are offline.
 
 A shared secret used for group message encryption. It lets one encrypted send cover
 the whole group instead of encrypting separately for every device.
+
+## WAM
+
+WhatsApp Analytics and Metrics. This is WhatsApp's internal event buffer format for
+client telemetry. BaileysEx can encode and send WAM buffers when you need Baileys
+parity for that path.
 
 ## Signal Protocol
 

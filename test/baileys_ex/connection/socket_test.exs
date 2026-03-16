@@ -845,6 +845,51 @@ defmodule BaileysEx.Connection.SocketTest do
              )
   end
 
+  test "send_wam_buffer/2 sends a w:stats iq with the encoded payload" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        clock_ms_fun: fn -> 1_710_000_123_000 end,
+        message_tag_fun: fn -> "wam-tag-1" end
+      )
+
+    query_task = Task.async(fn -> Socket.send_wam_buffer(pid, <<1, 2, 3, 4>>) end)
+
+    assert_receive {:transport_sent, wam_frame}
+
+    {server_transport, wam_node} = decode_client_transport_frame(server_transport, wam_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{"id" => "wam-tag-1", "to" => "s.whatsapp.net", "xmlns" => "w:stats"}
+           } = wam_node
+
+    assert %BinaryNode{
+             tag: "add",
+             attrs: %{"t" => "1710000123"},
+             content: {:binary, <<1, 2, 3, 4>>}
+           } = BinaryNodeUtil.child(wam_node, "add")
+
+    result_node =
+      %BinaryNode{
+        tag: "iq",
+        attrs: %{"id" => "wam-tag-1", "type" => "result", "from" => "s.whatsapp.net"},
+        content: nil
+      }
+
+    {_, result_frame} = server_transport_frame(server_transport, result_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, result_frame}})
+
+    assert {:ok, ^result_node} = Task.await(query_task)
+  end
+
   test "pair-device acknowledges the stanza and emits a QR update" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)

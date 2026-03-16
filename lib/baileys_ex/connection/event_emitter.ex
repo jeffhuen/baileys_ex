@@ -124,11 +124,12 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   @impl true
   def init(opts) do
-    {:ok,
-     %State{
-       buffer_timeout_ms: Keyword.get(opts, :buffer_timeout_ms, 30_000),
-       ref_fun: Keyword.get(opts, :ref_fun, &make_ref/0)
-     }}
+    state = %State{
+      buffer_timeout_ms: Keyword.get(opts, :buffer_timeout_ms, 30_000),
+      ref_fun: Keyword.get(opts, :ref_fun, &make_ref/0)
+    }
+
+    {:ok, register_initial_subscribers(state, Keyword.get(opts, :initial_subscribers, []))}
   end
 
   @impl true
@@ -387,6 +388,19 @@ defmodule BaileysEx.Connection.EventEmitter do
       end)
     end)
   end
+
+  defp register_initial_subscribers(%State{} = state, subscribers) when is_list(subscribers) do
+    Enum.reduce(subscribers, state, fn
+      handler, %State{} = acc when is_function(handler, 1) ->
+        ref = acc.ref_fun.()
+        %{acc | subscribers: Map.put(acc.subscribers, ref, handler)}
+
+      _handler, %State{} = acc ->
+        acc
+    end)
+  end
+
+  defp register_initial_subscribers(%State{} = state, _subscribers), do: state
 
   defp maybe_put(map, _key, _value, false), do: map
   defp maybe_put(map, key, value, true), do: Map.put(map, key, value)

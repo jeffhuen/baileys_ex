@@ -9,6 +9,7 @@ defmodule BaileysEx.Message.SenderTest do
   alias BaileysEx.Signal.Store
   alias BaileysEx.TestHelpers.FakeThumbnail
   alias BaileysEx.TestHelpers.MessageSignalHelpers
+  alias BaileysEx.TestHelpers.TelemetryHelpers
 
   test "send/4 performs direct-device fanout with DSM, phash, device identity, and trusted-contact token" do
     jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
@@ -261,6 +262,63 @@ defmodule BaileysEx.Message.SenderTest do
     assert %{"15551234567" => ["0"]} = Store.get(store, :"device-list", ["15551234567"])
     assert %{"15557654321" => ["0"]} = Store.get(store, :"device-list", ["15557654321"])
     assert %{signal_repository: %Repository{}} = updated_context
+  end
+
+  test "send/4 emits telemetry for direct message relay" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :message, :send, :start],
+        [:baileys_ex, :message, :send, :stop]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    repo =
+      repo
+      |> inject_session!("15551234567:0@s.whatsapp.net", session)
+      |> inject_session!("15550001111:2@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => ["1", "2"]}
+             })
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111:1@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    assert {:ok, %{id: "3EB0TELEMETRY"}, _updated_context} =
+             Sender.send(context, jid, %{text: "hello"},
+               message_id_fun: fn _me_id -> "3EB0TELEMETRY" end
+             )
+
+    assert_receive {:telemetry, [:baileys_ex, :message, :send, :start],
+                    %{system_time: system_time},
+                    %{jid: "15551234567@s.whatsapp.net", mode: :direct}}
+
+    assert is_integer(system_time)
+
+    assert_receive {:telemetry, [:baileys_ex, :message, :send, :stop], %{duration: duration},
+                    %{
+                      jid: "15551234567@s.whatsapp.net",
+                      mode: :direct,
+                      message_id: "3EB0TELEMETRY",
+                      status: :ok
+                    }}
+
+    assert is_integer(duration)
   end
 
   test "send_status/3 uses status broadcast fanout and generates a Baileys message id" do

@@ -568,8 +568,7 @@ defmodule BaileysEx.Syncd.Codec do
                  name,
                  get_app_state_sync_key
                ) do
-          {:ok,
-           %{state: final_state, mutation_map: mutation_map, mutation_order: mutation_order}}
+          {:ok, %{state: final_state, mutation_map: mutation_map, mutation_order: mutation_order}}
         end
 
       {:error, _} = err ->
@@ -656,13 +655,14 @@ defmodule BaileysEx.Syncd.Codec do
           {:error, _} = err ->
             {:halt, err}
         end
-    end)
+      end)
 
     case result do
       {:ok, final_state, final_map, final_order} ->
         {:ok, %{state: final_state, mutation_map: final_map, mutation_order: final_order}}
 
-      {:error, _} = err -> err
+      {:error, _} = err ->
+        err
     end
   end
 

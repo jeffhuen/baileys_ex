@@ -748,7 +748,10 @@ defmodule BaileysEx.Syncd.CodecTest do
       {:ok, ciphertext} = BaileysEx.Crypto.aes_cbc_encrypt(keys.value_encryption_key, iv, encoded)
       enc_value = <<iv::binary-16, ciphertext::binary>>
       value_mac = Codec.generate_mac(:set, enc_value, @key_id_bin, keys.value_mac_key)
-      tampered_value_mac = binary_part(value_mac, 0, 31) <> <<Bitwise.bxor(:binary.last(value_mac), 0x01)>>
+
+      tampered_value_mac =
+        binary_part(value_mac, 0, 31) <> <<Bitwise.bxor(:binary.last(value_mac), 0x01)>>
+
       index_mac = :crypto.mac(:hmac, :sha256, keys.index_key, index)
 
       patch = %Syncd.SyncdPatch{

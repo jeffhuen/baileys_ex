@@ -535,7 +535,9 @@ defmodule BaileysEx.Syncd.RuntimeTest do
                )
 
       assert_receive {:events,
-                      %{chats_update: [%{id: "user@s.whatsapp.net", mute_end_time: 1_710_086_400}]}},
+                      %{
+                        chats_update: [%{id: "user@s.whatsapp.net", mute_end_time: 1_710_086_400}]
+                      }},
                      300
     end
 
@@ -617,8 +619,28 @@ defmodule BaileysEx.Syncd.RuntimeTest do
                      "has_more_patches" => "false"
                    },
                    content: [
-                     %{tag: "patch", attrs: %{}, content: Syncd.SyncdPatch.encode(%{setting_patch | version: %Syncd.SyncdVersion{version: 0}, snapshot_mac: <<0::256>>, patch_mac: <<0::256>>})},
-                     %{tag: "patch", attrs: %{}, content: Syncd.SyncdPatch.encode(%{archive_patch | version: %Syncd.SyncdVersion{version: 1}, snapshot_mac: <<0::256>>, patch_mac: <<0::256>>})}
+                     %{
+                       tag: "patch",
+                       attrs: %{},
+                       content:
+                         Syncd.SyncdPatch.encode(%{
+                           setting_patch
+                           | version: %Syncd.SyncdVersion{version: 0},
+                             snapshot_mac: <<0::256>>,
+                             patch_mac: <<0::256>>
+                         })
+                     },
+                     %{
+                       tag: "patch",
+                       attrs: %{},
+                       content:
+                         Syncd.SyncdPatch.encode(%{
+                           archive_patch
+                           | version: %Syncd.SyncdVersion{version: 1},
+                             snapshot_mac: <<0::256>>,
+                             patch_mac: <<0::256>>
+                         })
+                     }
                    ]
                  }
                ]
@@ -635,7 +657,8 @@ defmodule BaileysEx.Syncd.RuntimeTest do
                  validate_patch_macs: false
                )
 
-      assert_receive {:events, %{creds_update: %{account_settings: %{unarchive_chats: false}}}}, 300
+      assert_receive {:events, %{creds_update: %{account_settings: %{unarchive_chats: false}}}},
+                     300
 
       assert_receive {:events,
                       %{

@@ -397,11 +397,18 @@ defmodule BaileysEx.Feature.Group do
   def handle_dirty_update(conn, %{type: type} = dirty_update, opts)
       when type in ["groups", "communities"] do
     timestamp = Map.get(dirty_update, :timestamp) || Map.get(dirty_update, "timestamp")
-    root_tag = Keyword.get(opts, :root_tag, if(type == "communities", do: "communities", else: "groups"))
-    item_tag = Keyword.get(opts, :item_tag, if(type == "communities", do: "community", else: "group"))
+
+    root_tag =
+      Keyword.get(opts, :root_tag, if(type == "communities", do: "communities", else: "groups"))
+
+    item_tag =
+      Keyword.get(opts, :item_tag, if(type == "communities", do: "community", else: "group"))
 
     with {:ok, groups} <-
-           fetch_all_participating(conn, Keyword.merge(opts, root_tag: root_tag, item_tag: item_tag)) do
+           fetch_all_participating(
+             conn,
+             Keyword.merge(opts, root_tag: root_tag, item_tag: item_tag)
+           ) do
       _ =
         send_node(
           Keyword.get(opts, :sendable, conn),

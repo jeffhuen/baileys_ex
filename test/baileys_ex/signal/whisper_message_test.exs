@@ -5,12 +5,21 @@ defmodule BaileysEx.Signal.WhisperMessageTest do
 
   @ratchet_key :binary.copy(<<0xAA>>, 32)
   @ciphertext :binary.copy(<<0xBB>>, 48)
+  @mac_key :binary.copy(<<0xCC>>, 32)
   @sender_identity <<5>> <> :binary.copy(<<0x01>>, 32)
   @receiver_identity <<5>> <> :binary.copy(<<0x02>>, 32)
 
   test "roundtrip encode/decode preserves all fields" do
     {:ok, msg} =
-      WhisperMessage.new(@ratchet_key, 42, 10, @ciphertext, @sender_identity, @receiver_identity)
+      WhisperMessage.new(
+        @ratchet_key,
+        42,
+        10,
+        @ciphertext,
+        @mac_key,
+        @sender_identity,
+        @receiver_identity
+      )
 
     assert msg.ratchet_key == @ratchet_key
     assert msg.counter == 42
@@ -27,14 +36,30 @@ defmodule BaileysEx.Signal.WhisperMessageTest do
 
   test "serialized format starts with version byte 0x33" do
     {:ok, msg} =
-      WhisperMessage.new(@ratchet_key, 0, 0, @ciphertext, @sender_identity, @receiver_identity)
+      WhisperMessage.new(
+        @ratchet_key,
+        0,
+        0,
+        @ciphertext,
+        @mac_key,
+        @sender_identity,
+        @receiver_identity
+      )
 
     assert <<0x33, _rest::binary>> = WhisperMessage.serialize(msg)
   end
 
   test "serialized format ends with 8-byte MAC" do
     {:ok, msg} =
-      WhisperMessage.new(@ratchet_key, 0, 0, @ciphertext, @sender_identity, @receiver_identity)
+      WhisperMessage.new(
+        @ratchet_key,
+        0,
+        0,
+        @ciphertext,
+        @mac_key,
+        @sender_identity,
+        @receiver_identity
+      )
 
     serialized = WhisperMessage.serialize(msg)
     assert byte_size(serialized) > 8
@@ -57,7 +82,15 @@ defmodule BaileysEx.Signal.WhisperMessageTest do
 
   test "counter=0 and previous_counter=0 roundtrip" do
     {:ok, msg} =
-      WhisperMessage.new(@ratchet_key, 0, 0, @ciphertext, @sender_identity, @receiver_identity)
+      WhisperMessage.new(
+        @ratchet_key,
+        0,
+        0,
+        @ciphertext,
+        @mac_key,
+        @sender_identity,
+        @receiver_identity
+      )
 
     {:ok, decoded} = WhisperMessage.decode(msg.serialized)
     assert decoded.counter == 0
@@ -71,6 +104,7 @@ defmodule BaileysEx.Signal.WhisperMessageTest do
         65_535,
         32_767,
         @ciphertext,
+        @mac_key,
         @sender_identity,
         @receiver_identity
       )
@@ -86,5 +120,27 @@ defmodule BaileysEx.Signal.WhisperMessageTest do
 
   test "mac_length returns 8" do
     assert WhisperMessage.mac_length() == 8
+  end
+
+  test "verify_mac validates the serialized message with the provided MAC key" do
+    {:ok, msg} =
+      WhisperMessage.new(
+        @ratchet_key,
+        7,
+        3,
+        @ciphertext,
+        @mac_key,
+        @sender_identity,
+        @receiver_identity
+      )
+
+    assert WhisperMessage.verify_mac(msg, @mac_key, @sender_identity, @receiver_identity)
+
+    refute WhisperMessage.verify_mac(
+             msg,
+             :binary.copy(<<0xDD>>, 32),
+             @sender_identity,
+             @receiver_identity
+           )
   end
 end

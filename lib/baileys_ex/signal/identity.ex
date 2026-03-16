@@ -14,12 +14,14 @@ defmodule BaileysEx.Signal.Identity do
   @type save_result :: :new | :unchanged | :changed
   @type error :: :invalid_identity_key
 
+  @doc "Loads the peer identity key for an address from the active key store."
   @spec load(Store.t(), Address.t()) :: {:ok, binary() | nil}
   def load(%Store{} = store, %Address{} = address) do
     address_key = Address.to_string(address)
     {:ok, Map.get(Store.get(store, :"identity-key", [address_key]), address_key)}
   end
 
+  @doc "Trust-on-First-Use stores or verifies the peer identity for the specific Signal address string."
   @spec save(Store.t(), Address.t(), binary()) :: {:ok, save_result()} | {:error, error()}
   def save(%Store{} = store, %Address{} = address, identity_key) when is_binary(identity_key) do
     with {:ok, normalized_identity_key} <- normalize_identity_key(identity_key) do

@@ -8,6 +8,9 @@ defmodule BaileysEx.Message.Wire do
 
   @type proto_message :: struct()
 
+  @doc """
+  Serializes and adds random WhatsApp XMPP padding to a WAProto message.
+  """
   @spec encode(proto_message(), keyword()) :: binary()
   def encode(%Message{} = message, opts \\ []) do
     message
@@ -15,6 +18,9 @@ defmodule BaileysEx.Message.Wire do
     |> write_random_pad_max16(opts)
   end
 
+  @doc """
+  Unpads and deserializes a WAProto message from binary.
+  """
   @spec decode(binary()) :: {:ok, proto_message()} | {:error, term()}
   def decode(binary) when is_binary(binary) do
     case unpad_random_max16(binary) do
@@ -29,6 +35,9 @@ defmodule BaileysEx.Message.Wire do
     end
   end
 
+  @doc """
+  Generates a 3EB0... random message ID that WhatsApp Web typically uses.
+  """
   @spec generate_message_id(String.t() | nil, keyword()) :: String.t()
   def generate_message_id(user_id \\ nil, opts \\ []) do
     buffer = :binary.copy(<<0>>, 44)
@@ -66,6 +75,9 @@ defmodule BaileysEx.Message.Wire do
     end
   end
 
+  @doc """
+  Produces the device participant hash indicating which E2E key copies were distributed.
+  """
   @spec generate_participant_hash([String.t()]) :: String.t()
   def generate_participant_hash(participants) when is_list(participants) do
     hash =
@@ -78,6 +90,9 @@ defmodule BaileysEx.Message.Wire do
     "2:" <> binary_part(hash, 0, 6)
   end
 
+  @doc """
+  Pads a binary buffer dynamically using deterministic/cryptographic randomness.
+  """
   @spec write_random_pad_max16(binary(), keyword()) :: binary()
   def write_random_pad_max16(binary, opts \\ []) when is_binary(binary) do
     random =
@@ -97,6 +112,9 @@ defmodule BaileysEx.Message.Wire do
     binary <> :binary.copy(<<pad_length>>, pad_length)
   end
 
+  @doc """
+  Strips WAProto padding block, returning only the underlying protobuf.
+  """
   @spec unpad_random_max16(binary()) :: {:ok, binary()} | {:error, term()}
   def unpad_random_max16(<<>>), do: {:error, :invalid_padding}
 

@@ -55,6 +55,10 @@ defmodule BaileysEx.MixProject do
   defp docs do
     [
       main: "readme",
+      warn_missing: [docs: true, moduledocs: true],
+      groups_for_modules: [
+        "Internal Modules": ~r/.*/
+      ],
       extras: [
         {"README.md", [title: "BaileysEx"]},
         {"user_docs/glossary.md", [title: "Glossary"]},

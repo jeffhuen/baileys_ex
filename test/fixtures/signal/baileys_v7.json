@@ -5,7 +5,8 @@
     "scope": [
       "jidToSignalProtocolAddress parity",
       "LID mapping forward/reverse parity",
-      "sender-key distribution and group cipher parity"
+      "sender-key distribution and group cipher parity",
+      "1:1 Signal session and ciphertext parity"
     ]
   },
   "addresses": [
@@ -113,5 +114,57 @@
       0,
       2
     ]
+  },
+  "direct_message": {
+    "alice": {
+      "registration_id": 1234,
+      "identity_key": {
+        "public": "Fflqnz0SEuDx3PYvP98F35n+RTkaSAxNcFX9TH42sno=",
+        "private": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+k="
+      },
+      "base_key": {
+        "public": "wjPO3PsfV/1igtYkXrGP7KoMt5OD+IBVDJ3v36siFQw=",
+        "private": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+o="
+      },
+      "sending_ratchet": {
+        "public": "3z2AIA4Jk49P5rAKIFtmJTeK11M21l6PZDEUc4xDpig=",
+        "private": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+s="
+      },
+      "next_ratchet": {
+        "public": "8YCSOy1gfM5/X81paUraObwJZN2viZx2+cz5WsrMy1k=",
+        "private": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+w="
+      }
+    },
+    "bob": {
+      "registration_id": 5678,
+      "identity_key": {
+        "public": "afX+HveIkgGX5b6R+h1DcgAVGOVGnB7+Z27iZz+XLD8=",
+        "private": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB9E="
+      },
+      "signed_pre_key_id": 77,
+      "signed_pre_key": {
+        "public": "aUJ/ZhOd/oxPBrehj49hrMYO1wK2Q2DJZxh6bJTnenA=",
+        "private": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB9I="
+      },
+      "pre_key_id": 88,
+      "pre_key": {
+        "public": "6BlT6W07iDYBvySC6Hbqz3xjFOzNZVJ9ibCk3JWqijk=",
+        "private": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB9M="
+      },
+      "reply_ratchet": {
+        "public": "iqXlzfHTeYPE2SZ073nEvss67Yc0ue11wNHEbE6ixUU=",
+        "private": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB9Q="
+      }
+    },
+    "messages": {
+      "alice_to_bob": {
+        "plaintext": "aGVsbG8gZnJvbSBhbGljZQ==",
+        "ciphertext": "MwhYEiEFwjPO3PsfV/1igtYkXrGP7KoMt5OD+IBVDJ3v36siFQwaIQUV+WqfPRIS4PHc9i8/3wXfmf5FORpIDE1wVf1MfjayeiJSMwohBd89gCAOCZOPT+awCiBbZiU3itdTNtZej2QxFHOMQ6YoEAAYACIg8QRVSX/3aObINPkYYQeq2k0Tsvi3WLcgbJtU04c1ecvdYaW4P3xGjijSCTBN"
+      },
+      "bob_to_alice": {
+        "plaintext": "aGVsbG8gZnJvbSBib2I=",
+        "ciphertext": "MwohBYql5c3x03mDxNkmdO95xL7LOu2HNLntdcDRxGxOosVFEAAYACIQx34pIRyAkZsLev8iBursjXn1Ig2M3bXg"
+      }
+    }
   }
 }

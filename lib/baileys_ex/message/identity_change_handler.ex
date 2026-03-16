@@ -22,6 +22,9 @@ defmodule BaileysEx.Message.IdentityChangeHandler do
           | %{action: :session_refreshed}
           | %{action: :session_refresh_failed, error: term()}
 
+  @doc """
+  Handles an identity change node and triggers a session refresh if needed.
+  """
   @spec handle(BinaryNode.t(), map(), map(), keyword()) ::
           {:ok, result(), map(), map()} | {:error, term()}
   def handle(%BinaryNode{} = node, %{} = context, cache \\ %{}, opts \\ []) do

@@ -15,6 +15,9 @@ defmodule BaileysEx.Message.Normalizer do
           {:messages_reaction, list()}
           | {:messages_update, list()}
 
+  @doc """
+  Normalizes a message envelope, extracting side effects like reactions.
+  """
   @spec normalize(map(), keyword()) :: {:ok, map(), [side_effect()]}
   def normalize(%{message: %Message{} = message} = received_message, opts) do
     normalized_key = normalize_outer_key(Map.get(received_message, :key, %{}))

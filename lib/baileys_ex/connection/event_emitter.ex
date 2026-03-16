@@ -71,6 +71,9 @@ defmodule BaileysEx.Connection.EventEmitter do
           | :socket_node
           | :settings_update
 
+  @doc """
+  Starts the EventEmitter.
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     genserver_opts =
@@ -82,24 +85,41 @@ defmodule BaileysEx.Connection.EventEmitter do
     GenServer.start_link(__MODULE__, opts, genserver_opts)
   end
 
+  @doc """
+  Registers a process handler function for events.
+  Returns an unsubscription function.
+  """
   @spec process(GenServer.server(), (map() -> term())) :: (-> :ok)
   def process(server, handler) when is_function(handler, 1) do
     ref = GenServer.call(server, {:process, handler})
     fn -> GenServer.cast(server, {:unsubscribe, ref}) end
   end
 
+  @doc """
+  Registers a tap handler function that processes events before the main dispatch.
+  Returns an unsubscription function.
+  """
   @spec tap(GenServer.server(), (map() -> term())) :: (-> :ok)
   def tap(server, handler) when is_function(handler, 1) do
     ref = GenServer.call(server, {:tap, handler})
     fn -> GenServer.cast(server, {:unsubscribe_tap, ref}) end
   end
 
+  @doc """
+  Emit a specific event. Will buffer the event if buffering is currently active.
+  """
   @spec emit(GenServer.server(), event(), term()) :: :ok
   def emit(server, event, data), do: GenServer.call(server, {:emit, event, data})
 
+  @doc """
+  Signals the emitter to enter buffering mode.
+  """
   @spec buffer(GenServer.server()) :: :ok
   def buffer(server), do: GenServer.call(server, :buffer)
 
+  @doc """
+  Wraps a function execution in an active event buffer context.
+  """
   @spec create_buffered_function(GenServer.server(), (-> term())) :: (-> term())
   def create_buffered_function(server, work) when is_function(work, 0) do
     fn ->
@@ -113,12 +133,21 @@ defmodule BaileysEx.Connection.EventEmitter do
     end
   end
 
+  @doc """
+  Manually flushes the buffer if active. Returns true if a flush occurred.
+  """
   @spec flush(GenServer.server()) :: boolean()
   def flush(server), do: GenServer.call(server, :flush)
 
+  @doc """
+  Returns whether the event emitter is currently in buffering mode.
+  """
   @spec buffering?(GenServer.server()) :: boolean()
   def buffering?(server), do: GenServer.call(server, :buffering?)
 
+  @doc """
+  Provides seed values used during conditional event flush evaluation.
+  """
   @spec seed(GenServer.server(), map()) :: :ok
   def seed(server, values) when is_map(values), do: GenServer.call(server, {:seed, values})
 

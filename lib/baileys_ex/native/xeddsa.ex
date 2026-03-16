@@ -9,9 +9,11 @@ defmodule BaileysEx.Native.XEdDSA do
 
   alias BaileysEx.Native
 
+  @doc "Signs a message using the XEdDSA signature scheme."
   @spec sign(binary(), binary()) :: {:ok, binary()}
   def sign(private_key, message), do: {:ok, Native.xeddsa_sign(private_key, message)}
 
+  @doc "Verifies an XEdDSA signature over a given message."
   @spec verify(binary(), binary(), binary()) :: boolean()
   def verify(public_key, message, signature),
     do: Native.xeddsa_verify(public_key, message, signature)

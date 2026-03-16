@@ -34,7 +34,10 @@ defmodule BaileysEx.Signal.SessionBuilder do
     pre_key_id = Map.get(bundle, :pre_key_id)
 
     our_identity_key = Keyword.fetch!(opts, :identity_key_pair)
-    base_key_pair = Keyword.get_lazy(opts, :base_key_pair, &Curve.generate_key_pair/0)
+    base_key_pair =
+      opts
+      |> Keyword.get_lazy(:base_key_pair, &Curve.generate_key_pair/0)
+      |> ensure_signal_key_pair!()
 
     with {:ok, shared_secret} <-
            compute_alice_shared_secret(
@@ -45,11 +48,13 @@ defmodule BaileysEx.Signal.SessionBuilder do
              their_pre_key
            ),
          {:ok, derived} <- Crypto.hkdf(shared_secret, @whisper_text, 64, @zero_salt) do
-      <<root_key::binary-32, chain_key::binary-32>> = derived
+      <<root_key::binary-32, _chain_key::binary-32>> = derived
 
       # Alice immediately calculates a sending ratchet
       sending_ratchet_pair =
-        Keyword.get_lazy(opts, :sending_ratchet_pair, &Curve.generate_key_pair/0)
+        opts
+        |> Keyword.get_lazy(:sending_ratchet_pair, &Curve.generate_key_pair/0)
+        |> ensure_signal_key_pair!()
 
       {:ok, sending_secret} = Curve.shared_key(sending_ratchet_pair.private, their_signed_pre_key)
       {:ok, sending_derived} = Crypto.hkdf(sending_secret, @whisper_ratchet, 64, root_key)
@@ -62,7 +67,7 @@ defmodule BaileysEx.Signal.SessionBuilder do
         current_ratchet: %{
           root_key: new_root_key,
           ephemeral_key_pair: sending_ratchet_pair,
-          last_remote_ephemeral: their_signed_pre_key,
+          last_remote_ephemeral: ensure_signal_public_key!(their_signed_pre_key),
           previous_counter: 0
         },
         index_info: %{
@@ -72,16 +77,12 @@ defmodule BaileysEx.Signal.SessionBuilder do
           base_key_type: :sending,
           closed: nil
         },
-        chains: %{
-          Base.encode64(their_signed_pre_key) => %{
-            chain_key: %{counter: -1, key: chain_key},
-            message_keys: %{}
-          },
-          Base.encode64(sending_ratchet_pair.public) => %{
+        chains:
+          put_chain(%{}, sending_ratchet_pair.public, %{
             chain_key: %{counter: 0, key: sending_chain_key},
+            chain_type: :sending,
             message_keys: %{}
-          }
-        },
+          }),
         pending_pre_key: %{
           pre_key_id: pre_key_id,
           signed_pre_key_id: signed_pre_key_id,
@@ -119,9 +120,10 @@ defmodule BaileysEx.Signal.SessionBuilder do
 
   defp do_init_incoming(record, their_identity_key, their_base_key, our_keys, opts) do
     our_identity_key = Keyword.fetch!(opts, :identity_key_pair)
-    our_signed_pre_key = our_keys.signed_pre_key
-    our_pre_key = Map.get(our_keys, :pre_key)
+    our_signed_pre_key = our_keys.signed_pre_key |> ensure_signal_key_pair!()
+    our_pre_key = our_keys |> Map.get(:pre_key) |> maybe_ensure_signal_key_pair()
     registration_id = Keyword.get(opts, :registration_id, 0)
+    their_base_key = ensure_signal_public_key!(their_base_key)
 
     with {:ok, shared_secret} <-
            compute_bob_shared_secret(
@@ -132,7 +134,7 @@ defmodule BaileysEx.Signal.SessionBuilder do
              their_base_key
            ),
          {:ok, derived} <- Crypto.hkdf(shared_secret, @whisper_text, 64, @zero_salt) do
-      <<root_key::binary-32, chain_key::binary-32>> = derived
+      <<root_key::binary-32, _chain_key::binary-32>> = derived
 
       {:ok, their_identity_signal} = Curve.generate_signal_pub_key(their_identity_key)
       {:ok, our_identity_signal} = Curve.generate_signal_pub_key(our_identity_key.public)
@@ -151,12 +153,7 @@ defmodule BaileysEx.Signal.SessionBuilder do
           base_key_type: :receiving,
           closed: nil
         },
-        chains: %{
-          Base.encode64(their_base_key) => %{
-            chain_key: %{counter: 0, key: chain_key},
-            message_keys: %{}
-          }
-        },
+        chains: %{},
         pending_pre_key: nil,
         registration_id: registration_id
       }
@@ -218,5 +215,22 @@ defmodule BaileysEx.Signal.SessionBuilder do
 
       {:ok, shared}
     end
+  end
+
+  defp put_chain(chains, public_key, chain) do
+    Map.put(chains, Base.encode64(public_key), chain)
+  end
+
+  defp maybe_ensure_signal_key_pair(nil), do: nil
+  defp maybe_ensure_signal_key_pair(key_pair), do: ensure_signal_key_pair!(key_pair)
+
+  defp ensure_signal_key_pair!(%{public: public_key} = key_pair) do
+    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
+    %{key_pair | public: signal_public_key}
+  end
+
+  defp ensure_signal_public_key!(public_key) do
+    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
+    signal_public_key
   end
 end

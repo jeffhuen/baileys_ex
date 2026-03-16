@@ -87,6 +87,11 @@ defmodule BaileysEx.Connection.Coordinator do
     ]
   end
 
+  @doc """
+  Start the coordinator process.
+  Accepts a keyword list containing `:config`, `:event_emitter`, `:store`, 
+  `:signal_store`, `:supervisor`, and `:task_supervisor`.
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     genserver_opts =

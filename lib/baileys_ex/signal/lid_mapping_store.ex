@@ -19,6 +19,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
   @type lookup_fun :: ([String.t()] -> [mapping()] | nil)
   @type error :: :invalid_mapping
 
+  @doc "Records active mapping correlations between Phone Numbers and Local Identifiers to the store engine."
   @spec store_lid_pn_mappings(Store.t(), [mapping()]) :: :ok | {:error, error()}
   def store_lid_pn_mappings(%Store{} = store, mappings) when is_list(mappings) do
     entries =
@@ -47,6 +48,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
 
   def store_lid_pn_mappings(%Store{}, _mappings), do: {:error, :invalid_mapping}
 
+  @doc "Retrieves the single valid LID value mapped to a distinct phone number identifier."
   @spec get_lid_for_pn(Store.t(), String.t(), keyword()) :: {:ok, String.t() | nil}
   def get_lid_for_pn(store, pn, opts \\ [])
 
@@ -58,6 +60,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
 
   def get_lid_for_pn(%Store{}, _pn, _opts), do: {:ok, nil}
 
+  @doc "Bulk-requests numerous LID identities tied to multiple phone numbers."
   @spec get_lids_for_pns(Store.t(), [String.t()], keyword()) :: {:ok, [mapping()] | nil}
   def get_lids_for_pns(store, pns, opts \\ [])
 
@@ -75,6 +78,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
 
   def get_lids_for_pns(%Store{}, _pns, _opts), do: {:ok, nil}
 
+  @doc "Obtains a Phone Number from an alias LID mapped node structure."
   @spec get_pn_for_lid(Store.t(), String.t()) :: {:ok, String.t() | nil}
   def get_pn_for_lid(%Store{} = store, lid) when is_binary(lid) do
     with {:ok, mappings} <- get_pns_for_lids(store, [lid]) do
@@ -84,6 +88,7 @@ defmodule BaileysEx.Signal.LIDMappingStore do
 
   def get_pn_for_lid(%Store{}, _lid), do: {:ok, nil}
 
+  @doc "Loads multiple source Phone Numbers from Local Identifiers collectively."
   @spec get_pns_for_lids(Store.t(), [String.t()]) :: {:ok, [mapping()] | nil}
   def get_pns_for_lids(%Store{} = store, lids) when is_list(lids) do
     resolved =

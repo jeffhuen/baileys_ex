@@ -207,12 +207,8 @@ Completed:
   - `jidToSignalProtocolAddress` parity
   - PN<->LID mapping forward/reverse parity
   - sender-key distribution bytes, ciphertext body parity, and decrypt interoperability
+  - direct-message `pkmsg` and `msg` ciphertext parity against Baileys/libsignal
   - XEdDSA sign/verify compatibility for sender-key signatures
-
-Explicit non-goal for 5.7:
-- full `libsignal.SessionCipher` ciphertext/session parity is not claimed here because
-  the repository still intentionally exposes an adapter boundary rather than a concrete
-  1:1 engine implementation
 
 ---
 
@@ -226,22 +222,25 @@ Phase 5 is complete only when:
 - PN-addressed sessions can migrate to LID-addressed sessions without losing
   per-device separation
 - TOFU identity storage detects key changes and invalidates stale sessions
+- 1:1 session establishment and direct-message ciphertexts interoperate with
+  Baileys/libsignal
 - sender-key encrypt/decrypt and distribution flows interoperate with Baileys
 - the Signal store contract covers the required logical key families
 - interoperability is proven with committed Baileys-generated fixtures, not only
   self-generated roundtrips
 - the native boundary remains no broader than necessary
 
-Phase 5 does not claim that a concrete `libsignal.SessionCipher`-style 1:1 engine is
-already implemented in-tree. That runtime engine remains intentionally hidden behind
-`BaileysEx.Signal.Repository.Adapter` until the later connection/auth/messaging phases
-choose and wire a concrete implementation.
-
 ## Current Files
 
 Implemented:
 - `lib/baileys_ex/signal/curve.ex`
 - `lib/baileys_ex/signal/address.ex`
+- `lib/baileys_ex/signal/whisper_message.ex`
+- `lib/baileys_ex/signal/pre_key_whisper_message.ex`
+- `lib/baileys_ex/signal/session_record.ex`
+- `lib/baileys_ex/signal/session_builder.ex`
+- `lib/baileys_ex/signal/session_cipher.ex`
+- `lib/baileys_ex/signal/adapter/signal.ex`
 - `lib/baileys_ex/signal/repository.ex`
 - `lib/baileys_ex/signal/lid_mapping_store.ex`
 - `lib/baileys_ex/signal/store.ex`
@@ -258,6 +257,12 @@ Implemented:
 - `lib/baileys_ex/signal/identity.ex`
 - `test/baileys_ex/signal/curve_test.exs`
 - `test/baileys_ex/signal/address_test.exs`
+- `test/baileys_ex/signal/whisper_message_test.exs`
+- `test/baileys_ex/signal/pre_key_whisper_message_test.exs`
+- `test/baileys_ex/signal/session_record_test.exs`
+- `test/baileys_ex/signal/session_builder_test.exs`
+- `test/baileys_ex/signal/session_cipher_test.exs`
+- `test/baileys_ex/signal/adapter/signal_test.exs`
 - `test/baileys_ex/signal/repository_test.exs`
 - `test/baileys_ex/signal/lid_mapping_store_test.exs`
 - `test/baileys_ex/signal/group_test.exs`

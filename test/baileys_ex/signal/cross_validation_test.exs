@@ -5,6 +5,9 @@ defmodule BaileysEx.Signal.CrossValidationTest do
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
   alias BaileysEx.Signal.Address
+  alias BaileysEx.Signal.SessionBuilder, as: DirectSessionBuilder
+  alias BaileysEx.Signal.SessionCipher, as: DirectSessionCipher
+  alias BaileysEx.Signal.SessionRecord
   alias BaileysEx.Signal.Group.Cipher
   alias BaileysEx.Signal.Group.SessionBuilder
   alias BaileysEx.Signal.Group.SenderKeyDistributionMessage
@@ -114,6 +117,67 @@ defmodule BaileysEx.Signal.CrossValidationTest do
     end)
   end
 
+  test "matches Baileys direct-message fixtures" do
+    fixture = fixtures!()["direct_message"]
+
+    alice_identity = key_pair_from_fixture(fixture["alice"]["identity_key"])
+    alice_base_key = key_pair_from_fixture(fixture["alice"]["base_key"])
+    alice_sending_ratchet = key_pair_from_fixture(fixture["alice"]["sending_ratchet"])
+    alice_next_ratchet = key_pair_from_fixture(fixture["alice"]["next_ratchet"])
+
+    bob_identity = key_pair_from_fixture(fixture["bob"]["identity_key"])
+    bob_signed_pre_key = key_pair_from_fixture(fixture["bob"]["signed_pre_key"])
+    bob_pre_key = key_pair_from_fixture(fixture["bob"]["pre_key"])
+    bob_reply_ratchet = key_pair_from_fixture(fixture["bob"]["reply_ratchet"])
+    pre_key_id = fixture["bob"]["pre_key_id"]
+
+    bundle = %{
+      identity_key: bob_identity.public,
+      signed_pre_key: bob_signed_pre_key.public,
+      pre_key: bob_pre_key.public,
+      registration_id: fixture["bob"]["registration_id"],
+      signed_pre_key_id: fixture["bob"]["signed_pre_key_id"],
+      pre_key_id: fixture["bob"]["pre_key_id"]
+    }
+
+    alice_plaintext = decode64!(fixture["messages"]["alice_to_bob"]["plaintext"])
+    alice_ciphertext = decode64!(fixture["messages"]["alice_to_bob"]["ciphertext"])
+
+    assert {:ok, alice_record, _base_key} =
+             DirectSessionBuilder.init_outgoing(SessionRecord.new(), bundle,
+               identity_key_pair: alice_identity,
+               base_key_pair: alice_base_key,
+               sending_ratchet_pair: alice_sending_ratchet
+             )
+
+    assert {:ok, alice_record_after_send, %{type: :pkmsg, ciphertext: ^alice_ciphertext}} =
+             DirectSessionCipher.encrypt(alice_record, alice_plaintext,
+               registration_id: fixture["alice"]["registration_id"]
+             )
+
+    assert {:ok, bob_record, ^alice_plaintext, ^pre_key_id} =
+             DirectSessionCipher.decrypt_pre_key_whisper_message(
+               SessionRecord.new(),
+               alice_ciphertext,
+               identity_key_pair: bob_identity,
+               signed_pre_key_pair: bob_signed_pre_key,
+               pre_key_pair: bob_pre_key,
+               registration_id: fixture["bob"]["registration_id"],
+               ratchet_key_pair: bob_reply_ratchet
+             )
+
+    bob_plaintext = decode64!(fixture["messages"]["bob_to_alice"]["plaintext"])
+    bob_ciphertext = decode64!(fixture["messages"]["bob_to_alice"]["ciphertext"])
+
+    assert {:ok, _bob_record, %{type: :msg, ciphertext: ^bob_ciphertext}} =
+             DirectSessionCipher.encrypt(bob_record, bob_plaintext)
+
+    assert {:ok, _alice_record, ^bob_plaintext} =
+             DirectSessionCipher.decrypt_whisper_message(alice_record_after_send, bob_ciphertext,
+               ratchet_key_pair: alice_next_ratchet
+             )
+  end
+
   defp encode_distribution_message(%SenderKeyState{} = state) do
     SenderKeyDistributionMessage.new(
       state.sender_key_id,
@@ -146,6 +210,10 @@ defmodule BaileysEx.Signal.CrossValidationTest do
   end
 
   defp decode64!(value) when is_binary(value), do: Base.decode64!(value)
+
+  defp key_pair_from_fixture(%{"public" => public_key, "private" => private_key}) do
+    %{public: decode64!(public_key), private: decode64!(private_key)}
+  end
 
   defp decode_sender_key_message_fixture!(value),
     do: value |> decode64!() |> parse_sender_key_message!()

@@ -17,6 +17,9 @@ defmodule BaileysEx.Message.Receipt do
     "sender" => :server_ack
   }
 
+  @doc """
+  Constructs a receipt node (delivery, read, played, etc.) for the given message IDs.
+  """
   @spec build_receipt_node(String.t(), String.t() | nil, [String.t()], receipt_type(), keyword()) ::
           BinaryNode.t()
   def build_receipt_node(jid, participant, [first_id | rest], type, opts \\ [])
@@ -49,6 +52,9 @@ defmodule BaileysEx.Message.Receipt do
     }
   end
 
+  @doc """
+  Builds and sends a receipt node using the provided sender function.
+  """
   @spec send_receipt(
           (BinaryNode.t() -> :ok | {:error, term()}),
           String.t(),
@@ -63,6 +69,9 @@ defmodule BaileysEx.Message.Receipt do
     sender.(build_receipt_node(jid, participant, ids, type, opts))
   end
 
+  @doc """
+  Aggregates message keys and sends read receipts according to privacy settings.
+  """
   @spec read_messages((BinaryNode.t() -> :ok | {:error, term()}), [map()], map(), keyword()) ::
           :ok | {:error, term()}
   def read_messages(sender, keys, privacy_settings, opts \\ [])
@@ -80,6 +89,9 @@ defmodule BaileysEx.Message.Receipt do
     end)
   end
 
+  @doc """
+  Parses incoming receipt nodes and generates runtime update events.
+  """
   @spec process_receipt(BinaryNode.t(), GenServer.server()) :: :ok
   def process_receipt(%BinaryNode{tag: "receipt", attrs: attrs} = node, event_emitter) do
     remote_jid = attrs["from"]

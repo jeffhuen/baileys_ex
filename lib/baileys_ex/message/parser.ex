@@ -51,6 +51,9 @@ defmodule BaileysEx.Message.Parser do
     :group_status_message_v2
   ]
 
+  @doc """
+  Recursively unwraps ephemeral, view-once, edited, and grouping message wrappers.
+  """
   @spec normalize_content(struct()) :: struct()
   def normalize_content(%Message{} = content) do
     Enum.reduce_while(1..5, content, fn _, current ->
@@ -61,6 +64,9 @@ defmodule BaileysEx.Message.Parser do
     end)
   end
 
+  @doc """
+  Identifies the active content field type from a parsed Message struct.
+  """
   @spec get_content_type(struct()) :: atom() | nil
   def get_content_type(%Message{} = message) do
     message = normalize_content(message)
@@ -70,6 +76,9 @@ defmodule BaileysEx.Message.Parser do
     end)
   end
 
+  @doc """
+  Extracts the inner text or media struct from template wrappers.
+  """
   @spec extract_message_content(struct()) :: struct()
   def extract_message_content(%Message{} = content) do
     content = normalize_content(content)

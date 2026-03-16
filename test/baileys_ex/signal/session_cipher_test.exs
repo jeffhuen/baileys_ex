@@ -2,10 +2,12 @@ defmodule BaileysEx.Signal.SessionCipherTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Crypto
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.PreKeyWhisperMessage
   alias BaileysEx.Signal.SessionBuilder
   alias BaileysEx.Signal.SessionCipher
   alias BaileysEx.Signal.SessionRecord
+  alias BaileysEx.Signal.WhisperMessage
 
   # Deterministic key pairs
   defp key_pair(seed), do: Crypto.generate_key_pair(:x25519, private_key: <<seed::256>>)
@@ -57,8 +59,8 @@ defmodule BaileysEx.Signal.SessionCipherTest do
     assert encrypted.type == :pkmsg
 
     {:ok, pkmsg} = PreKeyWhisperMessage.decode(encrypted.ciphertext)
-    assert pkmsg.base_key == ctx.alice_base_key.public
-    assert byte_size(pkmsg.base_key) == 32
+    assert pkmsg.base_key == signal_public_key(ctx.alice_base_key.public)
+    assert byte_size(pkmsg.base_key) == 33
 
     # Bob decrypts the PreKeyWhisperMessage
     bob_record = SessionRecord.new()
@@ -254,5 +256,91 @@ defmodule BaileysEx.Signal.SessionCipherTest do
                encrypted.ciphertext,
                opts
              )
+  end
+
+  test "out-of-order established messages decrypt using cached skipped keys" do
+    ctx = setup_session()
+
+    {:ok, alice_record, first_message} =
+      SessionCipher.encrypt(ctx.alice_record, "hello")
+
+    {:ok, bob_record, "hello", _} =
+      SessionCipher.decrypt_pre_key_whisper_message(SessionRecord.new(), first_message.ciphertext,
+        identity_key_pair: ctx.bob_identity,
+        signed_pre_key_pair: ctx.bob_signed_pre_key,
+        pre_key_pair: ctx.bob_pre_key,
+        registration_id: ctx.bob_registration_id
+      )
+
+    {:ok, bob_record, bob_reply} =
+      SessionCipher.encrypt(bob_record, "reply")
+
+    {:ok, alice_record, "reply"} =
+      SessionCipher.decrypt_whisper_message(alice_record, bob_reply.ciphertext,
+        ratchet_key_pair: key_pair(7)
+      )
+
+    {:ok, alice_record, followup_one} =
+      SessionCipher.encrypt(alice_record, "one")
+
+    {:ok, _alice_record, followup_two} =
+      SessionCipher.encrypt(alice_record, "two")
+
+    assert followup_one.type == :msg
+    assert followup_two.type == :msg
+
+    {:ok, bob_record, "two"} =
+      SessionCipher.decrypt_whisper_message(bob_record, followup_two.ciphertext)
+
+    {:ok, _bob_record, "one"} =
+      SessionCipher.decrypt_whisper_message(bob_record, followup_one.ciphertext)
+  end
+
+  test "ratchet step drops the prior sending chain after processing a reply" do
+    ctx = setup_session()
+
+    {_, initial_alice_session} = SessionRecord.get_open_session(ctx.alice_record)
+
+    initial_chain_key =
+      Base.encode64(initial_alice_session.current_ratchet.ephemeral_key_pair.public)
+
+    {:ok, alice_record, first_message} =
+      SessionCipher.encrypt(ctx.alice_record, "hello")
+
+    {:ok, bob_record, "hello", _} =
+      SessionCipher.decrypt_pre_key_whisper_message(SessionRecord.new(), first_message.ciphertext,
+        identity_key_pair: ctx.bob_identity,
+        signed_pre_key_pair: ctx.bob_signed_pre_key,
+        pre_key_pair: ctx.bob_pre_key,
+        registration_id: ctx.bob_registration_id
+      )
+
+    {:ok, _bob_record, bob_reply} =
+      SessionCipher.encrypt(bob_record, "reply")
+
+    {:ok, bob_reply_msg} = WhisperMessage.decode(bob_reply.ciphertext)
+    next_alice_ratchet = key_pair(8)
+
+    {:ok, alice_record, "reply"} =
+      SessionCipher.decrypt_whisper_message(alice_record, bob_reply.ciphertext,
+        ratchet_key_pair: next_alice_ratchet
+      )
+
+    {_, updated_alice_session} = SessionRecord.get_open_session(alice_record)
+
+    refute Map.has_key?(updated_alice_session.chains, initial_chain_key)
+
+    assert %{
+             chain_type: :receiving
+           } = updated_alice_session.chains[Base.encode64(bob_reply_msg.ratchet_key)]
+
+    assert %{
+             chain_type: :sending
+           } = updated_alice_session.chains[Base.encode64(signal_public_key(next_alice_ratchet.public))]
+  end
+
+  defp signal_public_key(public_key) do
+    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
+    signal_public_key
   end
 end

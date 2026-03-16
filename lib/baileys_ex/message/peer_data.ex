@@ -15,6 +15,9 @@ defmodule BaileysEx.Message.PeerData do
   @type peer_request :: struct()
   @type message_key_like :: map()
 
+  @doc """
+  Transmits a constructed peer data operation request node.
+  """
   @spec send_request(context(), peer_request(), keyword()) ::
           {:ok, String.t(), context()} | {:error, term()}
   def send_request(
@@ -44,6 +47,9 @@ defmodule BaileysEx.Message.PeerData do
     end
   end
 
+  @doc """
+  Requests an on-demand history sync payload from an existing session.
+  """
   @spec fetch_message_history(context(), pos_integer(), message_key_like(), integer(), keyword()) ::
           {:ok, String.t(), context()} | {:error, term()}
   def fetch_message_history(
@@ -70,6 +76,9 @@ defmodule BaileysEx.Message.PeerData do
     send_request(context, request, opts)
   end
 
+  @doc """
+  Constructs a peer request to resolve missing e2e placeholders.
+  """
   @spec placeholder_resend_request(message_key_like()) :: peer_request()
   def placeholder_resend_request(message_key) do
     %Message.PeerDataOperationRequestMessage{

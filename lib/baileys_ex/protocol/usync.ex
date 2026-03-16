@@ -47,6 +47,7 @@ defmodule BaileysEx.Protocol.USync do
 
   defstruct protocols: [], users: [], context: :interactive, mode: :query
 
+  @doc "Creates a new empty USync query configuration struct."
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     %__MODULE__{
@@ -57,11 +58,13 @@ defmodule BaileysEx.Protocol.USync do
     }
   end
 
+  @doc "Appends an explicit feature protocol string to the USync query."
   @spec with_protocol(t(), protocol() | :device) :: t()
   def with_protocol(%__MODULE__{} = query, protocol) do
     %{query | protocols: query.protocols ++ [normalize_protocol(protocol)]}
   end
 
+  @doc "Appends a user resolution request payload to the USync query."
   @spec with_user(t(), User.t() | map()) :: t()
   def with_user(%__MODULE__{} = query, %User{} = user) do
     %{query | users: query.users ++ [user]}
@@ -71,16 +74,19 @@ defmodule BaileysEx.Protocol.USync do
     with_user(query, struct(User, user))
   end
 
+  @doc "Modifies the invocation context context tag."
   @spec with_context(t(), context() | String.t()) :: t()
   def with_context(%__MODULE__{} = query, context) do
     %{query | context: normalize_context(context)}
   end
 
+  @doc "Modifies the USync node query mapping string mode value."
   @spec with_mode(t(), mode() | String.t()) :: t()
   def with_mode(%__MODULE__{} = query, mode) do
     %{query | mode: normalize_mode(mode)}
   end
 
+  @doc "A fast-path method for generating a complete USync query node from raw details."
   @spec build_query([protocol() | :device], [User.t() | map()], keyword()) ::
           {:ok, BinaryNode.t()} | {:error, term()}
   def build_query(protocols, users, opts \\ []) do
@@ -98,6 +104,7 @@ defmodule BaileysEx.Protocol.USync do
     to_node(query, sid)
   end
 
+  @doc "Marshals the USync struct builder mapping to a final send-able WABinary."
   @spec to_node(t(), String.t()) :: {:ok, BinaryNode.t()} | {:error, term()}
   def to_node(%__MODULE__{protocols: []}, _sid), do: {:error, {:missing_protocols, []}}
   def to_node(%__MODULE__{users: []}, _sid), do: {:error, {:missing_users, []}}
@@ -136,6 +143,7 @@ defmodule BaileysEx.Protocol.USync do
 
   def to_node(%__MODULE__{}, sid), do: {:error, {:invalid_sid, sid}}
 
+  @doc "Deserializes the query IQ response into structural data maps."
   @spec parse_result(t(), BinaryNode.t()) :: {:ok, result()} | {:error, term()}
   def parse_result(%__MODULE__{} = query, %BinaryNode{attrs: %{"type" => "result"}} = response) do
     with %BinaryNode{} = usync_node <- BinaryNodeUtil.child(response, "usync"),

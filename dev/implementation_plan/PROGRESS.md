@@ -206,14 +206,11 @@
 - [x] PN sessions migrate to LID sessions without losing device separation
 - [x] LID mapping storage mirrors Baileys' forward/reverse key convention for persistent stores
 - [x] TOFU identity storage detects key changes and invalidates stale sessions
+- [x] 1:1 session establishment and direct-message ciphertexts interoperate with Baileys/libsignal
 - [x] Sender-key encrypt/decrypt and distribution interoperate with Baileys
 - [x] Signal store contract covers sessions, pre-keys, sender-key-memory, LID mappings, device lists, tc tokens, and identity keys
-- [x] Cross-validation uses committed Baileys-generated address, mapping, and sender-key data
+- [x] Cross-validation uses committed Baileys-generated address, mapping, sender-key, and direct-message data
 - [x] Native boundary is no broader than necessary for correctness, interop, and performance
-
-Phase 5 intentionally stops at the compatibility boundary. A concrete 1:1 session
-engine still lives behind `BaileysEx.Signal.Repository.Adapter` and is not being
-falsely marked as implemented here.
 
 ### Files
 
@@ -223,6 +220,12 @@ falsely marked as implemented here.
 | `lib/baileys_ex/signal/repository.ex` | ✅ |
 | `lib/baileys_ex/signal/lid_mapping_store.ex` | ✅ |
 | `lib/baileys_ex/signal/address.ex` | ✅ |
+| `lib/baileys_ex/signal/whisper_message.ex` | ✅ |
+| `lib/baileys_ex/signal/pre_key_whisper_message.ex` | ✅ |
+| `lib/baileys_ex/signal/session_record.ex` | ✅ |
+| `lib/baileys_ex/signal/session_builder.ex` | ✅ |
+| `lib/baileys_ex/signal/session_cipher.ex` | ✅ |
+| `lib/baileys_ex/signal/adapter/signal.ex` | ✅ |
 | `lib/baileys_ex/signal/group/sender_key_name.ex` | ✅ |
 | `lib/baileys_ex/signal/group/sender_chain_key.ex` | ✅ |
 | `lib/baileys_ex/signal/group/sender_message_key.ex` | ✅ |
@@ -238,6 +241,12 @@ falsely marked as implemented here.
 | `lib/baileys_ex/native/xeddsa.ex` | ✅ |
 | `test/baileys_ex/signal/curve_test.exs` | ✅ |
 | `test/baileys_ex/signal/address_test.exs` | ✅ |
+| `test/baileys_ex/signal/whisper_message_test.exs` | ✅ |
+| `test/baileys_ex/signal/pre_key_whisper_message_test.exs` | ✅ |
+| `test/baileys_ex/signal/session_record_test.exs` | ✅ |
+| `test/baileys_ex/signal/session_builder_test.exs` | ✅ |
+| `test/baileys_ex/signal/session_cipher_test.exs` | ✅ |
+| `test/baileys_ex/signal/adapter/signal_test.exs` | ✅ |
 | `test/baileys_ex/signal/store_test.exs` | ✅ |
 | `test/baileys_ex/signal/repository_test.exs` | ✅ |
 | `test/baileys_ex/signal/lid_mapping_store_test.exs` | ✅ |

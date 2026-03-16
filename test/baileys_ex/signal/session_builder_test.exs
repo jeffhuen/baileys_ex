@@ -43,7 +43,11 @@ defmodule BaileysEx.Signal.SessionBuilderTest do
     {_key, session} = SessionRecord.get_open_session(record)
 
     # Session should have a sending chain (Alice's ratchet key)
-    assert Map.has_key?(session.chains, Base.encode64(alice_sending_ratchet.public))
+    assert %{
+             chain_key: %{counter: 0},
+             chain_type: :sending,
+             message_keys: %{}
+           } = session.chains[Base.encode64(signal_public_key(alice_sending_ratchet.public))]
 
     # Session should have pending pre-key info
     assert session.pending_pre_key != nil
@@ -110,8 +114,8 @@ defmodule BaileysEx.Signal.SessionBuilderTest do
     assert SessionRecord.have_open_session?(record)
     {_key, session} = SessionRecord.get_open_session(record)
 
-    # Session should have a receiving chain (Alice's base key)
-    assert Map.has_key?(session.chains, Base.encode64(alice_base_key.public))
+    # Bob derives the first receiving chain lazily from Alice's message ratchet key.
+    assert session.chains == %{}
     assert session.index_info.base_key_type == :receiving
     assert session.pending_pre_key == nil
     assert session.registration_id == 55
@@ -196,5 +200,10 @@ defmodule BaileysEx.Signal.SessionBuilderTest do
     {_, session2} = SessionRecord.get_open_session(record2)
 
     assert session1.current_ratchet.root_key == session2.current_ratchet.root_key
+  end
+
+  defp signal_public_key(public_key) do
+    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
+    signal_public_key
   end
 end

@@ -12,6 +12,9 @@ defmodule BaileysEx.Message.Builder do
 
   @url_regex ~r/https?:\/\/\S+/i
 
+  @doc """
+  Builds a WAProto `Message` struct given an Elixir content mapping.
+  """
   @spec build(map(), keyword()) :: struct()
   def build(content, opts \\ [])
 

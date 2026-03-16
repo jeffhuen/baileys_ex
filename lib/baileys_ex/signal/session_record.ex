@@ -23,7 +23,8 @@ defmodule BaileysEx.Signal.SessionRecord do
         }
 
   @type chain :: %{
-          chain_key: %{counter: integer(), key: binary()},
+          chain_key: %{counter: integer(), key: binary() | nil},
+          chain_type: :sending | :receiving,
           message_keys: %{optional(non_neg_integer()) => binary()}
         }
 
@@ -63,14 +64,15 @@ defmodule BaileysEx.Signal.SessionRecord do
     %{record | sessions: Map.put(sessions, base_key, session)}
   end
 
-  @spec close_session(t(), binary()) :: t()
-  def close_session(%__MODULE__{sessions: sessions} = record, base_key) do
+  @spec close_session(t(), binary(), keyword()) :: t()
+  def close_session(%__MODULE__{sessions: sessions} = record, base_key, opts \\ []) do
     case Map.get(sessions, base_key) do
       nil ->
         record
 
       session ->
-        closed_session = put_in(session.index_info.closed, System.monotonic_time())
+        closed_session =
+          put_in(session.index_info.closed, Keyword.get_lazy(opts, :closed_at, &now_ms/0))
 
         updated_sessions =
           sessions
@@ -81,10 +83,10 @@ defmodule BaileysEx.Signal.SessionRecord do
     end
   end
 
-  @spec close_open_session(t()) :: t()
-  def close_open_session(%__MODULE__{} = record) do
+  @spec close_open_session(t(), keyword()) :: t()
+  def close_open_session(%__MODULE__{} = record, opts \\ []) do
     case get_open_session(record) do
-      {base_key, _session} -> close_session(record, base_key)
+      {base_key, _session} -> close_session(record, base_key, opts)
       nil -> record
     end
   end
@@ -108,4 +110,6 @@ defmodule BaileysEx.Signal.SessionRecord do
 
     Map.new(open ++ kept_closed)
   end
+
+  defp now_ms, do: System.system_time(:millisecond)
 end

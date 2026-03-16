@@ -9,6 +9,7 @@ defmodule BaileysEx.Protocol.WMex do
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID
 
+  @doc "Wraps an encoded GraphQL WMex schema payload."
   @spec build_query(String.t(), map(), String.t()) :: BinaryNode.t()
   def build_query(query_id, variables, message_id)
       when is_binary(query_id) and is_map(variables) and is_binary(message_id) do
@@ -30,6 +31,7 @@ defmodule BaileysEx.Protocol.WMex do
     }
   end
 
+  @doc "Extracts the response from the inner GraphQL response body."
   @spec extract_result(BinaryNode.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
   def extract_result(%BinaryNode{} = response_node, data_path \\ nil) do
     case BinaryNodeUtil.child(response_node, "result") do

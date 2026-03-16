@@ -20,6 +20,7 @@ defmodule BaileysEx.Feature.Privacy do
   @spec fetch_settings(term()) :: {:ok, map()} | {:error, term()}
   def fetch_settings(queryable), do: fetch_settings(queryable, false, [])
 
+  @doc false
   @spec fetch_settings(term(), boolean() | keyword()) :: {:ok, map()} | {:error, term()}
   def fetch_settings(queryable, force) when is_boolean(force),
     do: fetch_settings(queryable, force, [])
@@ -27,6 +28,7 @@ defmodule BaileysEx.Feature.Privacy do
   def fetch_settings(queryable, opts) when is_list(opts),
     do: fetch_settings(queryable, false, opts)
 
+  @doc false
   @spec fetch_settings(term(), boolean(), keyword()) :: {:ok, map()} | {:error, term()}
   def fetch_settings(queryable, force, opts)
       when is_boolean(force) and is_list(opts) do

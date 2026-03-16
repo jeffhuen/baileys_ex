@@ -113,6 +113,7 @@ defmodule BaileysEx.Signal.Repository do
     store: nil
   ]
 
+  @doc "Initializes a unified Signal Repository utilizing the provided config options."
   @spec new(keyword()) :: t()
   def new(opts) do
     %__MODULE__{
@@ -123,6 +124,7 @@ defmodule BaileysEx.Signal.Repository do
     }
   end
 
+  @doc "Converts a standard text JID to its internal Signal Protocol identifier strictly."
   @spec jid_to_signal_protocol_address(String.t()) ::
           {:ok, String.t()} | {:error, :invalid_signal_address}
   def jid_to_signal_protocol_address(jid) do
@@ -131,6 +133,7 @@ defmodule BaileysEx.Signal.Repository do
     end
   end
 
+  @doc "Safely decodes and writes an externally sourced E2E session state payload into the engine."
   @spec inject_e2e_session(t(), %{jid: String.t(), session: e2e_session()}) ::
           {:ok, t()} | {:error, adapter_error()}
   def inject_e2e_session(%__MODULE__{} = repository, %{jid: jid, session: session}) do
@@ -144,6 +147,7 @@ defmodule BaileysEx.Signal.Repository do
 
   def inject_e2e_session(%__MODULE__{}, _opts), do: {:error, :invalid_session}
 
+  @doc "Checks the store bounds asserting whether an active encrypted session currently exists."
   @spec validate_session(t(), String.t()) :: {:ok, session_status()} | {:error, adapter_error()}
   def validate_session(%__MODULE__{} = repository, jid) do
     with {:ok, address} <- Address.from_jid(jid),
@@ -153,6 +157,7 @@ defmodule BaileysEx.Signal.Repository do
     end
   end
 
+  @doc "Applies standard E2E Signal encryption payload converting binary messages to opaque node cipher blobs."
   @spec encrypt_message(t(), %{jid: String.t(), data: binary()}) ::
           {:ok, t(), %{type: :pkmsg | :msg, ciphertext: binary()}} | {:error, adapter_error()}
   def encrypt_message(%__MODULE__{} = repository, %{jid: jid, data: data}) when is_binary(data) do
@@ -171,6 +176,7 @@ defmodule BaileysEx.Signal.Repository do
 
   def encrypt_message(%__MODULE__{}, _opts), do: {:error, :invalid_session}
 
+  @doc "Reconstructs unencrypted cleartext directly from isolated Signal whisper responses."
   @spec decrypt_message(t(), %{jid: String.t(), type: :pkmsg | :msg, ciphertext: binary()}) ::
           {:ok, t(), binary()} | {:error, adapter_error()}
   def decrypt_message(%__MODULE__{} = repository, %{jid: jid, type: type, ciphertext: ciphertext})
@@ -190,6 +196,7 @@ defmodule BaileysEx.Signal.Repository do
 
   def decrypt_message(%__MODULE__{}, _opts), do: {:error, :invalid_ciphertext}
 
+  @doc "Wipes persistent E2E tracks for corresponding device list JIDs."
   @spec delete_session(t(), [String.t()]) :: {:ok, t()} | {:error, adapter_error()}
   def delete_session(%__MODULE__{} = repository, jids) when is_list(jids) do
     with {:ok, addresses} <- normalize_addresses(jids),
@@ -201,6 +208,7 @@ defmodule BaileysEx.Signal.Repository do
 
   def delete_session(%__MODULE__{}, _jids), do: {:error, :invalid_signal_address}
 
+  @doc "Pulls identity key data strictly for known device associations."
   @spec load_identity_key(t(), String.t()) ::
           {:ok, t(), binary() | nil} | {:error, adapter_error()}
   def load_identity_key(%__MODULE__{} = repository, jid) when is_binary(jid) do
@@ -212,6 +220,7 @@ defmodule BaileysEx.Signal.Repository do
 
   def load_identity_key(%__MODULE__{}, _jid), do: {:error, :invalid_signal_address}
 
+  @doc "TOFU processes and saves inbound device identity exchanges overriding any older values when matching."
   @spec save_identity(t(), %{jid: String.t(), identity_key: binary()}) ::
           {:ok, t(), boolean()} | {:error, adapter_error()}
   def save_identity(%__MODULE__{} = repository, %{jid: jid, identity_key: identity_key})
@@ -240,6 +249,7 @@ defmodule BaileysEx.Signal.Repository do
 
   def save_identity(%__MODULE__{}, _opts), do: {:error, :invalid_signal_address}
 
+  @doc "Translates structural Sender Keys payloads to encrypt multirecipient group broadcasts."
   @spec encrypt_group_message(t(), %{group: String.t(), me_id: String.t(), data: binary()}) ::
           {:ok, t(), %{ciphertext: binary(), sender_key_distribution_message: binary()}}
           | {:error, adapter_error()}
@@ -264,6 +274,7 @@ defmodule BaileysEx.Signal.Repository do
 
   def encrypt_group_message(%__MODULE__{}, _opts), do: {:error, :invalid_signal_address}
 
+  @doc "Parses out group Sender key payloads sent from others ensuring group chats successfully decode."
   @spec process_sender_key_distribution_message(
           t(),
           %{
@@ -296,6 +307,7 @@ defmodule BaileysEx.Signal.Repository do
   def process_sender_key_distribution_message(%__MODULE__{}, _opts),
     do: {:error, :invalid_signal_address}
 
+  @doc "Unlocks specific multi-cast message transmissions directly correlating known participant identifiers."
   @spec decrypt_group_message(t(), %{group: String.t(), author_jid: String.t(), msg: binary()}) ::
           {:ok, t(), binary()} | {:error, adapter_error()}
   def decrypt_group_message(%__MODULE__{} = repository, %{
@@ -323,6 +335,7 @@ defmodule BaileysEx.Signal.Repository do
 
   def decrypt_group_message(%__MODULE__{}, _opts), do: {:error, :invalid_signal_address}
 
+  @doc "Pass-through to LID maps linking canonical WA protocol endpoints."
   @spec store_lid_pn_mappings(t(), [LIDMappingStore.mapping()]) ::
           {:ok, t()} | {:error, LIDMappingStore.error()}
   def store_lid_pn_mappings(%__MODULE__{} = repository, mappings) do
@@ -332,6 +345,7 @@ defmodule BaileysEx.Signal.Repository do
     end
   end
 
+  @doc "Maps traditional PN JID addresses towards localized identifiers dynamically resolving contexts."
   @spec get_lid_for_pn(t(), String.t()) :: {:ok, t(), String.t() | nil}
   def get_lid_for_pn(%__MODULE__{} = repository, pn) do
     with {:ok, lid} <-
@@ -344,6 +358,7 @@ defmodule BaileysEx.Signal.Repository do
     end
   end
 
+  @doc "Performs reverse mappings identifying real users masked via LID instances."
   @spec get_pn_for_lid(t(), String.t()) :: {:ok, t(), String.t() | nil}
   def get_pn_for_lid(%__MODULE__{} = repository, lid) do
     with {:ok, pn} <- LIDMappingStore.get_pn_for_lid(repository.store, lid) do
@@ -351,6 +366,7 @@ defmodule BaileysEx.Signal.Repository do
     end
   end
 
+  @doc "Moves established sessions to new aliases honoring WhatsApp's complex LID migration semantics safely."
   @spec migrate_session(t(), String.t(), String.t()) ::
           {:ok, t(), migration_result()} | {:error, adapter_error()}
   def migrate_session(%__MODULE__{} = repository, from_jid, to_jid)

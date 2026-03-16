@@ -21,6 +21,9 @@ defmodule BaileysEx.Auth.ConnectionValidator do
   @connect_type_wifi_unknown 1
   @connect_reason_user_activated 1
 
+  @doc """
+  Constructs a connection node payload for an existing login session.
+  """
   @spec generate_login_node(binary(), Config.t()) ::
           {:ok, struct()} | {:error, term()}
   def generate_login_node(me_jid, %Config{} = config) when is_binary(me_jid) do
@@ -44,6 +47,9 @@ defmodule BaileysEx.Auth.ConnectionValidator do
     end
   end
 
+  @doc """
+  Constructs a registration pair-device node payload.
+  """
   @spec generate_registration_node(State.t() | map(), Config.t()) ::
           {:ok, struct()} | {:error, term()}
   def generate_registration_node(auth_state, %Config{} = config) when is_map(auth_state) do
@@ -74,6 +80,9 @@ defmodule BaileysEx.Auth.ConnectionValidator do
     end
   end
 
+  @doc """
+  Builds the fully encoded binary protobuf payload containing the initial client setup.
+  """
   @spec generate_client_payload(State.t() | map(), Config.t()) ::
           {:ok, binary()} | {:error, term()}
   def generate_client_payload(auth_state, %Config{} = config) when is_map(auth_state) do

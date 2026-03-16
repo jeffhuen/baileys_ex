@@ -61,7 +61,7 @@ defmodule BaileysEx.Signal.SessionCipher do
 
   # -- Encryption internals --
 
-  defp do_encrypt(record, base_key, session, plaintext, _opts) do
+  defp do_encrypt(record, base_key, session, plaintext, opts) do
     sending_chain_key_entry = get_sending_chain(session)
 
     if sending_chain_key_entry == nil do
@@ -100,43 +100,28 @@ defmodule BaileysEx.Signal.SessionCipher do
           chain_key.counter,
           session.current_ratchet.previous_counter,
           ciphertext,
+          mac_key,
           sender_identity,
           receiver_identity
         )
-
-      # Recompute MAC with the derived mac_key
-      whisper_serialized = WhisperMessage.serialize(whisper_msg)
-
-      msg_without_mac =
-        binary_part(
-          whisper_serialized,
-          0,
-          byte_size(whisper_serialized) - WhisperMessage.mac_length()
-        )
-
-      mac =
-        Crypto.hmac_sha256(
-          mac_key,
-          sender_identity <> receiver_identity <> msg_without_mac
-        )
-
-      final_whisper = msg_without_mac <> binary_part(mac, 0, WhisperMessage.mac_length())
 
       # Wrap in PreKeyWhisperMessage if pending
       {type, final_ciphertext, session} =
         case session.pending_pre_key do
           nil ->
-            {:msg, final_whisper, session}
+            {:msg, WhisperMessage.serialize(whisper_msg), session}
 
           pending ->
+            registration_id = Keyword.get(opts, :registration_id, session.registration_id)
+
             {:ok, pkmsg} =
               PreKeyWhisperMessage.new(
-                registration_id: session.registration_id,
+                registration_id: registration_id,
                 pre_key_id: pending.pre_key_id,
                 signed_pre_key_id: pending.signed_pre_key_id,
                 base_key: pending.base_key,
                 identity_key: sender_identity,
-                message: final_whisper
+                message: WhisperMessage.serialize(whisper_msg)
               )
 
             {:pkmsg, PreKeyWhisperMessage.serialize(pkmsg), session}
@@ -157,7 +142,8 @@ defmodule BaileysEx.Signal.SessionCipher do
 
         case Map.get(session.chains, chain_key) do
           nil -> nil
-          chain -> {chain_key, chain}
+          %{chain_type: :sending} = chain -> {chain_key, chain}
+          _ -> nil
         end
     end
   end
@@ -199,14 +185,14 @@ defmodule BaileysEx.Signal.SessionCipher do
   end
 
   defp do_decrypt(session, whisper_msg, opts) do
-    their_ephemeral = whisper_msg.ratchet_key
+    their_ephemeral = ensure_signal_public_key!(whisper_msg.ratchet_key)
     their_ephemeral_b64 = Base.encode64(their_ephemeral)
 
     session =
       if Map.has_key?(session.chains, their_ephemeral_b64) do
         session
       else
-        perform_ratchet_step(session, their_ephemeral, opts)
+        perform_ratchet_step(session, their_ephemeral, whisper_msg.previous_counter, opts)
       end
 
     chain = Map.get(session.chains, their_ephemeral_b64)
@@ -229,6 +215,9 @@ defmodule BaileysEx.Signal.SessionCipher do
         updated_chain = %{chain | message_keys: Map.delete(chain.message_keys, counter)}
         session = put_in(session.chains[chain_b64], updated_chain)
         do_decrypt_with_key(session, whisper_msg, message_key_seed)
+
+      is_nil(chain_key.key) ->
+        {:error, :message_key_already_consumed}
 
       chain_key.counter > counter ->
         {:error, :message_key_already_consumed}
@@ -275,45 +264,31 @@ defmodule BaileysEx.Signal.SessionCipher do
     # Verify MAC
     sender_identity = session.index_info.remote_identity_key
     receiver_identity = session.index_info.local_identity_key
-    serialized = whisper_msg.serialized
-    msg_size = byte_size(serialized) - WhisperMessage.mac_length()
-    <<msg_without_mac::binary-size(msg_size), actual_mac::binary>> = serialized
 
-    expected_mac =
-      Crypto.hmac_sha256(mac_key, sender_identity <> receiver_identity <> msg_without_mac)
-      |> binary_part(0, WhisperMessage.mac_length())
-
-    if actual_mac != expected_mac do
-      {:error, :bad_mac}
-    else
+    if WhisperMessage.verify_mac(whisper_msg, mac_key, sender_identity, receiver_identity) do
       case Crypto.aes_cbc_decrypt(cipher_key, iv, whisper_msg.ciphertext) do
         {:ok, plaintext} -> {:ok, %{session | pending_pre_key: nil}, plaintext}
         {:error, _} -> {:error, :decrypt_failed}
       end
+    else
+      {:error, :bad_mac}
     end
   end
 
   # -- DH Ratchet step --
 
-  defp perform_ratchet_step(session, their_new_ephemeral, opts) do
+  defp perform_ratchet_step(session, their_new_ephemeral, previous_counter, opts) do
     ratchet = session.current_ratchet
     our_current_ephemeral = ratchet.ephemeral_key_pair
 
-    # Close the current sending chain counter as previous_counter
-    previous_counter =
-      case our_current_ephemeral do
-        nil ->
-          0
+    session =
+      maybe_close_receiving_chain(
+        session,
+        ratchet.last_remote_ephemeral,
+        previous_counter
+      )
 
-        ephemeral ->
-          chain = Map.get(session.chains, Base.encode64(ephemeral.public))
-
-          if chain do
-            max(chain.chain_key.counter, 0)
-          else
-            0
-          end
-      end
+    next_previous_counter = current_sending_counter(session, our_current_ephemeral)
 
     # Step 1: DH with their new ephemeral and our current ephemeral → receiving chain
     {:ok, receiving_secret} = Curve.shared_key(our_current_ephemeral.private, their_new_ephemeral)
@@ -324,10 +299,16 @@ defmodule BaileysEx.Signal.SessionCipher do
     <<root_key_1::binary-32, receiving_chain_key::binary-32>> = receiving_derived
 
     # Step 2: Generate new ephemeral, DH with their new ephemeral → sending chain
-    new_ephemeral = Keyword.get_lazy(opts, :ratchet_key_pair, &Curve.generate_key_pair/0)
+    new_ephemeral =
+      opts
+      |> Keyword.get_lazy(:ratchet_key_pair, &Curve.generate_key_pair/0)
+      |> ensure_signal_key_pair!()
+
     {:ok, sending_secret} = Curve.shared_key(new_ephemeral.private, their_new_ephemeral)
     {:ok, sending_derived} = Crypto.hkdf(sending_secret, @whisper_ratchet, 64, root_key_1)
     <<new_root_key::binary-32, sending_chain_key::binary-32>> = sending_derived
+
+    session = maybe_drop_sending_chain(session, our_current_ephemeral)
 
     session = %{
       session
@@ -335,16 +316,18 @@ defmodule BaileysEx.Signal.SessionCipher do
           root_key: new_root_key,
           ephemeral_key_pair: new_ephemeral,
           last_remote_ephemeral: their_new_ephemeral,
-          previous_counter: previous_counter
+          previous_counter: next_previous_counter
         },
         chains:
           session.chains
           |> Map.put(Base.encode64(their_new_ephemeral), %{
             chain_key: %{counter: 0, key: receiving_chain_key},
+            chain_type: :receiving,
             message_keys: %{}
           })
           |> Map.put(Base.encode64(new_ephemeral.public), %{
             chain_key: %{counter: 0, key: sending_chain_key},
+            chain_type: :sending,
             message_keys: %{}
           })
     }
@@ -379,5 +362,69 @@ defmodule BaileysEx.Signal.SessionCipher do
         {:ok, record, pkmsg.pre_key_id}
       end
     end
+  end
+
+  defp maybe_close_receiving_chain(session, nil, _previous_counter), do: session
+
+  defp maybe_close_receiving_chain(session, remote_ephemeral, previous_counter) do
+    chain_key = Base.encode64(remote_ephemeral)
+
+    case Map.get(session.chains, chain_key) do
+      %{chain_type: :receiving} = chain ->
+        closed_chain = cache_message_keys_until(chain, previous_counter)
+        put_in(session.chains[chain_key], put_in(closed_chain.chain_key.key, nil))
+
+      _ ->
+        session
+    end
+  end
+
+  defp cache_message_keys_until(chain, previous_counter) do
+    chain_key = chain.chain_key
+
+    cond do
+      is_nil(chain_key.key) ->
+        chain
+
+      chain_key.counter > previous_counter ->
+        chain
+
+      true ->
+        message_key_seed = Crypto.hmac_sha256(chain_key.key, @message_key_seed)
+        next_key = Crypto.hmac_sha256(chain_key.key, @chain_key_seed)
+
+        updated_chain = %{
+          chain
+          | chain_key: %{counter: chain_key.counter + 1, key: next_key},
+            message_keys: Map.put(chain.message_keys, chain_key.counter, message_key_seed)
+        }
+
+        cache_message_keys_until(updated_chain, previous_counter)
+    end
+  end
+
+  defp current_sending_counter(_session, nil), do: 0
+
+  defp current_sending_counter(session, %{public: public}) do
+    case Map.get(session.chains, Base.encode64(public)) do
+      %{chain_key: %{counter: counter}} -> max(counter - 1, 0)
+      _ -> 0
+    end
+  end
+
+  defp maybe_drop_sending_chain(session, nil), do: session
+
+  defp maybe_drop_sending_chain(session, %{public: public}) do
+    update_in(session.chains, &Map.delete(&1, Base.encode64(public)))
+  end
+
+  defp ensure_signal_key_pair!(%{public: public_key} = key_pair) do
+    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
+    %{key_pair | public: signal_public_key}
+  end
+
+  defp ensure_signal_public_key!(public_key) do
+    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
+    signal_public_key
   end
 end

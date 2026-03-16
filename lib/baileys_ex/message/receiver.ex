@@ -35,6 +35,9 @@ defmodule BaileysEx.Message.Receiver do
           optional(atom()) => term()
         }
 
+  @doc """
+  Decrypts, validates, normalizes, and emits incoming text/media messages.
+  """
   @spec process_node(BinaryNode.t(), context(), keyword()) ::
           {:ok, map(), context()} | {:error, term()}
   def process_node(node, context, opts \\ [])
@@ -66,6 +69,9 @@ defmodule BaileysEx.Message.Receiver do
   def process_node(%BinaryNode{} = node, _context, _opts),
     do: {:error, {:unsupported_node, node.tag}}
 
+  @doc """
+  Converts remote error ACKs into message error events.
+  """
   @spec handle_bad_ack(BinaryNode.t(), GenServer.server()) :: :ok
   def handle_bad_ack(
         %BinaryNode{tag: "ack", attrs: %{"class" => "message", "error" => error} = attrs},

@@ -31,6 +31,10 @@ defmodule BaileysEx.Connection.Store do
           | {:app_state_sync_version, atom()}
           | atom()
 
+  @doc """
+  Returns a `Ref` struct allowing safe, concurrent reads from the ETS table
+  owned by the `Store` server.
+  """
   @spec wrap(GenServer.server()) :: Ref.t()
   def wrap(server) do
     pid = GenServer.whereis(server)
@@ -42,6 +46,10 @@ defmodule BaileysEx.Connection.Store do
     end
   end
 
+  @doc """
+  Reads a value from the connection store via an ETS ref immediately.
+  Returns `default` if the key is not found or the ETS query fails.
+  """
   @spec get(Ref.t(), key(), term()) :: term()
   def get(%Ref{} = ref, key, default \\ nil) do
     case :ets.lookup(ref.table, key) do
@@ -52,16 +60,26 @@ defmodule BaileysEx.Connection.Store do
     ArgumentError -> default
   end
 
+  @doc """
+  Synchronously puts a key-value pair into the connection store.
+  """
   @spec put(GenServer.server() | Ref.t(), key(), term()) :: :ok
   def put(%Ref{pid: pid}, key, value), do: put(pid, key, value)
   def put(server, key, value), do: GenServer.call(server, {:put, key, value})
 
+  @doc """
+  Merges map updates into the connection's `:auth_state`, automatically computing 
+  and saving the `:creds` view projection simultaneously.
+  """
   @spec merge_creds(GenServer.server() | Ref.t(), map()) :: :ok
   def merge_creds(%Ref{pid: pid}, updates), do: merge_creds(pid, updates)
 
   def merge_creds(server, updates) when is_map(updates),
     do: GenServer.call(server, {:merge_creds, updates})
 
+  @doc """
+  Retrieves a deep map snapshot of the entire ETS connection store contents.
+  """
   @spec snapshot(GenServer.server() | Ref.t()) :: map()
   def snapshot(%Ref{pid: pid}), do: snapshot(pid)
   def snapshot(server), do: GenServer.call(server, :snapshot)
@@ -119,6 +137,9 @@ defmodule BaileysEx.Connection.Store do
     put(server_or_ref, {:app_state_sync_version, collection_name}, state)
   end
 
+  @doc """
+  Starts the GenServer that owns the connection ETS table.
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     genserver_opts =

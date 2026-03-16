@@ -21,6 +21,9 @@ defmodule BaileysEx.Message.HistorySync do
           optional(atom()) => term()
         }
 
+  @doc """
+  Processes a history sync notification, downloading and inflating the payload if necessary.
+  """
   @spec process_notification(map(), map(), context()) :: {:ok, map()} | {:error, term()}
   def process_notification(
         %Message.HistorySyncNotification{} = notification,

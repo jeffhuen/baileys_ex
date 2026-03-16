@@ -48,6 +48,9 @@ defmodule BaileysEx.Message.Retry do
   @type proto_message :: struct()
   @type recent_message_entry :: %{message: proto_message(), timestamp: integer()}
 
+  @doc """
+  Determines if a recipient's Signal session must be recreated based on an error code.
+  """
   @spec should_recreate_session(
           Store.Ref.t(),
           String.t(),
@@ -85,6 +88,9 @@ defmodule BaileysEx.Message.Retry do
     end
   end
 
+  @doc """
+  Caches recently sent plaintext messages allowing retry requests to resend them.
+  """
   @spec add_recent_message(Store.Ref.t(), String.t(), String.t(), proto_message(), keyword()) ::
           :ok
   def add_recent_message(%Store.Ref{} = store_ref, to, id, %Message{} = message, opts \\ [])
@@ -111,6 +117,9 @@ defmodule BaileysEx.Message.Retry do
     :ok = Store.put(store_ref, @recent_order_key, order)
   end
 
+  @doc """
+  Retrieves a cached sent message for a remote peer and message ID.
+  """
   @spec get_recent_message(Store.Ref.t(), String.t(), String.t(), keyword()) ::
           recent_message_entry() | nil
   def get_recent_message(%Store.Ref{} = store_ref, to, id, opts \\ [])
@@ -125,6 +134,9 @@ defmodule BaileysEx.Message.Retry do
     Map.get(cache, key)
   end
 
+  @doc """
+  Schedules an asynchronous fallback request for a retry sequence.
+  """
   @spec schedule_phone_request(Store.Ref.t(), String.t(), (-> term()), keyword()) :: :ok
   def schedule_phone_request(%Store.Ref{} = store_ref, message_id, callback, opts \\ [])
       when is_binary(message_id) and is_function(callback, 0) do
@@ -142,6 +154,9 @@ defmodule BaileysEx.Message.Retry do
     Store.put(store_ref, @phone_requests_key, pending)
   end
 
+  @doc """
+  Executes a scheduled fallback phone request, immediately invoking the callback.
+  """
   @spec run_phone_request(Store.Ref.t(), String.t(), (-> term())) :: :ok
   def run_phone_request(%Store.Ref{} = store_ref, message_id, callback)
       when is_binary(message_id) and is_function(callback, 0) do
@@ -151,6 +166,9 @@ defmodule BaileysEx.Message.Retry do
     :ok
   end
 
+  @doc """
+  Cancels a previously scheduled fallback request.
+  """
   @spec cancel_phone_request(Store.Ref.t(), String.t()) :: :ok
   def cancel_phone_request(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
     pending = Store.get(store_ref, @phone_requests_key, %{})
@@ -165,6 +183,9 @@ defmodule BaileysEx.Message.Retry do
     end
   end
 
+  @doc """
+  Idempotently queues a placeholder resend command, stalling slightly to await in-flight messages.
+  """
   @spec request_placeholder_resend(Store.Ref.t(), map(), map() | boolean() | nil, keyword()) ::
           {:ok, String.t() | nil} | {:error, term()}
   def request_placeholder_resend(
@@ -192,6 +213,9 @@ defmodule BaileysEx.Message.Retry do
     end
   end
 
+  @doc """
+  Records an active placeholder awaiting server response.
+  """
   @spec put_placeholder_resend(Store.Ref.t(), String.t(), map() | boolean(), keyword()) :: :ok
   def put_placeholder_resend(%Store.Ref{} = store_ref, message_id, data, opts \\ [])
       when is_binary(message_id) and is_list(opts) do
@@ -206,6 +230,9 @@ defmodule BaileysEx.Message.Retry do
     Store.put(store_ref, @placeholder_cache_key, cache)
   end
 
+  @doc """
+  Looks up a placeholder that actively blocking resolution of a message.
+  """
   @spec get_placeholder_resend(Store.Ref.t(), String.t()) :: map() | boolean() | nil
   def get_placeholder_resend(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
     case Store.get(store_ref, @placeholder_cache_key, %{}) do
@@ -214,6 +241,9 @@ defmodule BaileysEx.Message.Retry do
     end
   end
 
+  @doc """
+  Clears a resolved placeholder from state.
+  """
   @spec resolve_placeholder_resend(Store.Ref.t(), String.t()) :: :ok
   def resolve_placeholder_resend(%Store.Ref{} = store_ref, message_id)
       when is_binary(message_id) do
@@ -221,6 +251,9 @@ defmodule BaileysEx.Message.Retry do
     :ok
   end
 
+  @doc """
+  Clears an expired placeholder timeout.
+  """
   @spec expire_placeholder_resend(Store.Ref.t(), String.t()) :: :ok
   def expire_placeholder_resend(%Store.Ref{} = store_ref, message_id)
       when is_binary(message_id) do
@@ -228,6 +261,9 @@ defmodule BaileysEx.Message.Retry do
     :ok
   end
 
+  @doc """
+  Parses an incoming retry receipt and retrieves cached messages for re-encryption.
+  """
   @spec handle_retry_receipt(Store.Ref.t(), BinaryNode.t(), keyword()) ::
           {:ok, [proto_message()]} | {:error, term()}
   def handle_retry_receipt(
@@ -257,6 +293,9 @@ defmodule BaileysEx.Message.Retry do
     end
   end
 
+  @doc """
+  Constructs and formats a protocol retry receipt to request a sender re-encrypt a failed message.
+  """
   @spec send_retry_request(Store.Ref.t(), BinaryNode.t(), keyword()) ::
           {:ok, BinaryNode.t()} | {:error, term()}
   def send_retry_request(%Store.Ref{} = store_ref, %BinaryNode{attrs: attrs} = node, opts \\ []) do
@@ -305,6 +344,9 @@ defmodule BaileysEx.Message.Retry do
     end
   end
 
+  @doc """
+  Parses stringified error codes from WhatsApp XML nodes.
+  """
   @spec parse_retry_error_code(String.t() | nil) :: atom() | nil
   def parse_retry_error_code(nil), do: nil
   def parse_retry_error_code(""), do: nil
@@ -316,6 +358,9 @@ defmodule BaileysEx.Message.Retry do
     end
   end
 
+  @doc """
+  Indicates whether the parsed retry code suggests a fatal MAC/Signature error.
+  """
   @spec mac_error?(atom() | integer() | nil) :: boolean()
   def mac_error?(reason) do
     reason
@@ -323,6 +368,9 @@ defmodule BaileysEx.Message.Retry do
     |> then(&MapSet.member?(@mac_error_codes, &1))
   end
 
+  @doc """
+  Bumps the volatile retry tally for a specific message tracking iteration count.
+  """
   @spec increment_retry_count(Store.Ref.t(), String.t()) :: pos_integer()
   def increment_retry_count(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
     counters = Store.get(store_ref, @retry_counter_key, %{})
@@ -331,11 +379,17 @@ defmodule BaileysEx.Message.Retry do
     count
   end
 
+  @doc """
+  Yields the current retry iteration count.
+  """
   @spec get_retry_count(Store.Ref.t(), String.t()) :: non_neg_integer()
   def get_retry_count(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
     Store.get(store_ref, @retry_counter_key, %{}) |> Map.get(message_id, 0)
   end
 
+  @doc """
+  Checks if a message retry sequence has violated the configured limit loop.
+  """
   @spec has_exceeded_max_retries?(Store.Ref.t(), String.t(), pos_integer()) :: boolean()
   def has_exceeded_max_retries?(
         %Store.Ref{} = store_ref,

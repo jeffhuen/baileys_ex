@@ -40,6 +40,9 @@ defmodule BaileysEx.Message.Sender do
           timestamp: integer()
         }
 
+  @doc """
+  Sends a generic content map to the specified JID, converting maps to WAProto messages.
+  """
   @spec send(context(), JID.t(), map(), keyword()) ::
           {:ok, send_result(), context()}
           | {:error, term()}
@@ -70,6 +73,9 @@ defmodule BaileysEx.Message.Sender do
     )
   end
 
+  @doc """
+  Serializes, encrypts, and transmits a pre-constructed WAProto message to a specific JID.
+  """
   @spec send_proto(context(), JID.t(), proto_message(), keyword()) ::
           {:ok, send_result(), context()}
           | {:error, term()}
@@ -108,6 +114,9 @@ defmodule BaileysEx.Message.Sender do
     end
   end
 
+  @doc """
+  Uploads a new status update to all valid contacts via status broadcast channel.
+  """
   @spec send_status(context(), map(), keyword()) :: {:ok, map(), context()} | {:error, term()}
   def send_status(%{} = context, content, opts \\ []) when is_map(content) do
     send(context, @status_broadcast, content, opts)

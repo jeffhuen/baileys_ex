@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -84,9 +85,126 @@ const silentLogger = {
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const fixturePath = resolve(__dirname, '../../test/fixtures/signal/baileys_v7.json')
+const requireFromReference = createRequire(resolve(__dirname, '../reference/Baileys-master/package.json'))
+const libsignal = requireFromReference('libsignal')
+const libsignalCurve = requireFromReference('libsignal/src/curve')
+
+type DirectKeyPair = {
+	public: Buffer
+	private: Buffer
+	signalPublic: Buffer
+}
+
+type StoredPreKey = {
+	privKey: Buffer
+	pubKey: Buffer
+}
+
+class DirectMessageStorage {
+	private readonly sessions = new Map<string, any>()
+
+	constructor(
+		private readonly opts: {
+			identityKeyPair: DirectKeyPair
+			registrationId: number
+			signedPreKeyPair: DirectKeyPair & { keyId: number }
+			preKeyPairs?: Map<string, StoredPreKey>
+		}
+	) {}
+
+	async loadSession(id: string) {
+		return this.sessions.get(id)
+	}
+
+	async storeSession(id: string, record: any) {
+		this.sessions.set(id, record)
+	}
+
+	async isTrustedIdentity() {
+		return true
+	}
+
+	async loadIdentityKey() {
+		return undefined
+	}
+
+	async saveIdentity() {
+		return false
+	}
+
+	async loadPreKey(id: string | number) {
+		return this.opts.preKeyPairs?.get(String(id))
+	}
+
+	async removePreKey(id: string | number) {
+		this.opts.preKeyPairs?.delete(String(id))
+	}
+
+	async loadSignedPreKey(id: string | number) {
+		if (Number(id) !== this.opts.signedPreKeyPair.keyId) {
+			return undefined
+		}
+
+		return toLibsignalKeyPair(this.opts.signedPreKeyPair)
+	}
+
+	async getOurRegistrationId() {
+		return this.opts.registrationId
+	}
+
+	async getOurIdentity() {
+		return toLibsignalKeyPair(this.opts.identityKeyPair)
+	}
+}
 
 function toBase64(value: Uint8Array | Buffer) {
 	return Buffer.from(value).toString('base64')
+}
+
+function directKeyPair(seed: number): DirectKeyPair {
+	const privateKey = Buffer.alloc(32)
+	privateKey.writeUInt32BE(seed, 28)
+
+	const signalPublic = Buffer.from(libsignalCurve.getPublicFromPrivateKey(privateKey))
+
+	return {
+		public: signalPublic.subarray(1),
+		private: Buffer.from(privateKey),
+		signalPublic
+	}
+}
+
+function toFixtureKeyPair(keyPair: DirectKeyPair) {
+	return {
+		public: toBase64(keyPair.public),
+		private: toBase64(keyPair.private)
+	}
+}
+
+function toLibsignalKeyPair(keyPair: DirectKeyPair): StoredPreKey {
+	return {
+		privKey: Buffer.from(keyPair.private),
+		pubKey: Buffer.from(keyPair.signalPublic)
+	}
+}
+
+async function withQueuedSignalKeyPairs<T>(queue: DirectKeyPair[], work: () => Promise<T>) {
+	const originalGenerateKeyPair = libsignalCurve.generateKeyPair
+
+	libsignalCurve.generateKeyPair = () => {
+		const next = queue.shift()
+		if (!next) {
+			throw new Error('libsignal key queue exhausted')
+		}
+
+		return toLibsignalKeyPair(next)
+	}
+
+	try {
+		return await work()
+	} finally {
+		libsignalCurve.generateKeyPair = originalGenerateKeyPair
+	}
 }
 
 function protocolAddress(address: string) {
@@ -228,6 +346,116 @@ async function buildSenderKeyFixtures() {
 	}
 }
 
+async function buildDirectMessageFixtures() {
+	const aliceIdentity = directKeyPair(1001)
+	const aliceBaseKey = directKeyPair(1002)
+	const aliceSendingRatchet = directKeyPair(1003)
+	const aliceNextRatchet = directKeyPair(1004)
+
+	const bobIdentity = directKeyPair(2001)
+	const bobSignedPreKey = directKeyPair(2002)
+	const bobPreKey = directKeyPair(2003)
+	const bobReplyRatchet = directKeyPair(2004)
+
+	const aliceRegistrationId = 1234
+	const bobRegistrationId = 5678
+	const bobSignedPreKeyId = 77
+	const bobPreKeyId = 88
+
+	const signedPreKeySignature = Buffer.from(
+		libsignalCurve.calculateSignature(bobIdentity.private, bobSignedPreKey.signalPublic)
+	)
+
+	const aliceStorage = new DirectMessageStorage({
+		identityKeyPair: aliceIdentity,
+		registrationId: aliceRegistrationId,
+		signedPreKeyPair: { ...aliceIdentity, keyId: 1 }
+	})
+
+	const bobStorage = new DirectMessageStorage({
+		identityKeyPair: bobIdentity,
+		registrationId: bobRegistrationId,
+		signedPreKeyPair: { ...bobSignedPreKey, keyId: bobSignedPreKeyId },
+		preKeyPairs: new Map([[String(bobPreKeyId), toLibsignalKeyPair(bobPreKey)]])
+	})
+
+	const alicePlaintext = Buffer.from('hello from alice')
+	const bobPlaintext = Buffer.from('hello from bob')
+
+	const aliceAddress = new libsignal.ProtocolAddress('alice', 0)
+	const bobAddress = new libsignal.ProtocolAddress('bob', 0)
+
+	await withQueuedSignalKeyPairs([aliceBaseKey, aliceSendingRatchet], async () => {
+		const aliceBuilder = new libsignal.SessionBuilder(aliceStorage as any, bobAddress)
+
+		await aliceBuilder.initOutgoing({
+			identityKey: bobIdentity.signalPublic,
+			registrationId: bobRegistrationId,
+			signedPreKey: {
+				keyId: bobSignedPreKeyId,
+				publicKey: bobSignedPreKey.signalPublic,
+				signature: signedPreKeySignature
+			},
+			preKey: {
+				keyId: bobPreKeyId,
+				publicKey: bobPreKey.signalPublic
+			}
+		})
+	})
+
+	const aliceCipher = new libsignal.SessionCipher(aliceStorage as any, bobAddress)
+	const aliceToBob = await aliceCipher.encrypt(alicePlaintext)
+
+	const bobCipher = new libsignal.SessionCipher(bobStorage as any, aliceAddress)
+
+	const decryptedAlicePlaintext = await withQueuedSignalKeyPairs([bobReplyRatchet], async () =>
+		bobCipher.decryptPreKeyWhisperMessage(Buffer.from(aliceToBob.body))
+	)
+
+	if (Buffer.compare(Buffer.from(decryptedAlicePlaintext), alicePlaintext) !== 0) {
+		throw new Error('direct-message fixture sanity check failed for Alice -> Bob decrypt')
+	}
+
+	const bobToAlice = await bobCipher.encrypt(bobPlaintext)
+
+	const decryptedBobPlaintext = await withQueuedSignalKeyPairs([aliceNextRatchet], async () =>
+		aliceCipher.decryptWhisperMessage(Buffer.from(bobToAlice.body))
+	)
+
+	if (Buffer.compare(Buffer.from(decryptedBobPlaintext), bobPlaintext) !== 0) {
+		throw new Error('direct-message fixture sanity check failed for Bob -> Alice decrypt')
+	}
+
+	return {
+		alice: {
+			registration_id: aliceRegistrationId,
+			identity_key: toFixtureKeyPair(aliceIdentity),
+			base_key: toFixtureKeyPair(aliceBaseKey),
+			sending_ratchet: toFixtureKeyPair(aliceSendingRatchet),
+			next_ratchet: toFixtureKeyPair(aliceNextRatchet)
+		},
+		bob: {
+			registration_id: bobRegistrationId,
+			identity_key: toFixtureKeyPair(bobIdentity),
+			signed_pre_key_id: bobSignedPreKeyId,
+			signed_pre_key: toFixtureKeyPair(bobSignedPreKey),
+			pre_key_id: bobPreKeyId,
+			pre_key: toFixtureKeyPair(bobPreKey),
+			reply_ratchet: toFixtureKeyPair(bobReplyRatchet)
+		},
+		messages: {
+			alice_to_bob: {
+				plaintext: toBase64(alicePlaintext),
+				ciphertext: toBase64(Buffer.from(aliceToBob.body))
+			},
+			bob_to_alice: {
+				plaintext: toBase64(bobPlaintext),
+				ciphertext: toBase64(Buffer.from(bobToAlice.body))
+			}
+		}
+	}
+}
+
 async function main() {
 	const fixture = {
 		meta: {
@@ -236,12 +464,14 @@ async function main() {
 			scope: [
 				'jidToSignalProtocolAddress parity',
 				'LID mapping forward/reverse parity',
-				'sender-key distribution and group cipher parity'
+				'sender-key distribution and group cipher parity',
+				'1:1 Signal session and ciphertext parity'
 			]
 		},
 		addresses: await buildAddressFixtures(),
 		lid_mapping: await buildLidMappingFixtures(),
-		sender_key: await buildSenderKeyFixtures()
+		sender_key: await buildSenderKeyFixtures(),
+		direct_message: await buildDirectMessageFixtures()
 	}
 
 	mkdirSync(dirname(fixturePath), { recursive: true })

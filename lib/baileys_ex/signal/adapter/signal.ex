@@ -41,52 +41,12 @@ defmodule BaileysEx.Signal.Adapter.Signal do
   def inject_e2e_session(state, %Address{} = address, session) do
     session_key = session_key(address)
 
-    Store.transaction(state.store, "session:#{session_key}", fn ->
-      record = load_session_record(state.store, session_key)
-
-      # Verify signed pre-key signature
-      their_identity_key = session.identity_key
-      their_signed_pre_key = session.signed_pre_key.public_key
-      their_signed_pre_key_sig = session.signed_pre_key.signature
-
-      unless Curve.verify(their_identity_key, their_signed_pre_key, their_signed_pre_key_sig) do
-        throw({:error, :invalid_signature})
-      end
-
-      # Build pre-key (optional)
-      pre_key =
-        case session.pre_key do
-          %{key_id: _, public_key: pk} when is_binary(pk) and byte_size(pk) >= 32 ->
-            strip_signal_prefix(pk)
-
-          _ ->
-            nil
-        end
-
-      bundle = %{
-        identity_key: strip_signal_prefix(their_identity_key),
-        signed_pre_key: strip_signal_prefix(their_signed_pre_key),
-        pre_key: pre_key,
-        registration_id: session.registration_id,
-        signed_pre_key_id: session.signed_pre_key.key_id,
-        pre_key_id: get_in(session, [:pre_key, :key_id])
-      }
-
-      {:ok, record, _base_key} =
-        SessionBuilder.init_outgoing(record, bundle,
-          identity_key_pair: state.identity_key_pair,
-          base_key_pair: Curve.generate_key_pair()
-        )
-
-      save_session_record(state.store, session_key, record)
-
-      # Save identity (TOFU)
-      Identity.save(state.store, address, their_identity_key)
-    end)
-
-    {:ok, state}
-  catch
-    {:error, reason} -> {:error, reason}
+    case Store.transaction(state.store, "session:#{session_key}", fn ->
+           persist_outgoing_session(state, session_key, address, session)
+         end) do
+      :ok -> {:ok, state}
+      {:error, _} = error -> error
+    end
   end
 
   @impl true
@@ -109,7 +69,7 @@ defmodule BaileysEx.Signal.Adapter.Signal do
       Store.transaction(state.store, "session:#{session_key}", fn ->
         record = load_session_record(state.store, session_key)
 
-        case SessionCipher.encrypt(record, plaintext) do
+        case SessionCipher.encrypt(record, plaintext, registration_id: state.registration_id) do
           {:ok, record, encrypted} ->
             save_session_record(state.store, session_key, record)
             {:ok, encrypted}
@@ -142,13 +102,13 @@ defmodule BaileysEx.Signal.Adapter.Signal do
   end
 
   defp do_decrypt(state, address, session_key, record, :pkmsg, ciphertext) do
+    record = prepare_pkmsg_record(state.store, address, session_key, record, ciphertext)
     opts = build_pkmsg_opts(state, ciphertext)
 
     case SessionCipher.decrypt_pre_key_whisper_message(record, ciphertext, opts) do
       {:ok, record, plaintext, used_pre_key_id} ->
         save_session_record(state.store, session_key, record)
         maybe_remove_pre_key(state.store, used_pre_key_id)
-        save_pkmsg_identity(state.store, address, ciphertext)
         {:ok, plaintext}
 
       {:error, _} = error ->
@@ -180,9 +140,21 @@ defmodule BaileysEx.Signal.Adapter.Signal do
     end
   end
 
-  defp save_pkmsg_identity(store, address, ciphertext) do
+  defp prepare_pkmsg_record(store, address, session_key, record, ciphertext) do
     with {:ok, pkmsg} <- BaileysEx.Signal.PreKeyWhisperMessage.decode(ciphertext) do
-      Identity.save(store, address, pkmsg.identity_key)
+      case Identity.save(store, address, pkmsg.identity_key) do
+        {:ok, :changed} ->
+          Store.set(store, %{session: %{session_key => nil}})
+          SessionRecord.new()
+
+        {:ok, _save_result} ->
+          record
+
+        {:error, _reason} ->
+          record
+      end
+    else
+      _ -> record
     end
   end
 
@@ -204,15 +176,19 @@ defmodule BaileysEx.Signal.Adapter.Signal do
         to_key = session_key(op.to)
 
         case load_session_raw(state.store, from_key) do
-          nil ->
-            {m, s, t}
+          %SessionRecord{} = session_data ->
+            if SessionRecord.have_open_session?(session_data) do
+              Store.set(state.store, %{
+                session: %{to_key => session_data, from_key => nil}
+              })
 
-          session_data ->
-            Store.set(state.store, %{
-              session: %{to_key => session_data, from_key => nil}
-            })
+              {m + 1, s, t + 1}
+            else
+              {m, s + 1, t + 1}
+            end
 
-            {m + 1, s, t + 1}
+          _ ->
+            {m, s + 1, t + 1}
         end
       end)
 
@@ -346,6 +322,46 @@ defmodule BaileysEx.Signal.Adapter.Signal do
     key = Integer.to_string(pre_key_id)
     Store.set(store, %{:"pre-key" => %{key => nil}})
   end
+
+  defp persist_outgoing_session(state, session_key, address, session) do
+    record = load_session_record(state.store, session_key)
+
+    with {:ok, bundle, their_identity_key} <- build_outgoing_bundle(session),
+         {:ok, record, _base_key} <-
+           SessionBuilder.init_outgoing(record, bundle,
+             identity_key_pair: state.identity_key_pair,
+             base_key_pair: Curve.generate_key_pair()
+           ),
+         {:ok, _save_result} <- Identity.save(state.store, address, their_identity_key) do
+      save_session_record(state.store, session_key, record)
+      :ok
+    end
+  end
+
+  defp build_outgoing_bundle(session) do
+    their_identity_key = session.identity_key
+    their_signed_pre_key = session.signed_pre_key.public_key
+    their_signed_pre_key_sig = session.signed_pre_key.signature
+
+    if Curve.verify(their_identity_key, their_signed_pre_key, their_signed_pre_key_sig) do
+      {:ok,
+       %{
+         identity_key: strip_signal_prefix(their_identity_key),
+         signed_pre_key: strip_signal_prefix(their_signed_pre_key),
+         pre_key: extract_pre_key(session.pre_key),
+         registration_id: session.registration_id,
+         signed_pre_key_id: session.signed_pre_key.key_id,
+         pre_key_id: get_in(session, [:pre_key, :key_id])
+       }, their_identity_key}
+    else
+      {:error, :invalid_signature}
+    end
+  end
+
+  defp extract_pre_key(%{key_id: _, public_key: pk}) when is_binary(pk) and byte_size(pk) >= 32,
+    do: strip_signal_prefix(pk)
+
+  defp extract_pre_key(_pre_key), do: nil
 
   defp strip_signal_prefix(<<5, key::binary-32>>), do: key
   defp strip_signal_prefix(<<key::binary-32>>), do: key

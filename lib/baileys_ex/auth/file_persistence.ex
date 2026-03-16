@@ -10,9 +10,15 @@ defmodule BaileysEx.Auth.FilePersistence do
   @buffer_tag "Buffer"
   @default_dir "baileys_auth_info"
 
+  @doc """
+  Loads the core credentials state from the default configured directory.
+  """
   @spec load_credentials() :: {:ok, State.t()} | {:error, term()}
   def load_credentials, do: load_credentials(default_path())
 
+  @doc """
+  Loads the core credentials state from the given path.
+  """
   @spec load_credentials(Path.t()) :: {:ok, State.t()} | {:error, term()}
   def load_credentials(path) when is_binary(path) do
     with :ok <- ensure_directory(path) do
@@ -32,9 +38,15 @@ defmodule BaileysEx.Auth.FilePersistence do
     end
   end
 
+  @doc """
+  Saves the core credentials state into the default directory.
+  """
   @spec save_credentials(State.t()) :: :ok | {:error, term()}
   def save_credentials(%State{} = state), do: save_credentials(default_path(), state)
 
+  @doc """
+  Saves the core credentials state into the given directory path.
+  """
   @spec save_credentials(Path.t(), State.t()) :: :ok | {:error, term()}
   def save_credentials(path, %State{} = state) when is_binary(path) do
     with :ok <- ensure_directory(path) do
@@ -42,9 +54,15 @@ defmodule BaileysEx.Auth.FilePersistence do
     end
   end
 
+  @doc """
+  Loads a Signal key record by type and ID from the default directory.
+  """
   @spec load_keys(atom(), term()) :: {:ok, term()} | {:error, term()}
   def load_keys(type, id), do: load_keys(default_path(), type, id)
 
+  @doc """
+  Loads a Signal key record by type and ID from the given directory.
+  """
   @spec load_keys(Path.t(), atom(), term()) :: {:ok, term()} | {:error, term()}
   def load_keys(path, type, id) when is_binary(path) and is_atom(type) do
     with :ok <- ensure_directory(path) do
@@ -58,9 +76,15 @@ defmodule BaileysEx.Auth.FilePersistence do
     end
   end
 
+  @doc """
+  Saves a Signal key record by type and ID into the default directory.
+  """
   @spec save_keys(atom(), term(), term()) :: :ok | {:error, term()}
   def save_keys(type, id, data), do: save_keys(default_path(), type, id, data)
 
+  @doc """
+  Saves a Signal key record by type and ID into the specified directory.
+  """
   @spec save_keys(Path.t(), atom(), term(), term()) :: :ok | {:error, term()}
   def save_keys(path, type, id, data) when is_binary(path) and is_atom(type) do
     with :ok <- ensure_directory(path) do
@@ -68,9 +92,15 @@ defmodule BaileysEx.Auth.FilePersistence do
     end
   end
 
+  @doc """
+  Deletes a Signal key record by type and ID from the default directory.
+  """
   @spec delete_keys(atom(), term()) :: :ok | {:error, term()}
   def delete_keys(type, id), do: delete_keys(default_path(), type, id)
 
+  @doc """
+  Deletes a Signal key record by type and ID from the specified directory.
+  """
   @spec delete_keys(Path.t(), atom(), term()) :: :ok | {:error, term()}
   def delete_keys(path, type, id) when is_binary(path) and is_atom(type) do
     with :ok <- ensure_directory(path) do

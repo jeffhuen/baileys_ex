@@ -7,6 +7,9 @@ defmodule BaileysEx.Connection.Frame do
 
   @type encode_error :: :frame_too_large
 
+  @doc """
+  Encodes a binary payload with a 24-bit length prefix.
+  """
   @spec encode(binary()) :: {:ok, binary()} | {:error, encode_error()}
   def encode(payload) when is_binary(payload) do
     payload_size = byte_size(payload)
@@ -18,6 +21,10 @@ defmodule BaileysEx.Connection.Frame do
     end
   end
 
+  @doc """
+  Decodes a continuous stream of noise/frame data into distinct payloads.
+  Returns `{extracted_frames, remaining_buffer}`.
+  """
   @spec decode_stream(binary()) :: {[binary()], binary()}
   def decode_stream(buffer) when is_binary(buffer), do: decode_stream(buffer, [])
 

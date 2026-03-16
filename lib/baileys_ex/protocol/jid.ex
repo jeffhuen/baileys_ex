@@ -18,18 +18,23 @@ defmodule BaileysEx.Protocol.JID do
   @hosted "hosted"
   @hosted_lid "hosted.lid"
 
+  @doc "Returns the standard WhatsApp network domain identifier."
   @spec s_whatsapp_net() :: String.t()
   def s_whatsapp_net, do: @s_whatsapp_net
 
+  @doc "Returns the group domain identifier."
   @spec g_us() :: String.t()
   def g_us, do: @g_us
 
+  @doc "Returns the broadcast domain identifier."
   @spec broadcast() :: String.t()
   def broadcast, do: @broadcast
 
+  @doc "Returns the LID domain identifier."
   @spec lid() :: String.t()
   def lid, do: @lid
 
+  @doc "Returns the newsletter domain identifier."
   @spec newsletter() :: String.t()
   def newsletter, do: @newsletter
 

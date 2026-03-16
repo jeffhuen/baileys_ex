@@ -47,6 +47,9 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
          conn: conn,
          request_ref: request_ref
        }}
+    else
+      {:error, _conn, reason} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
     end
   end
 

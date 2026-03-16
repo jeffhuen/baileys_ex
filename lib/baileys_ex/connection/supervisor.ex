@@ -12,6 +12,9 @@ defmodule BaileysEx.Connection.Supervisor do
   alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
   alias BaileysEx.Telemetry
 
+  @doc """
+  Start the supervisor and its subtree of runtime connection processes.
+  """
   @spec start_link(keyword()) :: Elixir.Supervisor.on_start()
   def start_link(opts) when is_list(opts) do
     {start_opts, init_opts} = split_start_opts(opts)
@@ -42,6 +45,9 @@ defmodule BaileysEx.Connection.Supervisor do
     end)
   end
 
+  @doc """
+  Safely returns the child specifications for the active connection supervisor subtree.
+  """
   @spec which_children(GenServer.server()) ::
           [
             {term(), :restarting | :undefined | pid(), :supervisor | :worker,

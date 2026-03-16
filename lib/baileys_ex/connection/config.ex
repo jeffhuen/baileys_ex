@@ -91,19 +91,34 @@ defmodule BaileysEx.Connection.Config do
             should_sync_history_message: &__MODULE__.default_should_sync_history_message/1,
             print_qr_in_terminal: false
 
+  @doc """
+  Create a new `Config` with default options.
+  Accepts a keyword list of overrides.
+  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) when is_list(opts), do: struct(__MODULE__, opts)
 
+  @doc """
+  Default logic to determine if a history sync message should be processed.
+  By default, only non-FULL syncs are processed inline.
+  """
   @spec default_should_sync_history_message(map()) :: boolean()
   def default_should_sync_history_message(history_message) when is_map(history_message) do
     history_sync_type(history_message) != :FULL
   end
 
+  @doc """
+  Returns the internal platform symbol for a given browser name string.
+  Returns `:UNKNOWN` if the browser name is not recognized.
+  """
   @spec platform_type(String.t()) :: platform()
   def platform_type(browser_name) when is_binary(browser_name) do
     Map.get(@platforms, browser_name, :UNKNOWN)
   end
 
+  @doc """
+  Returns the platform ID block identifier for device properties based on browser name.
+  """
   @spec platform_id(String.t()) :: String.t()
   def platform_id(browser_name) when is_binary(browser_name) do
     browser_name
@@ -111,6 +126,10 @@ defmodule BaileysEx.Connection.Config do
     |> Integer.to_string()
   end
 
+  @doc """
+  Returns the numeric device property platform type for a given browser string.
+  Defaults to 1 (`CHROME`) if missing.
+  """
   @spec device_props_platform_type(String.t()) :: non_neg_integer()
   def device_props_platform_type(browser_name) when is_binary(browser_name) do
     browser_name
@@ -118,6 +137,9 @@ defmodule BaileysEx.Connection.Config do
     |> then(&Map.get(@device_props_platform_types, &1, 1))
   end
 
+  @doc """
+  Returns the numeric sub-platform ID for web client features (e.g. Mac/Windows).
+  """
   @spec web_sub_platform(t()) :: non_neg_integer()
   def web_sub_platform(%__MODULE__{
         sync_full_history: true,

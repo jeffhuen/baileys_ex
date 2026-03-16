@@ -31,9 +31,11 @@ defmodule BaileysEx.Protocol.Constants do
     single_byte_max: 256
   }
 
+  @doc "Returns the static tag mapping defined in Baileys."
   @spec tags() :: map()
   def tags, do: @tags
 
+  @doc "Resolves a known protocol tag name to its integer index."
   @spec tag(atom()) :: non_neg_integer()
   def tag(name), do: Map.fetch!(@tags, name)
 
@@ -519,9 +521,11 @@ defmodule BaileysEx.Protocol.Constants do
 
   @single_byte_token_count tuple_size(@single_byte_tokens)
 
+  @doc "Returns the tuple list of single-byte tokens defined in Baileys."
   @spec single_byte_tokens() :: tuple()
   def single_byte_tokens, do: @single_byte_tokens
 
+  @doc "Finds a specific protocol token matching a single-byte index."
   @spec single_byte_token(non_neg_integer()) :: String.t() | nil
   def single_byte_token(index) when index >= 0 and index < @single_byte_token_count do
     elem(@single_byte_tokens, index)
@@ -1572,9 +1576,11 @@ defmodule BaileysEx.Protocol.Constants do
   @double_byte_tokens {@double_byte_tokens_0, @double_byte_tokens_1, @double_byte_tokens_2,
                        @double_byte_tokens_3}
 
+  @doc "Returns the tuple of all double byte tokens, organized in four inner dictionaries."
   @spec double_byte_tokens() :: {tuple(), tuple(), tuple(), tuple()}
   def double_byte_tokens, do: @double_byte_tokens
 
+  @doc "Fetches a specific token given the dictionary key index and array index."
   @spec double_byte_token(non_neg_integer(), non_neg_integer()) :: String.t()
   def double_byte_token(dict, index) when dict >= 0 and dict <= 3 do
     dict_tuple = elem(@double_byte_tokens, dict)
@@ -1615,9 +1621,11 @@ defmodule BaileysEx.Protocol.Constants do
                Map.merge(double, single)
              )
 
+  @doc "Returns the precompiled map representation tying text token values directly back to their dictionaries and structural indexes."
   @spec token_map() :: %{String.t() => map()}
   def token_map, do: @token_map
 
+  @doc "Quickly checks if a valid single/double byte index mapping exists for a string token payload."
   @spec lookup_token(String.t()) :: map() | nil
   def lookup_token(str), do: Map.get(@token_map, str)
 
@@ -1629,18 +1637,23 @@ defmodule BaileysEx.Protocol.Constants do
   @lid "lid"
   @newsletter "newsletter"
 
+  @doc "Standard WhatsApp server domain identifier."
   @spec s_whatsapp_net() :: String.t()
   def s_whatsapp_net, do: @s_whatsapp_net
 
+  @doc "Group JID static namespace suffix."
   @spec g_us() :: String.t()
   def g_us, do: @g_us
 
+  @doc "Broadcast lists structural JID namespace."
   @spec broadcast() :: String.t()
   def broadcast, do: @broadcast
 
+  @doc "LID identifier alias tag namespace."
   @spec lid() :: String.t()
   def lid, do: @lid
 
+  @doc "Newsletter broadcasts channel specification namespace."
   @spec newsletter() :: String.t()
   def newsletter, do: @newsletter
 
@@ -1654,9 +1667,11 @@ defmodule BaileysEx.Protocol.Constants do
     hosted_lid: 129
   }
 
+  @doc "Dictionary of JID domain enumeration mappings."
   @spec wajid_domains() :: map()
   def wajid_domains, do: @wajid_domains
 
+  @doc "Retrieves the byte identifier for a valid AD_JID tag namespace."
   @spec wajid_domain(atom()) :: non_neg_integer()
   def wajid_domain(name), do: Map.fetch!(@wajid_domains, name)
 end

@@ -21,9 +21,25 @@ defmodule BaileysEx.Signal.WhisperMessage do
   @enforce_keys [:ratchet_key, :counter, :previous_counter, :ciphertext, :serialized]
   defstruct [:ratchet_key, :counter, :previous_counter, :ciphertext, :serialized]
 
-  @spec new(binary(), non_neg_integer(), non_neg_integer(), binary(), binary(), binary()) ::
+  @spec new(
+          binary(),
+          non_neg_integer(),
+          non_neg_integer(),
+          binary(),
+          binary(),
+          binary(),
+          binary()
+        ) ::
           {:ok, t()}
-  def new(ratchet_key, counter, previous_counter, ciphertext, sender_identity, receiver_identity) do
+  def new(
+        ratchet_key,
+        counter,
+        previous_counter,
+        ciphertext,
+        mac_key,
+        sender_identity,
+        receiver_identity
+      ) do
     payload =
       Wire.encode_bytes(1, ratchet_key) <>
         Wire.encode_uint(2, counter) <>
@@ -31,7 +47,7 @@ defmodule BaileysEx.Signal.WhisperMessage do
         Wire.encode_bytes(4, ciphertext)
 
     message = <<@version_byte>> <> payload
-    mac = compute_mac(sender_identity, receiver_identity, message)
+    mac = compute_mac(mac_key, sender_identity, receiver_identity, message)
 
     {:ok,
      %__MODULE__{
@@ -79,20 +95,7 @@ defmodule BaileysEx.Signal.WhisperMessage do
     message_size = byte_size(serialized) - @mac_length
     <<message::binary-size(message_size), mac::binary-size(@mac_length)>> = serialized
     expected_mac = compute_mac(mac_key, sender_identity, receiver_identity, message)
-    mac == expected_mac
-  end
-
-  @spec verify_mac_with_key(t(), binary(), binary(), binary()) :: boolean()
-  def verify_mac_with_key(
-        %__MODULE__{serialized: serialized},
-        mac_key,
-        sender_identity,
-        receiver_identity
-      ) do
-    message_size = byte_size(serialized) - @mac_length
-    <<message::binary-size(message_size), mac::binary-size(@mac_length)>> = serialized
-    expected_mac = compute_mac(mac_key, sender_identity, receiver_identity, message)
-    mac == expected_mac
+    :crypto.hash_equals(expected_mac, mac)
   end
 
   @spec serialize(t()) :: binary()
@@ -104,17 +107,8 @@ defmodule BaileysEx.Signal.WhisperMessage do
   @spec mac_length() :: non_neg_integer()
   def mac_length, do: @mac_length
 
-  defp compute_mac(sender_identity, receiver_identity, message) do
-    compute_mac(nil, sender_identity, receiver_identity, message)
-  end
-
   defp compute_mac(mac_key, sender_identity, receiver_identity, message) do
-    # MAC input: sender_identity(33) || receiver_identity(33) || version_byte+protobuf
-    # MAC key is derived from message keys; for initial creation we use HMAC of the
-    # identity keys concatenation as per Signal spec
-    key = mac_key || Crypto.hmac_sha256(sender_identity, receiver_identity)
-
-    full_mac = Crypto.hmac_sha256(key, sender_identity <> receiver_identity <> message)
+    full_mac = Crypto.hmac_sha256(mac_key, sender_identity <> receiver_identity <> message)
     binary_part(full_mac, 0, @mac_length)
   end
 

@@ -27,6 +27,7 @@ defmodule BaileysEx.Signal.Address do
     "hosted.lid" => []
   }
 
+  @doc "Constructs a Signal Address handle from a valid user JID."
   @spec from_jid(String.t()) :: {:ok, t()} | {:error, error()}
   def from_jid(jid) when is_binary(jid) do
     case JID.parse(jid) do
@@ -41,6 +42,7 @@ defmodule BaileysEx.Signal.Address do
 
   def from_jid(_jid), do: {:error, :invalid_signal_address}
 
+  @doc "Formats a Signal protocol address structure to its native string identifier payload."
   @spec to_string(t()) :: String.t()
   def to_string(%__MODULE__{name: name, device_id: device_id}), do: "#{name}.#{device_id}"
 

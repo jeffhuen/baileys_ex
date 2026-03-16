@@ -69,6 +69,9 @@ defmodule BaileysEx.Auth.State do
     next_pre_key_id: 1
   ]
 
+  @doc """
+  Initializes a new authentication state with generated keys.
+  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) when is_list(opts) do
     identity_key = Keyword.get_lazy(opts, :signed_identity_key, &Curve.generate_key_pair/0)
@@ -105,6 +108,9 @@ defmodule BaileysEx.Auth.State do
 
   def get(state, key, default \\ nil)
 
+  @doc """
+  Fetches a value from the auth state or its nested credentials structure.
+  """
   @spec get(t() | map(), atom(), term()) :: term()
   def get(%__MODULE__{} = state, key, default) when is_atom(key) do
     case Map.fetch(state, key) do
@@ -124,12 +130,18 @@ defmodule BaileysEx.Auth.State do
 
   def get(_state, _key, default), do: default
 
+  @doc """
+  Returns a `creds` viewing projection mapping suitable for saving standalone.
+  """
   @spec creds_view(t() | map()) :: map()
   def creds_view(%{creds: creds}) when is_map(creds), do: creds
   def creds_view(%__MODULE__{} = state), do: Map.from_struct(state)
   def creds_view(%{} = state), do: state
   def creds_view(_state), do: %{}
 
+  @doc """
+  Deeply merges arbitrary map updates into the authentication state struct.
+  """
   @spec merge_updates(t() | map(), map()) :: t() | map()
   def merge_updates(%__MODULE__{} = state, updates) when is_map(updates) do
     Enum.reduce(updates, state, fn

@@ -24,6 +24,9 @@ defmodule BaileysEx.Message.NotificationHandler do
           optional(:resync_app_state_fun) => (String.t() -> term())
         }
 
+  @doc """
+  Processes a raw envelope notification node and maps it to runtime events.
+  """
   @spec process_node(BinaryNode.t(), context()) :: :ok
   def process_node(%BinaryNode{tag: "notification", attrs: %{"type" => type}} = node, context) do
     dispatch_notification(type, node, context)

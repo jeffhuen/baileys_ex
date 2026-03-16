@@ -26,6 +26,9 @@ defmodule BaileysEx.Message.Decode do
           required(:addressing_mode) => :pn | :lid
         }
 
+  @doc """
+  Decodes a protocol envelope from the given binary node, analyzing addressing.
+  """
   @spec decode_envelope(BinaryNode.t(), context()) ::
           {:ok, envelope(), context()} | {:error, term()}
   def decode_envelope(
@@ -55,6 +58,9 @@ defmodule BaileysEx.Message.Decode do
     end
   end
 
+  @doc """
+  Extracts basic addressing details (mode and alternate identifiers) from a node.
+  """
   def extract_addressing_context(%BinaryNode{attrs: attrs}) do
     sender = attrs["participant"] || attrs["from"]
     addressing_mode = addressing_mode(attrs["addressing_mode"], sender)

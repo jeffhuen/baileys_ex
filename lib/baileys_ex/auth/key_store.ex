@@ -48,18 +48,27 @@ defmodule BaileysEx.Auth.KeyStore do
           delay_between_tries_ms: non_neg_integer()
         }
 
+  @doc """
+  Starts the transactional key store linked to the current process.
+  """
   @impl true
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
   end
 
+  @doc """
+  Creates a read-only query ref struct to pass directly into reads.
+  """
   @impl true
   @spec wrap(pid()) :: Ref.t()
   def wrap(pid) when is_pid(pid) do
     %Ref{pid: pid, table: GenServer.call(pid, :table)}
   end
 
+  @doc """
+  Fetches an array of identifiers for a given data type.
+  """
   @impl true
   @spec get(Ref.t(), BaileysEx.Signal.Store.data_type(), [String.t()]) ::
           BaileysEx.Signal.Store.data_entries()
@@ -74,6 +83,9 @@ defmodule BaileysEx.Auth.KeyStore do
     end
   end
 
+  @doc """
+  Sets arbitrary mutations into the persistence backend.
+  """
   @impl true
   @spec set(Ref.t(), BaileysEx.Signal.Store.data_set()) :: :ok
   def set(%Ref{} = ref, data) when is_map(data) do
@@ -93,6 +105,9 @@ defmodule BaileysEx.Auth.KeyStore do
     end
   end
 
+  @doc """
+  Clears all keys from persistence.
+  """
   @impl true
   @spec clear(Ref.t()) :: :ok
   def clear(%Ref{} = ref) do
@@ -102,6 +117,10 @@ defmodule BaileysEx.Auth.KeyStore do
     end
   end
 
+  @doc """
+  Acquires an exclusive lock tied to `key` before running the `fun`.
+  Errors safely roll back changes if commit fails.
+  """
   @impl true
   @spec transaction(Ref.t(), String.t(), (-> result)) :: result when result: var
   def transaction(%Ref{} = ref, key, fun) when is_binary(key) and is_function(fun, 0) do
@@ -127,6 +146,9 @@ defmodule BaileysEx.Auth.KeyStore do
     end
   end
 
+  @doc """
+  Returns true if the current process is in an active transaction context.
+  """
   @impl true
   @spec in_transaction?(Ref.t()) :: boolean()
   def in_transaction?(%Ref{} = ref), do: not is_nil(current_tx(ref))

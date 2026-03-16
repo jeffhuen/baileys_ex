@@ -16,6 +16,9 @@ defmodule BaileysEx.Auth.Pairing do
   @hosted_account_sig_prefix <<6, 5>>
   @s_whatsapp_net "s.whatsapp.net"
 
+  @doc """
+  Configures the successful device or phone pairing based on a pair-success payload.
+  """
   @spec configure_successful_pairing(BinaryNode.t(), map()) ::
           {:ok, %{reply: BinaryNode.t(), creds_update: map()}} | {:error, term()}
   def configure_successful_pairing(%BinaryNode{} = stanza, auth_state) when is_map(auth_state) do

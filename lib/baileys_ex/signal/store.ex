@@ -55,6 +55,7 @@ defmodule BaileysEx.Signal.Store do
 
   defstruct [:module, :ref]
 
+  @doc "Initializes and starts the underlying data store process/pool."
   @spec start_link(keyword()) :: {:ok, t()} | :ignore | {:error, term()}
   def start_link(opts \\ []) do
     module = Keyword.get(opts, :module, Memory)
@@ -66,19 +67,24 @@ defmodule BaileysEx.Signal.Store do
     end
   end
 
+  @doc "Extracts values from the store sequentially resolving cache items."
   @spec get(t(), data_type(), [String.t()]) :: data_entries()
   def get(%__MODULE__{} = store, type, ids), do: store.module.get(store.ref, type, ids)
 
+  @doc "Persists an explicitly typed data set definition back to the store."
   @spec set(t(), data_set()) :: :ok
   def set(%__MODULE__{} = store, data), do: store.module.set(store.ref, data)
 
+  @doc "Flushes the data store completely."
   @spec clear(t()) :: :ok
   def clear(%__MODULE__{} = store), do: store.module.clear(store.ref)
 
+  @doc "Executes work inside of a logically consistent mutex isolated transaction."
   @spec transaction(t(), String.t(), (-> result)) :: result when result: var
   def transaction(%__MODULE__{} = store, key, fun),
     do: store.module.transaction(store.ref, key, fun)
 
+  @doc "Examines if identical transaction processes cover the ongoing context stack."
   @spec in_transaction?(t()) :: boolean()
   def in_transaction?(%__MODULE__{} = store), do: store.module.in_transaction?(store.ref)
 end

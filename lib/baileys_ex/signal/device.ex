@@ -16,6 +16,7 @@ defmodule BaileysEx.Signal.Device do
           optional(atom()) => term()
         }
 
+  @doc "Collects linked devices for recipient sets, loading them via the signal store or via USync device info packets."
   @spec get_devices(context(), [String.t()], keyword()) ::
           {:ok, context(), [String.t()]} | {:error, term()}
   def get_devices(context, jids, opts \\ [])

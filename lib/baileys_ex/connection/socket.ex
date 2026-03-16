@@ -99,6 +99,9 @@ defmodule BaileysEx.Connection.Socket do
     epoch: 0
   ]
 
+  @doc """
+  Starts the Socket GenStatem process.
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
     gen_statem_opts = Keyword.get(opts, :gen_statem_opts, [])
@@ -112,6 +115,9 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  @doc """
+  Supervisor child specification override.
+  """
   @spec child_spec(keyword()) :: Elixir.Supervisor.child_spec()
   def child_spec(opts) do
     %{
@@ -123,15 +129,27 @@ defmodule BaileysEx.Connection.Socket do
     }
   end
 
+  @doc """
+  Commands the socket to establish a connection.
+  """
   @spec connect(GenServer.server()) :: :ok | {:error, {:invalid_state, state()}}
   def connect(server), do: :gen_statem.call(server, :connect)
 
+  @doc """
+  Disconnects the active connection.
+  """
   @spec disconnect(GenServer.server()) :: :ok
   def disconnect(server), do: :gen_statem.call(server, :disconnect)
 
+  @doc """
+  Logs out from the server and closes the connection.
+  """
   @spec logout(GenServer.server()) :: :ok | {:error, :not_connected}
   def logout(server), do: :gen_statem.call(server, :logout)
 
+  @doc """
+  Requests a pairing code for a companion device linking flow.
+  """
   @spec request_pairing_code(GenServer.server(), binary(), keyword()) ::
           {:ok, binary()} | {:error, :not_connected | term()}
   def request_pairing_code(server, phone_number, opts \\ [])
@@ -139,9 +157,15 @@ defmodule BaileysEx.Connection.Socket do
     :gen_statem.call(server, {:request_pairing_code, phone_number, opts})
   end
 
+  @doc """
+  Sends an outbound binary node to the server.
+  """
   @spec send_node(GenServer.server(), BinaryNode.t()) :: :ok | {:error, :not_connected | term()}
   def send_node(server, %BinaryNode{} = node), do: :gen_statem.call(server, {:send_node, node})
 
+  @doc """
+  Performs an IQ query cycle and awaits the node response.
+  """
   @spec query(GenServer.server(), BinaryNode.t(), timeout()) ::
           {:ok, BinaryNode.t()} | {:error, :not_connected | :timeout | term()}
   def query(server, %BinaryNode{} = node, timeout \\ 60_000)
@@ -161,6 +185,9 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  @doc """
+  Pushes a presence update to the network.
+  """
   @spec send_presence_update(GenServer.server(), presence_type()) ::
           :ok | {:error, :not_connected | term()}
   def send_presence_update(server, type) when type in [:available, :unavailable] do
@@ -186,12 +213,21 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  @doc """
+  Returns the internal state of the state machine.
+  """
   @spec state(GenServer.server()) :: state()
   def state(server), do: :gen_statem.call(server, :state)
 
+  @doc """
+  Exports a snapshot representation of the socket.
+  """
   @spec snapshot(GenServer.server()) :: snapshot()
   def snapshot(server), do: :gen_statem.call(server, :snapshot)
 
+  @doc """
+  Bypass the protocol and send a raw binary payload.
+  """
   @spec send_payload(GenServer.server(), binary()) :: :ok | {:error, :not_connected | term()}
   def send_payload(server, payload) when is_binary(payload),
     do: :gen_statem.call(server, {:send_payload, payload})
@@ -224,13 +260,17 @@ defmodule BaileysEx.Connection.Socket do
     {:ok, :disconnected, data}
   end
 
+  @doc false
   def disconnected(:enter, _old_state, data), do: {:keep_state, data}
 
+  @doc false
   def disconnected({:call, from}, request, data),
     do: handle_call(:disconnected, from, request, data)
 
+  @doc false
   def disconnected(_event_type, _event, data), do: {:keep_state, data}
 
+  @doc false
   def connecting(:enter, _old_state, data), do: {:keep_state, data}
 
   def connecting(:internal, :establish_transport, data) do
@@ -251,14 +291,18 @@ defmodule BaileysEx.Connection.Socket do
 
   def noise_handshake(:enter, _old_state, data), do: {:keep_state, data}
 
+  @doc false
   def noise_handshake(:info, message, data),
     do: handle_transport_message(:noise_handshake, message, data)
 
+  @doc false
   def noise_handshake({:call, from}, request, data),
     do: handle_call(:noise_handshake, from, request, data)
 
+  @doc false
   def noise_handshake(_event_type, _event, data), do: {:keep_state, data}
 
+  @doc false
   def authenticating(:enter, _old_state, data), do: {:keep_state, data}
 
   def authenticating(:info, {:internal_creds_update, creds_update}, data),
@@ -291,8 +335,11 @@ defmodule BaileysEx.Connection.Socket do
     do: {:keep_state, expire_query(data, query_id)}
 
   def connected(:info, :keep_alive, data), do: send_keep_alive(data)
+  @doc false
   def connected(:info, message, data), do: handle_transport_message(:connected, message, data)
+  @doc false
   def connected({:call, from}, request, data), do: handle_call(:connected, from, request, data)
+  @doc false
   def connected(_event_type, _event, data), do: {:keep_state, data}
 
   defp handle_call(current_state, from, :state, data) do

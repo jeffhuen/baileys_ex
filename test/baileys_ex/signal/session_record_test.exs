@@ -70,6 +70,19 @@ defmodule BaileysEx.Signal.SessionRecordTest do
     refute SessionRecord.empty?(record)
   end
 
+  test "close_session accepts injected close timestamps for deterministic callers" do
+    record = SessionRecord.new()
+    session = make_session()
+    base_key = session.index_info.base_key
+
+    record =
+      record
+      |> SessionRecord.put_session(base_key, session)
+      |> SessionRecord.close_session(base_key, closed_at: 123_456)
+
+    assert 123_456 == get_in(record.sessions[base_key], [:index_info, :closed])
+  end
+
   test "close_open_session closes the current open session" do
     record = SessionRecord.new()
     session = make_session()

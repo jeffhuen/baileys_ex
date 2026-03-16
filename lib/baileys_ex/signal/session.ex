@@ -17,6 +17,7 @@ defmodule BaileysEx.Signal.Session do
           optional(atom()) => term()
         }
 
+  @doc "Validates that active E2E sessions exist for the specified JIDs, fetching any missing pre-keys."
   @spec assert_sessions(context(), [String.t()], keyword()) ::
           {:ok, context(), boolean()} | {:error, term()}
   def assert_sessions(
@@ -37,6 +38,7 @@ defmodule BaileysEx.Signal.Session do
 
   def assert_sessions(_context, _jids, _opts), do: {:error, :query_fun_not_configured}
 
+  @doc "Decodes E2E session pre-keys from the server payload and injects them into the signal repository."
   @spec parse_and_inject_e2e_sessions(BinaryNode.t(), Repository.t()) ::
           {:ok, Repository.t()} | {:error, term()}
   def parse_and_inject_e2e_sessions(%BinaryNode{} = response, %Repository{} = repo) do

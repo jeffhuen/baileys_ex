@@ -27,16 +27,25 @@ defmodule BaileysEx.Message.OfflineQueue do
           continue?: boolean()
         }
 
+  @doc """
+  Initializes a new offline queue.
+  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     %__MODULE__{batch_size: Keyword.get(opts, :batch_size, 10)}
   end
 
+  @doc """
+  Pushes a new node onto the offline processing queue.
+  """
   @spec enqueue(t(), node_type(), BinaryNode.t()) :: t()
   def enqueue(%__MODULE__{} = state, type, %BinaryNode{} = node) when type in @valid_types do
     %{state | queue: :queue.in({type, node}, state.queue)}
   end
 
+  @doc """
+  Drains up to the configured batch size of nodes from the queue.
+  """
   @spec drain(t(), map(), (node_type(), BinaryNode.t() -> :ok | {:error, term()})) ::
           {:ok, t(), drain_result()} | {:error, term(), t()}
   def drain(%__MODULE__{} = state, context, processor) when is_function(processor, 2) do

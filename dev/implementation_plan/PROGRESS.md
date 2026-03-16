@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-15
+> Last updated: 2026-03-16
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -23,7 +23,8 @@
 | 9 | Media | 9 | COMPLETE | 2, 8 | 12 |
 | 10 | Features | 17 | COMPLETE | 8 | 11 |
 | 11 | Advanced Features | 5 | COMPLETE | 10 | 12 |
-| 12 | Polish | 7 | COMPLETE | All | — |
+| 12 | Polish | 7 | COMPLETE | All | 13 |
+| 13 | Internal Parity Validation | 6 | NOT STARTED | 12 | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -836,13 +837,65 @@ socket-layer `w:stats` IQ path.
 
 ---
 
+## Phase 13: Internal Parity Validation
+
+**Status:** NOT STARTED · **Depends on:** Phase 12 · **Blocks:** —
+
+Internal-only note: this phase is contributor tooling only. Nothing here should
+be added to `user_docs/`, the public API surface, or the Hex package artifact
+set.
+
+### Tasks
+
+- [ ] 13.1 Offline parity harness foundation
+- [ ] 13.2 Fixture and vector generation pipeline
+- [ ] 13.3 Offline parity suites by subsystem
+- [ ] 13.4 Internal parity commands and contributor docs
+- [ ] 13.5 Internal CI hook for offline parity
+- [ ] 13.6 Manual live-validation harness skeleton
+
+### Acceptance Criteria
+
+- [ ] All Phase 13 tooling lives only under `dev/`, `test/`, `test/support/`, and optional internal CI files
+- [ ] Offline parity runner executes the pinned Baileys reference and returns normalized outputs to ExUnit
+- [ ] Existing Baileys-generated media, Signal, syncd, and WAM vectors are folded into a single internal parity program
+- [ ] Dedicated `:parity` test suites cover representative protocol, auth, messaging, feature, syncd, and WAM surfaces
+- [ ] For the covered surfaces, the parity harness asserts the same observable behavior Baileys produces for the same inputs: outputs, parsed values, emitted events, deterministic side effects, and error semantics
+- [ ] Offline parity assertions derive expectations from Baileys or committed Baileys-generated fixtures, not duplicated Elixir logic
+- [ ] Offline parity tests are contributor-only and not required for end users or Hex consumers
+- [ ] Internal CI can run the offline parity suite on demand without changing the public delivery gates
+- [ ] A manual live-validation harness exists for dedicated test accounts, with env-driven setup and a written checklist
+- [ ] Phase completion does not require live-account access, but the live harness is ready when accounts exist
+- [ ] `PROGRESS.md`, `00-overview.md`, and internal parity docs clearly mark this phase as non-shipping internal tooling
+
+### Files
+
+| File | Status |
+|------|--------|
+| `dev/implementation_plan/13-parity-testing.md` | ✅ |
+| `dev/parity/README.md` | ⬜ |
+| `dev/parity/live/README.md` | ⬜ |
+| `dev/parity/live/checklist.md` | ⬜ |
+| `dev/tools/run_baileys_reference.mts` | ⬜ |
+| `dev/tools/generate_parity_vectors.mts` | ⬜ |
+| `dev/scripts/run_parity_suite.sh` | ⬜ |
+| `dev/scripts/regenerate_parity_fixtures.sh` | ⬜ |
+| `dev/scripts/run_live_validation.exs` | ⬜ |
+| `test/support/parity/node_bridge.ex` | ⬜ |
+| `test/support/parity/case.ex` | ⬜ |
+| `test/baileys_ex/parity/**/*_test.exs` | ⬜ |
+| `test/fixtures/parity/**/*` | ⬜ |
+| `.github/workflows/parity-internal.yml` | ⬜ |
+
+---
+
 ## Totals
 
 | Metric | Count |
 |--------|-------|
-| Phases | 12 |
-| Tasks | 101 |
-| Acceptance Criteria | 148 |
-| Source Files | ~80 |
-| Test Files | ~30 |
+| Phases | 13 |
+| Tasks | 107 |
+| Acceptance Criteria | 159 |
+| Source Files | ~90 |
+| Test Files | ~35 |
 | GAP items resolved | 48/48 |

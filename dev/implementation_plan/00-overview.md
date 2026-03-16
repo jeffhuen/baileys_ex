@@ -270,6 +270,11 @@ Phase 11: Advanced Features ─────────────────�
 Phase 12: Polish ─────────────────────────────────────────────────
   Telemetry, docs, examples, hex publish
   Depends on: All phases
+
+Phase 13: Internal Parity Validation ────────────────────────────
+  Dev-only Baileys parity tooling: offline Node-vs-Elixir checks plus a
+  manual live-validation harness for dedicated test accounts
+  Depends on: Phase 12 (Polish)
 ```
 
 ## Parallelization Opportunities
@@ -293,10 +298,12 @@ Phase 12: Polish ─────────────────────
           /         \
     Phase 9        Phase 10
     (Media)        (Features)
-        \         /
+       \         /
        Phase 11 (Advanced)
             |
        Phase 12 (Polish)
+            |
+  Phase 13 (Internal Parity)
 ```
 
 Phases 2, 3, and 4 can run in parallel after Phase 1.
@@ -338,4 +345,7 @@ BaileysEx.disconnect(conn)
 - **Protocol layer**: Unit tests with captured binary data from Baileys test fixtures.
 - **Connection layer**: Integration tests with mock WebSocket server.
 - **Feature modules**: Unit tests constructing/parsing binary nodes.
+- **Internal parity tooling**: dev-only Node-backed parity tests compare Elixir output
+  against the pinned `dev/reference/Baileys-master/` implementation offline, plus a
+  manual live-validation harness for dedicated WhatsApp test accounts.
 - **End-to-end**: Optional integration test suite against WhatsApp sandbox (manual, not CI).

@@ -104,8 +104,9 @@ on_event: fn events -> IO.inspect(events, label: "raw events") end
 
 Receives the buffered raw event map before the public facade normalizes it.
 
-Outbound `send_message/4` and `send_status/3` require one of the Signal repository
-options below. BaileysEx does not build a default repository adapter during `connect/2`.
+By default, `connect/2` builds the built-in production Signal repository adapter
+when the auth state includes `signed_identity_key`, `signed_pre_key`, and
+`registration_id`. Use the options below when you need to override that default.
 
 ### `signal_repository`
 
@@ -129,7 +130,7 @@ Use this when you want to inject a prebuilt repository into the coordinator.
 signal_repository_adapter: MyApp.SignalAdapter
 ```
 
-Advanced only. This sets the repository adapter used for end-to-end encryption operations.
+Advanced only. This overrides the repository adapter used for end-to-end encryption operations.
 
 ### `signal_repository_adapter_state`
 

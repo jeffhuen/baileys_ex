@@ -37,9 +37,10 @@ defmodule BaileysEx do
   Advanced callers can obtain the raw socket transport tuple via `queryable/1`
   and pass it directly to the lower-level feature modules.
 
-  Outbound `send_message/4` and `send_status/3` require `connect/2` to be started
-  with either `:signal_repository` or `:signal_repository_adapter`. BaileysEx does
-  not wire a default Signal repository adapter into the runtime yet.
+  Outbound `send_message/4` and `send_status/3` use the built-in production Signal
+  adapter by default when the auth state includes `signed_identity_key`,
+  `signed_pre_key`, and `registration_id`. Use `:signal_repository` or
+  `:signal_repository_adapter` only when you need to override that default.
   """
 
   alias BaileysEx.Connection.Supervisor, as: ConnectionSupervisor
@@ -164,8 +165,9 @@ defmodule BaileysEx do
   @doc """
   Send a message to a WhatsApp JID through the coordinator-managed runtime.
 
-  This requires `connect/2` to be started with `:signal_repository` or
-  `:signal_repository_adapter`.
+  By default, `connect/2` builds the production Signal adapter when the auth state
+  includes `signed_identity_key`, `signed_pre_key`, and `registration_id`. Use
+  `:signal_repository` or `:signal_repository_adapter` only to override it.
   """
   @spec send_message(connection(), String.t() | JID.t(), map() | struct(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -178,8 +180,9 @@ defmodule BaileysEx do
   @doc """
   Send a status update through the `status@broadcast` fanout path.
 
-  This requires `connect/2` to be started with `:signal_repository` or
-  `:signal_repository_adapter`.
+  By default, `connect/2` builds the production Signal adapter when the auth state
+  includes `signed_identity_key`, `signed_pre_key`, and `registration_id`. Use
+  `:signal_repository` or `:signal_repository_adapter` only to override it.
   """
   @spec send_status(connection(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def send_status(connection, content, opts \\ []) when is_map(content) and is_list(opts) do

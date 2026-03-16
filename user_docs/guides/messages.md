@@ -7,7 +7,8 @@ Use this guide when you want to send anything that is not primarily a media uplo
 Send a plain text message with `BaileysEx.send_message/4`.
 
 All outbound send examples on this page assume the connection was started with
-`connect/2` using `:signal_repository` or `:signal_repository_adapter`.
+`connect/2` with the default Signal credentials in auth state, or override the
+repository explicitly with `:signal_repository` or `:signal_repository_adapter`.
 
 ```elixir
 {:ok, _sent} =
@@ -80,7 +81,7 @@ These options matter most for everyday message sending:
 - The public facade sends message payloads that `BaileysEx.Message.Builder` supports today. It does not add a second abstraction layer over the builder.
 - Outbound interactive templates are not covered by the top-level facade. The currently supported reply payloads are listed in the message-types reference.
 - If you pass an invalid JID, `BaileysEx.send_message/4` returns `{:error, :invalid_jid}`.
-- If the connection was started without `:signal_repository` or `:signal_repository_adapter`, `BaileysEx.send_message/4` returns `{:error, :signal_repository_not_ready}`.
+- If the auth state does not include `signed_identity_key`, `signed_pre_key`, and `registration_id`, and you do not override the repository explicitly, `BaileysEx.send_message/4` returns `{:error, :signal_repository_not_ready}`.
 
 ---
 

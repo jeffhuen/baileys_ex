@@ -98,7 +98,9 @@ defmodule BaileysEx.Connection.SocketTest do
 
     Kernel.send(pid, {:scripted_transport, :connected})
 
-    assert_receive {:transport_sent, client_hello}
+    assert_receive {:transport_sent, framed_client_hello}
+
+    client_hello = NoiseServer.strip_handshake_frame(framed_client_hello)
 
     assert {:ok,
             %HandshakeMessage{
@@ -133,7 +135,9 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert :ok = Socket.connect(pid)
     Kernel.send(pid, {:scripted_transport, :connected})
-    assert_receive {:transport_sent, client_hello}
+    assert_receive {:transport_sent, framed_client_hello}
+
+    client_hello = NoiseServer.strip_handshake_frame(framed_client_hello)
 
     assert {:ok, server_hello, server_state} =
              NoiseServer.build_server_hello(client_hello,
@@ -143,9 +147,12 @@ defmodule BaileysEx.Connection.SocketTest do
                issuer_serial: trusted_cert.serial
              )
 
-    Kernel.send(pid, {:scripted_transport, {:binary, server_hello}})
+    framed_server_hello = NoiseServer.frame_handshake_response(server_hello)
+    Kernel.send(pid, {:scripted_transport, {:binary, framed_server_hello}})
 
-    assert_receive {:transport_sent, client_finish}
+    assert_receive {:transport_sent, framed_client_finish}
+
+    client_finish = NoiseServer.strip_handshake_frame(framed_client_finish)
 
     assert {:ok, %{client_payload: client_payload, client_static: client_static}} =
              NoiseServer.process_client_finish(server_state, client_finish)
@@ -181,7 +188,9 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert :ok = Socket.connect(pid)
     Kernel.send(pid, {:scripted_transport, :connected})
-    assert_receive {:transport_sent, client_hello}
+    assert_receive {:transport_sent, framed_client_hello}
+
+    client_hello = NoiseServer.strip_handshake_frame(framed_client_hello)
 
     assert {:ok, server_hello, server_state} =
              NoiseServer.build_server_hello(client_hello,
@@ -191,9 +200,12 @@ defmodule BaileysEx.Connection.SocketTest do
                issuer_serial: trusted_cert.serial
              )
 
-    Kernel.send(pid, {:scripted_transport, {:binary, server_hello}})
+    framed_server_hello = NoiseServer.frame_handshake_response(server_hello)
+    Kernel.send(pid, {:scripted_transport, {:binary, framed_server_hello}})
 
-    assert_receive {:transport_sent, client_finish}
+    assert_receive {:transport_sent, framed_client_finish}
+
+    client_finish = NoiseServer.strip_handshake_frame(framed_client_finish)
 
     assert {:ok, %{client_payload: client_payload}} =
              NoiseServer.process_client_finish(server_state, client_finish)
@@ -227,8 +239,9 @@ defmodule BaileysEx.Connection.SocketTest do
     assert_receive {:transport_sent, _client_hello}
 
     invalid_server_hello = HandshakeMessage.encode(%HandshakeMessage{})
+    framed_invalid = NoiseServer.frame_handshake_response(invalid_server_hello)
 
-    Kernel.send(pid, {:scripted_transport, {:binary, invalid_server_hello}})
+    Kernel.send(pid, {:scripted_transport, {:binary, framed_invalid}})
 
     assert_eventually(fn ->
       Socket.snapshot(pid) == %{
@@ -1432,7 +1445,9 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert :ok = Socket.connect(pid)
     Kernel.send(pid, {:scripted_transport, :connected})
-    assert_receive {:transport_sent, client_hello}
+    assert_receive {:transport_sent, framed_client_hello}
+
+    client_hello = NoiseServer.strip_handshake_frame(framed_client_hello)
 
     assert {:ok, server_hello, server_state} =
              NoiseServer.build_server_hello(client_hello,
@@ -1442,8 +1457,11 @@ defmodule BaileysEx.Connection.SocketTest do
                issuer_serial: trusted_cert.serial
              )
 
-    Kernel.send(pid, {:scripted_transport, {:binary, server_hello}})
-    assert_receive {:transport_sent, client_finish}
+    framed_server_hello = NoiseServer.frame_handshake_response(server_hello)
+    Kernel.send(pid, {:scripted_transport, {:binary, framed_server_hello}})
+    assert_receive {:transport_sent, framed_client_finish}
+
+    client_finish = NoiseServer.strip_handshake_frame(framed_client_finish)
 
     assert {:ok, %{transport: server_transport}} =
              NoiseServer.process_client_finish(server_state, client_finish)

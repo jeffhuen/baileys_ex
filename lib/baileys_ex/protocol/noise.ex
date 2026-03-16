@@ -177,7 +177,10 @@ defmodule BaileysEx.Protocol.Noise do
   end
 
   @doc """
-  Build the client finish `HandshakeMessage` and transition into transport mode.
+  Build the client finish `HandshakeMessage`.
+
+  Transport mode does not begin until `finish_init/1` is called after the framed
+  handshake message has been sent on the wire.
   """
   @spec client_finish(t(), binary()) :: {:ok, {t(), binary()}} | {:error, term()}
   def client_finish(%__MODULE__{pending_static: nil}, _client_payload) do
@@ -189,8 +192,7 @@ defmodule BaileysEx.Protocol.Noise do
   end
 
   def client_finish(%__MODULE__{} = state, client_payload) do
-    with {:ok, state, payload} <- encrypt_handshake(state, client_payload),
-         {:ok, state} <- finish_transport(state) do
+    with {:ok, state, payload} <- encrypt_handshake(state, client_payload) do
       message =
         HandshakeMessage.encode(%HandshakeMessage{
           client_finish: %ClientFinish{
@@ -201,6 +203,19 @@ defmodule BaileysEx.Protocol.Noise do
 
       {:ok, {%{state | pending_static: nil}, message}}
     end
+  rescue
+    error -> {:error, normalize_error(error)}
+  end
+
+  @doc """
+  Transition the Noise state into transport mode after the framed handshake has
+  been sent.
+  """
+  @spec finish_init(t()) :: {:ok, t()} | {:error, term()}
+  def finish_init(%__MODULE__{transport: %TransportState{}} = state), do: {:ok, state}
+
+  def finish_init(%__MODULE__{} = state) do
+    finish_transport(state)
   rescue
     error -> {:error, normalize_error(error)}
   end

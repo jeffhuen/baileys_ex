@@ -13,23 +13,23 @@ defmodule BaileysEx.Signal.Session do
 
   @type context :: %{
           required(:signal_repository) => Repository.t(),
-          required(:query_fun) => (BinaryNode.t() -> {:ok, BinaryNode.t()} | {:error, term()}),
+          optional(:query_fun) => (BinaryNode.t() -> {:ok, BinaryNode.t()} | {:error, term()}),
           optional(atom()) => term()
         }
 
   @spec assert_sessions(context(), [String.t()], keyword()) ::
           {:ok, context(), boolean()} | {:error, term()}
   def assert_sessions(
-        %{signal_repository: %Repository{} = repo, query_fun: query_fun} = context,
+        %{signal_repository: %Repository{} = repo} = context,
         jids,
         opts
       )
-      when is_list(jids) and is_function(query_fun, 1) do
+      when is_list(jids) do
     force? = Keyword.get(opts, :force, false)
 
     with {:ok, repo, jids_requiring_fetch} <- jids_requiring_fetch(repo, jids, force?),
          {:ok, repo, wire_jids} <- resolve_wire_jids(repo, jids_requiring_fetch),
-         {:ok, response} <- maybe_query_sessions(query_fun, wire_jids, force?),
+         {:ok, response} <- maybe_query_sessions(context[:query_fun], wire_jids, force?),
          {:ok, repo} <- parse_and_inject_e2e_sessions(response, repo) do
       {:ok, %{context | signal_repository: repo}, wire_jids != []}
     end
@@ -114,9 +114,12 @@ defmodule BaileysEx.Signal.Session do
   defp maybe_query_sessions(_query_fun, [], _force?),
     do: {:ok, %BinaryNode{tag: "iq", attrs: %{}, content: []}}
 
-  defp maybe_query_sessions(query_fun, wire_jids, force?) do
+  defp maybe_query_sessions(query_fun, wire_jids, force?) when is_function(query_fun, 1) do
     query_fun.(assert_sessions_node(wire_jids, force?))
   end
+
+  defp maybe_query_sessions(_query_fun, _wire_jids, _force?),
+    do: {:error, :query_fun_not_configured}
 
   defp assert_sessions_node(wire_jids, force?) do
     %BinaryNode{

@@ -64,7 +64,7 @@ defmodule BaileysEx.Protocol.NoiseTest do
     client_payload = "client finish payload"
 
     assert {:ok, {noise, client_finish}} = Noise.client_finish(noise, client_payload)
-    assert Noise.transport_ready?(noise)
+    refute Noise.transport_ready?(noise)
 
     assert {:ok,
             %{
@@ -72,6 +72,9 @@ defmodule BaileysEx.Protocol.NoiseTest do
               client_payload: ^client_payload,
               client_static: ^client_noise_public
             }} = process_client_finish(server_state, client_finish)
+
+    assert {:ok, noise} = Noise.finish_init(noise)
+    assert Noise.transport_ready?(noise)
 
     assert {:ok, {noise, client_frame}} = Noise.encode_frame(noise, "client ping")
 
@@ -195,6 +198,7 @@ defmodule BaileysEx.Protocol.NoiseTest do
     {:ok, noise} = Noise.process_server_hello(noise, server_hello, client_noise_key_pair)
     {:ok, {noise, client_finish}} = Noise.client_finish(noise, "payload")
     {:ok, %{transport: server_transport}} = process_client_finish(server_state, client_finish)
+    {:ok, noise} = Noise.finish_init(noise)
 
     {noise, server_transport}
   end

@@ -61,9 +61,10 @@ unsubscribe.()
 :ok = BaileysEx.disconnect(connection)
 ```
 
-Outbound `send_message/4` and `send_status/3` require `connect/2` to be started with
-either `:signal_repository` or `:signal_repository_adapter`. BaileysEx does not
-wire a default Signal repository adapter into the runtime yet.
+Outbound `send_message/4` and `send_status/3` use the built-in production Signal
+adapter by default when the auth state includes `signed_identity_key`,
+`signed_pre_key`, and `registration_id`. Use `:signal_repository` or
+`:signal_repository_adapter` only when you need to override that default.
 
 ## Public API
 

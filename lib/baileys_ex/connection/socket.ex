@@ -510,10 +510,20 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
-  defp apply_transport_event(:noise_handshake, {:binary, server_hello}, data) do
-    case finish_noise_handshake(data, server_hello) do
-      {:ok, data} -> {:ok, :authenticating, data}
-      {:error, reason, data} -> {:error, reason, data}
+  defp apply_transport_event(:noise_handshake, {:binary, raw_payload}, data) do
+    case Noise.decode_frames(data.noise, raw_payload) do
+      {:ok, {noise, [server_hello]}} ->
+        case finish_noise_handshake(%{data | noise: noise}, server_hello) do
+          {:ok, data} -> {:ok, :authenticating, data}
+          {:error, reason, data} -> {:error, reason, data}
+        end
+
+      {:ok, {_noise, []}} ->
+        # Partial frame — buffer accumulated in noise state, wait for more data
+        {:ok, :noise_handshake, data}
+
+      {:error, reason} ->
+        {:error, reason, data}
     end
   end
 
@@ -551,17 +561,16 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
-  defp finish_noise_handshake(%__MODULE__{noise: nil}, _server_hello),
-    do: {:error, :noise_not_initialized}
-
   defp finish_noise_handshake(data, server_hello) do
     with {:ok, noise_key_pair} <- fetch_noise_key_pair(data.auth_state),
          {:ok, client_payload} <-
            ConnectionValidator.generate_client_payload(data.auth_state, data.config),
          {:ok, noise} <- Noise.process_server_hello(data.noise, server_hello, noise_key_pair),
          {:ok, {noise, client_finish}} <- Noise.client_finish(noise, client_payload),
-         {:ok, data} <- do_send_transport_binary(%{data | noise: noise}, client_finish) do
-      {:ok, %{data | last_date_recv_at: monotonic_ms(data)}}
+         {:ok, %{noise: noise} = data} <-
+           send_transport_binary(%{data | noise: noise}, client_finish),
+         {:ok, noise} <- Noise.finish_init(noise) do
+      {:ok, %{data | noise: noise, last_date_recv_at: monotonic_ms(data)}}
     else
       {:error, reason, data} -> {:error, reason, data}
       {:error, reason} -> {:error, reason, data}
@@ -858,16 +867,12 @@ defmodule BaileysEx.Connection.Socket do
 
   defp send_transport_binary(%__MODULE__{noise: %Noise{} = noise} = data, payload)
        when is_binary(payload) do
-    if Noise.transport_ready?(noise) do
-      case Noise.encode_frame(noise, payload) do
-        {:ok, {noise, frame}} ->
-          do_send_transport_binary(%{data | noise: noise}, frame)
+    case Noise.encode_frame(noise, payload) do
+      {:ok, {noise, frame}} ->
+        do_send_transport_binary(%{data | noise: noise}, frame)
 
-        {:error, reason} ->
-          {:error, reason, data}
-      end
-    else
-      do_send_transport_binary(data, payload)
+      {:error, reason} ->
+        {:error, reason, data}
     end
   end
 

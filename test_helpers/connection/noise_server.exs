@@ -173,4 +173,23 @@ defmodule BaileysEx.TestSupport.Connection.NoiseServer do
   end
 
   defp generate_iv(counter), do: <<0::64, counter::32-big>>
+
+  @doc """
+  Strip the WA intro header and 3-byte length prefix from a framed handshake message.
+
+  The first message from the client includes the intro header (`<<87, 65, 6, 3>>`)
+  followed by a 3-byte big-endian length prefix. Subsequent messages only have the
+  3-byte prefix.
+  """
+  @spec strip_handshake_frame(binary()) :: binary()
+  def strip_handshake_frame(
+        <<87, 65, 6, 3, size::24-big, payload::binary-size(size), _::binary>>
+      ),
+      do: payload
+
+  def strip_handshake_frame(<<size::24-big, payload::binary-size(size), _::binary>>), do: payload
+
+  @doc "Wrap a handshake response in a 3-byte length-prefixed frame."
+  @spec frame_handshake_response(binary()) :: binary()
+  def frame_handshake_response(payload), do: <<byte_size(payload)::24-big, payload::binary>>
 end

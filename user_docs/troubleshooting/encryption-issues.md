@@ -7,15 +7,16 @@
 {:error, :signal_repository_not_ready}
 ```
 
-**Why this happens:** The connection was started without `:signal_repository` or
-`:signal_repository_adapter`, so the runtime has no Signal repository for outbound
-end-to-end encryption.
+**Why this happens:** `connect/2` could not build the default production Signal
+repository because the auth state was missing one of `signed_identity_key`,
+`signed_pre_key`, or `registration_id`, and you did not override it with
+`signal_repository:` or `signal_repository_adapter:`.
 
 **Fix:**
 
-Start `BaileysEx.connect/2` with either a prebuilt `signal_repository:` or a
-`signal_repository_adapter:` plus `signal_repository_adapter_state:`. BaileysEx
-does not attach a default adapter during connection startup.
+Either pass a full auth state with `signed_identity_key`, `signed_pre_key`, and
+`registration_id`, or override the default with a prebuilt `signal_repository:`
+or `signal_repository_adapter:` plus `signal_repository_adapter_state:`.
 
 ---
 

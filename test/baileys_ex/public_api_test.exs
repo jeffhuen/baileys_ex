@@ -3,12 +3,15 @@ defmodule BaileysEx.PublicApiTest do
 
   import ExUnit.CaptureLog
 
+  alias BaileysEx.Auth.State, as: AuthState
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Crypto
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Supervisor
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
   alias BaileysEx.TestHelpers.MessageSignalHelpers
@@ -260,6 +263,106 @@ defmodule BaileysEx.PublicApiTest do
 
     assert {:error, :signal_repository_not_ready} =
              BaileysEx.send_status(connection, %{text: "status"})
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "send_message/4 uses the default production Signal adapter when auth credentials are present" do
+    bundles = %{
+      "15551234567:0@s.whatsapp.net" => signal_bundle(200, 201, 202, 2_000, 5, 10),
+      "15550001111:2@s.whatsapp.net" => signal_bundle(300, 301, 302, 3_000, 6, 11)
+    }
+
+    query_handler = fn
+      %BinaryNode{
+        attrs: %{"xmlns" => "encrypt", "type" => "get"},
+        content: [%BinaryNode{tag: "key", content: users}]
+      },
+      _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "list",
+               attrs: %{},
+               content:
+                 Enum.map(users, fn %BinaryNode{tag: "user", attrs: %{"jid" => jid}} ->
+                   session_bundle_user_node(jid, Map.fetch!(bundles, jid))
+                 end)
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:error, :unexpected_query}
+    end
+
+    assert {:ok, connection} =
+             BaileysEx.connect(
+               signal_auth_state("15550001111:1@s.whatsapp.net"),
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self(),
+               query_handler: query_handler
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert %Store{} = signal_store = Supervisor.signal_store(connection)
+
+    assert :ok =
+             Store.set(signal_store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => ["1", "2"]}
+             })
+
+    assert {:ok, %{id: "3EB0DEFAULT"}} =
+             BaileysEx.send_message(connection, "15551234567@s.whatsapp.net", %{text: "hello"},
+               message_id_fun: fn _me_id -> "3EB0DEFAULT" end
+             )
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "encrypt", "type" => "get"},
+                      content: [
+                        %BinaryNode{
+                          tag: "key",
+                          content: [
+                            %BinaryNode{
+                              tag: "user",
+                              attrs: %{"jid" => "15551234567:0@s.whatsapp.net"}
+                            },
+                            %BinaryNode{
+                              tag: "user",
+                              attrs: %{"jid" => "15550001111:2@s.whatsapp.net"}
+                            }
+                          ]
+                        }
+                      ]
+                    }, _timeout}
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{"id" => "3EB0DEFAULT", "to" => "15551234567@s.whatsapp.net"},
+                      content: content
+                    }}
+
+    assert %BinaryNode{tag: "participants", content: participants} =
+             Enum.find(content, &match?(%BinaryNode{tag: "participants"}, &1))
+
+    assert Enum.any?(participants, fn
+             %BinaryNode{
+               tag: "to",
+               attrs: %{"jid" => "15551234567:0@s.whatsapp.net"},
+               content: [%BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg"}}]
+             } ->
+               true
+
+             _ ->
+               false
+           end)
 
     assert :ok = BaileysEx.disconnect(connection)
   end
@@ -610,5 +713,103 @@ defmodule BaileysEx.PublicApiTest do
     Store.set(signal_store, %{
       :"device-list" => %{"15551234567" => ["0"], "15550001111" => ["1", "2"]}
     })
+  end
+
+  defp signal_key_pair(seed), do: Crypto.generate_key_pair(:x25519, private_key: <<seed::256>>)
+
+  defp signal_auth_state(me_id) do
+    identity_key = signal_key_pair(100)
+    signed_pre_key_pair = signal_key_pair(101)
+    {:ok, signed_pre_key} = Curve.signed_key_pair(identity_key, 1, key_pair: signed_pre_key_pair)
+
+    AuthState.new(
+      signed_identity_key: identity_key,
+      signed_pre_key: signed_pre_key,
+      registration_id: 1_234
+    )
+    |> AuthState.merge_updates(%{me: %{id: me_id, name: "Bailey"}})
+  end
+
+  defp signal_bundle(
+         identity_seed,
+         signed_pre_key_seed,
+         pre_key_seed,
+         registration_id,
+         signed_pre_key_id,
+         pre_key_id
+       ) do
+    identity_key = signal_key_pair(identity_seed)
+    signed_pre_key_pair = signal_key_pair(signed_pre_key_seed)
+    pre_key_pair = signal_key_pair(pre_key_seed)
+
+    {:ok, signed_pre_key_public} = Curve.generate_signal_pub_key(signed_pre_key_pair.public)
+    {:ok, signature} = Curve.sign(identity_key.private, signed_pre_key_public)
+
+    %{
+      registration_id: registration_id,
+      identity_key: identity_key.public,
+      signed_pre_key: %{
+        key_id: signed_pre_key_id,
+        public_key: signed_pre_key_pair.public,
+        signature: signature
+      },
+      pre_key: %{key_id: pre_key_id, public_key: pre_key_pair.public}
+    }
+  end
+
+  defp session_bundle_user_node(jid, bundle) do
+    %BinaryNode{
+      tag: "user",
+      attrs: %{"jid" => jid},
+      content: [
+        %BinaryNode{
+          tag: "registration",
+          attrs: %{},
+          content: {:binary, <<bundle.registration_id::unsigned-big-32>>}
+        },
+        %BinaryNode{
+          tag: "identity",
+          attrs: %{},
+          content: {:binary, bundle.identity_key}
+        },
+        %BinaryNode{
+          tag: "skey",
+          attrs: %{},
+          content: [
+            %BinaryNode{
+              tag: "id",
+              attrs: %{},
+              content: {:binary, <<bundle.signed_pre_key.key_id::unsigned-big-32>>}
+            },
+            %BinaryNode{
+              tag: "value",
+              attrs: %{},
+              content: {:binary, bundle.signed_pre_key.public_key}
+            },
+            %BinaryNode{
+              tag: "signature",
+              attrs: %{},
+              content: {:binary, bundle.signed_pre_key.signature}
+            }
+          ]
+        },
+        %BinaryNode{
+          tag: "key",
+          attrs: %{},
+          content: [
+            %BinaryNode{
+              tag: "id",
+              attrs: %{},
+              content: {:binary, <<bundle.pre_key.key_id::unsigned-big-32>>}
+            },
+            %BinaryNode{
+              tag: "value",
+              attrs: %{},
+              content: {:binary, bundle.pre_key.public_key}
+            }
+          ]
+        }
+      ]
+    }
   end
 end

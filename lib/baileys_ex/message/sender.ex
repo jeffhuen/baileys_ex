@@ -14,6 +14,7 @@ defmodule BaileysEx.Message.Sender do
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Device
+  alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store
   alias BaileysEx.Telemetry
 
@@ -150,10 +151,10 @@ defmodule BaileysEx.Message.Sender do
         Enum.reject(own_devices, &skip_own_device?(&1, me_id, recipient_jid, recipient_devices))
         |> Enum.uniq()
 
-      phash = Wire.generate_participant_hash(recipient_devices ++ own_devices)
-      dsm = wrap_device_sent_message(message, recipient_jid)
-
-      with {:ok, repo, me_nodes, me_include_identity?} <-
+      with {:ok, context} <- maybe_assert_sessions(context, recipient_devices ++ own_devices),
+           phash = Wire.generate_participant_hash(recipient_devices ++ own_devices),
+           dsm = wrap_device_sent_message(message, recipient_jid),
+           {:ok, repo, me_nodes, me_include_identity?} <-
              create_participant_nodes(context.signal_repository, own_devices, dsm, phash),
            {:ok, repo, other_nodes, other_include_identity?} <-
              create_participant_nodes(repo, recipient_devices, message, phash) do
@@ -204,8 +205,15 @@ defmodule BaileysEx.Message.Sender do
 
       phash = Wire.generate_participant_hash(participant_devices)
 
-      with {:ok, repo, participant_nodes, include_device_identity?} <-
-             create_participant_nodes(repo, new_devices, sender_key_message, phash) do
+      with {:ok, context} <-
+             maybe_assert_sessions(%{context | signal_repository: repo}, new_devices),
+           {:ok, repo, participant_nodes, include_device_identity?} <-
+             create_participant_nodes(
+               context.signal_repository,
+               new_devices,
+               sender_key_message,
+               phash
+             ) do
         :ok =
           Store.set(store, %{
             :"sender-key-memory" => %{
@@ -280,6 +288,16 @@ defmodule BaileysEx.Message.Sender do
   end
 
   defp normalize_device_lookup_result({:error, _reason} = error, _context), do: error
+
+  defp maybe_assert_sessions(%{signal_repository: %Repository{}} = context, []),
+    do: {:ok, context}
+
+  defp maybe_assert_sessions(%{signal_repository: %Repository{}} = context, jids) do
+    case Session.assert_sessions(context, jids, force: false) do
+      {:ok, next_context, _fetched?} -> {:ok, next_context}
+      {:error, _reason} = error -> error
+    end
+  end
 
   defp relay(%{send_node_fun: fun}, %BinaryNode{} = node) when is_function(fun, 1), do: fun.(node)
 

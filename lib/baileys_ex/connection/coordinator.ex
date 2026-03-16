@@ -11,6 +11,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
   require Logger
 
+  alias BaileysEx.Auth.State, as: AuthState
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
@@ -29,6 +30,7 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Signal.LIDMappingStore
+  alias BaileysEx.Signal.Adapter.Signal, as: DefaultSignalAdapter
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store, as: SignalStore
@@ -134,11 +136,12 @@ defmodule BaileysEx.Connection.Coordinator do
       EventEmitter.tap(state.event_emitter, &Kernel.send(coordinator_pid, {:events, &1}))
 
     wrapped_signal_store = wrap_signal_store(state.signal_store)
+    store_ref = Store.wrap(state.store)
 
     state =
       state
       |> Map.put(:unsubscribe, unsubscribe)
-      |> Map.put(:store_ref, Store.wrap(state.store))
+      |> Map.put(:store_ref, store_ref)
       |> Map.put(:signal_store, wrapped_signal_store)
       |> Map.put(
         :signal_repository,
@@ -146,7 +149,8 @@ defmodule BaileysEx.Connection.Coordinator do
           state.signal_repository,
           Keyword.get(opts, :signal_repository_adapter),
           Keyword.get(opts, :signal_repository_adapter_state, %{}),
-          wrapped_signal_store
+          wrapped_signal_store,
+          store_ref
         )
       )
       |> Map.put(:reconnect_timer, nil)
@@ -740,11 +744,18 @@ defmodule BaileysEx.Connection.Coordinator do
          %Repository{} = repository,
          _adapter,
          _adapter_state,
-         _signal_store
+         _signal_store,
+         _store_ref
        ),
        do: repository
 
-  defp build_signal_repository(nil, adapter, adapter_state, %SignalStore{} = signal_store)
+  defp build_signal_repository(
+         nil,
+         adapter,
+         adapter_state,
+         %SignalStore{} = signal_store,
+         _store_ref
+       )
        when is_atom(adapter) and not is_nil(adapter) do
     Repository.new(
       adapter: adapter,
@@ -754,8 +765,61 @@ defmodule BaileysEx.Connection.Coordinator do
     )
   end
 
-  defp build_signal_repository(repository, _adapter, _adapter_state, _signal_store),
+  defp build_signal_repository(
+         nil,
+         nil,
+         _adapter_state,
+         %SignalStore{} = signal_store,
+         %Store.Ref{} = store_ref
+       ) do
+    case build_default_signal_adapter_state(store_ref, signal_store) do
+      {:ok, adapter_state} ->
+        Repository.new(
+          adapter: DefaultSignalAdapter,
+          adapter_state: adapter_state,
+          store: signal_store,
+          pn_to_lid_lookup: lid_lookup_fun(signal_store)
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  defp build_signal_repository(repository, _adapter, _adapter_state, _signal_store, _store_ref),
     do: repository
+
+  defp build_default_signal_adapter_state(%Store.Ref{} = store_ref, %SignalStore{} = signal_store) do
+    auth_state = Store.get(store_ref, :auth_state, %{})
+    identity_key_pair = AuthState.get(auth_state, :signed_identity_key)
+    signed_pre_key = AuthState.get(auth_state, :signed_pre_key)
+    registration_id = AuthState.get(auth_state, :registration_id)
+
+    if valid_identity_key_pair?(identity_key_pair) and valid_signed_pre_key?(signed_pre_key) and
+         is_integer(registration_id) and registration_id >= 0 do
+      {:ok,
+       DefaultSignalAdapter.new(
+         store: signal_store,
+         identity_key_pair: identity_key_pair,
+         registration_id: registration_id,
+         signed_pre_key: signed_pre_key
+       )}
+    else
+      :error
+    end
+  end
+
+  defp valid_identity_key_pair?(%{public: public, private: private})
+       when is_binary(public) and is_binary(private),
+       do: true
+
+  defp valid_identity_key_pair?(_identity_key_pair), do: false
+
+  defp valid_signed_pre_key?(%{key_id: key_id, key_pair: key_pair, signature: signature})
+       when is_integer(key_id) and key_id >= 0 and is_binary(signature),
+       do: valid_identity_key_pair?(key_pair)
+
+  defp valid_signed_pre_key?(_signed_pre_key), do: false
 
   defp receiver_context(%State{} = state, %Repository{} = repository) do
     creds = Store.get(state.store_ref, :creds, %{})

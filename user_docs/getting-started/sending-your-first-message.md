@@ -7,7 +7,8 @@ You will finish this page with a text message sent from a live BaileysEx connect
 - Your connection reaches WhatsApp successfully
 - Your session is already paired
 - You know the recipient [JID](../glossary.md#jid)
-- Your connection was started with `:signal_repository` or `:signal_repository_adapter`
+- Your auth state includes the normal Signal credentials (`signed_identity_key`,
+  `signed_pre_key`, and `registration_id`) or you overrode the default repository
 
 ## Steps
 
@@ -15,8 +16,10 @@ You will finish this page with a text message sent from a live BaileysEx connect
 
 Call `BaileysEx.send_message/4` with a user JID and a content map.
 
-BaileysEx does not attach a default Signal repository adapter during `connect/2`, so
-outbound sends only work after you configure one of those connection options.
+BaileysEx builds the built-in production Signal adapter automatically during
+`connect/2` when the auth state includes the standard Signal credentials. Use
+`signal_repository:` or `signal_repository_adapter:` only when you need a custom
+repository implementation.
 
 ```elixir
 {:ok, sent} =

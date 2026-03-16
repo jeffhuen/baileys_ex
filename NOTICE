@@ -1,0 +1,9 @@
+BaileysEx includes material derived from Baileys
+(https://github.com/WhiskeySockets/Baileys), which is licensed under the
+MIT License:
+
+  Copyright (c) 2025 Rajeh Taher/WhiskeySockets
+
+The WAM event definitions in priv/wam/definitions.json were generated from
+the Baileys source. Protocol behavior and wire formats were developed using
+Baileys as a reference implementation.

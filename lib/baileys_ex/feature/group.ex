@@ -155,11 +155,19 @@ defmodule BaileysEx.Feature.Group do
 
   @doc "Fetch interactive metadata for a group."
   @spec get_metadata(term(), String.t()) :: {:ok, map()} | {:error, term()}
-  def get_metadata(conn, group_jid) when is_binary(group_jid) do
+  @spec get_metadata(term(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def get_metadata(conn, group_jid, opts \\ [])
+      when is_binary(group_jid) and is_list(opts) do
     with {:ok, result} <-
-           group_query(conn, group_jid, "get", [
-             %BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}
-           ]) do
+           group_query(
+             conn,
+             group_jid,
+             "get",
+             [
+               %BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}
+             ],
+             opts
+           ) do
       {:ok, extract_group_metadata(result)}
     end
   end
@@ -698,7 +706,7 @@ defmodule BaileysEx.Feature.Group do
     end
   end
 
-  defp group_query(conn, jid, type, content) do
+  defp group_query(conn, jid, type, content, opts \\ []) do
     query(
       conn,
       %BinaryNode{
@@ -706,7 +714,7 @@ defmodule BaileysEx.Feature.Group do
         attrs: %{"type" => type, "xmlns" => "w:g2", "to" => jid},
         content: content
       },
-      @timeout
+      Keyword.get(opts, :query_timeout, @timeout)
     )
   end
 

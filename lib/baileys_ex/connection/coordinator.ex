@@ -188,6 +188,14 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
+  def handle_call({:send_message, _jid, _content, _opts}, _from, %State{} = state) do
+    {:reply, {:error, :signal_repository_not_ready}, state}
+  end
+
+  def handle_call({:send_status, _content, _opts}, _from, %State{} = state) do
+    {:reply, {:error, :signal_repository_not_ready}, state}
+  end
+
   def handle_call(request, _from, %State{} = state) do
     Logger.warning("unsupported coordinator request: #{inspect(request)}")
     {:reply, {:error, :unsupported_request}, state}
@@ -737,7 +745,7 @@ defmodule BaileysEx.Connection.Coordinator do
        do: repository
 
   defp build_signal_repository(nil, adapter, adapter_state, %SignalStore{} = signal_store)
-       when is_atom(adapter) do
+       when is_atom(adapter) and not is_nil(adapter) do
     Repository.new(
       adapter: adapter,
       adapter_state: adapter_state,

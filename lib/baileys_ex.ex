@@ -70,6 +70,9 @@ defmodule BaileysEx do
   - `:on_qr` receives QR strings extracted from `connection_update`
   - `:on_message` receives each message from `messages_upsert`
   - `:on_event` receives the raw buffered event map
+
+  These convenience callbacks stay attached for the lifetime of the connection runtime.
+  Use `subscribe/2` or `subscribe_raw/2` when you need an explicit unsubscribe handle.
   """
   @spec connect(term(), keyword()) :: {:ok, pid()} | {:error, term()}
   def connect(auth_state, opts \\ []) when is_list(opts) do
@@ -246,7 +249,7 @@ defmodule BaileysEx do
   @spec group_metadata(connection(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def group_metadata(connection, group_jid, opts \\ [])
       when is_binary(group_jid) and is_list(opts) do
-    with_queryable(connection, fn queryable -> Group.get_metadata(queryable, group_jid) end)
+    with_queryable(connection, fn queryable -> Group.get_metadata(queryable, group_jid, opts) end)
   end
 
   @doc "Leave a group."
@@ -270,7 +273,9 @@ defmodule BaileysEx do
   @spec community_metadata(connection(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def community_metadata(connection, community_jid, opts \\ [])
       when is_binary(community_jid) and is_list(opts) do
-    with_queryable(connection, fn queryable -> Community.metadata(queryable, community_jid) end)
+    with_queryable(connection, fn queryable ->
+      Community.metadata(queryable, community_jid, opts)
+    end)
   end
 
   @doc "Fetch privacy settings."
@@ -326,12 +331,25 @@ defmodule BaileysEx do
   defp maybe_attach_callbacks(_connection, []), do: :ok
 
   defp maybe_attach_callbacks(connection, callback_opts) do
-    _unsubscribe =
+    unsubscribe =
       ConnectionSupervisor.subscribe(connection, fn events ->
         dispatch_callback_events(events, callback_opts)
       end)
 
+    _cleanup_pid = spawn_callback_cleanup(connection, unsubscribe)
     :ok
+  end
+
+  defp spawn_callback_cleanup(connection, unsubscribe)
+       when is_pid(connection) and is_function(unsubscribe, 0) do
+    spawn(fn ->
+      ref = Process.monitor(connection)
+
+      receive do
+        {:DOWN, ^ref, :process, ^connection, _reason} ->
+          unsubscribe.()
+      end
+    end)
   end
 
   defp dispatch_callback_events(events, callback_opts) do

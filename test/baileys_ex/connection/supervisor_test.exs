@@ -119,6 +119,44 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end
   end
 
+  defmodule OneShotVia do
+    def register_name({registry, key}, pid) do
+      Agent.update(registry, &Map.put(&1, key, %{pid: pid, whereis_calls: 0}))
+      :yes
+    end
+
+    def unregister_name({registry, key}) do
+      Agent.update(registry, &Map.delete(&1, key))
+      :ok
+    end
+
+    def whereis_name({registry, key}) do
+      Agent.get_and_update(registry, fn state ->
+        case Map.get(state, key) do
+          %{pid: pid, whereis_calls: 0} = entry ->
+            {pid, Map.put(state, key, %{entry | whereis_calls: 1})}
+
+          %{whereis_calls: _count} ->
+            {:undefined, state}
+
+          nil ->
+            {:undefined, state}
+        end
+      end)
+    end
+
+    def send({registry, key}, message) do
+      case Agent.get(registry, &Map.get(&1, key)) do
+        %{pid: pid} when is_pid(pid) ->
+          Kernel.send(pid, message)
+          pid
+
+        _ ->
+          :undefined
+      end
+    end
+  end
+
   test "starts socket, store, and event emitter under a rest_for_one tree" do
     name = {:phase6_test, System.unique_integer([:positive])}
 
@@ -176,6 +214,40 @@ defmodule BaileysEx.Connection.SupervisorTest do
                     %{duration: stop_duration}, %{connection_pid: ^supervisor, status: :ok}}
 
     assert is_integer(stop_duration)
+  end
+
+  test "stop_connection/1 resolves a named supervisor once before stopping it" do
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :connection, :stop, :start],
+        [:baileys_ex, :connection, :stop, :stop]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    {:ok, registry} = Agent.start_link(fn -> %{} end)
+    via_name = {:via, OneShotVia, {registry, :phase12_stop}}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_connection(%{creds: %{}},
+               name: via_name,
+               config: Config.new(fire_init_queries: false),
+               transport: {NoopTransport, %{}}
+             )
+
+    on_exit(fn ->
+      if Process.alive?(supervisor) do
+        Elixir.Supervisor.stop(supervisor)
+      end
+    end)
+
+    assert :ok = Supervisor.stop_connection(via_name)
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :stop, :start],
+                    %{system_time: _system_time}, %{connection_pid: ^supervisor}}
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :stop, :stop], %{duration: _duration},
+                    %{connection_pid: ^supervisor, status: :ok}}
   end
 
   test "start_connection/2 injects a default config into the coordinator when none is supplied" do

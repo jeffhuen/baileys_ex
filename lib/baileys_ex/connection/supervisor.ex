@@ -29,8 +29,10 @@ defmodule BaileysEx.Connection.Supervisor do
   @doc "Stop a running connection runtime."
   @spec stop_connection(GenServer.server()) :: :ok | {:error, term()}
   def stop_connection(supervisor) do
-    Telemetry.span([:connection, :stop], %{connection_pid: resolve_pid(supervisor)}, fn ->
-      case resolve_pid(supervisor) do
+    pid = resolve_pid(supervisor)
+
+    Telemetry.span([:connection, :stop], %{connection_pid: pid}, fn ->
+      case pid do
         pid when is_pid(pid) ->
           Elixir.Supervisor.stop(pid)
 

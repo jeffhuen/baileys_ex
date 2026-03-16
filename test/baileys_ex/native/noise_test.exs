@@ -83,7 +83,13 @@ defmodule BaileysEx.Native.NoiseTest do
     final_count =
       Enum.reduce_while(1..50, nil, fn _, _ ->
         count = Noise.session_count()
-        if count <= baseline, do: {:halt, count}, else: {:cont, Process.sleep(10)}
+
+        if count <= baseline do
+          {:halt, count}
+        else
+          Process.sleep(10)
+          {:cont, count}
+        end
       end)
 
     assert final_count <= baseline,

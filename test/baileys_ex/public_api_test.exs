@@ -145,6 +145,26 @@ defmodule BaileysEx.PublicApiTest do
     assert :ok = BaileysEx.disconnect(connection)
   end
 
+  test "send_message/4 and send_status/3 report when the signal repository is not ready" do
+    assert {:ok, connection} =
+             BaileysEx.connect(
+               %{creds: %{me: %{id: "15550001111:1@s.whatsapp.net", name: "Bailey"}}},
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert {:error, :signal_repository_not_ready} =
+             BaileysEx.send_message(connection, "15551234567@s.whatsapp.net", %{text: "hello"})
+
+    assert {:error, :signal_repository_not_ready} =
+             BaileysEx.send_status(connection, %{text: "status"})
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
   test "send_message/4 and group_create/4 use the connection runtime" do
     {repo, _store} = MessageSignalHelpers.new_repo()
     session = MessageSignalHelpers.session_fixture()
@@ -222,6 +242,93 @@ defmodule BaileysEx.PublicApiTest do
                       tag: "iq",
                       attrs: %{"to" => "@g.us", "type" => "set", "xmlns" => "w:g2"}
                     }, _timeout}
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "group_metadata/3 and community_metadata/3 forward query_timeout opts" do
+    query_handler = fn node, timeout ->
+      case {List.first(node.content || []), timeout} do
+        {%BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}, 123} ->
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "group",
+                 attrs: %{
+                   "id" => "120363001234567890@g.us",
+                   "subject" => "Phase 12",
+                   "s_t" => "1710000000",
+                   "size" => "1",
+                   "creation" => "1710000000"
+                 }
+               }
+             ]
+           }}
+
+        {%BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}, 456} ->
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "community",
+                 attrs: %{
+                   "id" => "120363001234567890@g.us",
+                   "subject" => "Phase 12 Community",
+                   "s_t" => "1710000000",
+                   "size" => "1",
+                   "creation" => "1710000000"
+                 }
+               }
+             ]
+           }}
+
+        _ ->
+          {:error, :unhandled}
+      end
+    end
+
+    assert {:ok, connection} =
+             BaileysEx.connect(%{creds: %{}},
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self(),
+               query_handler: query_handler
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert {:ok, %{id: "120363001234567890@g.us"}} =
+             BaileysEx.group_metadata(connection, "120363001234567890@g.us", query_timeout: 123)
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{
+                        "to" => "120363001234567890@g.us",
+                        "type" => "get",
+                        "xmlns" => "w:g2"
+                      }
+                    }, 123}
+
+    assert {:ok, %{id: "120363001234567890@g.us"}} =
+             BaileysEx.community_metadata(connection, "120363001234567890@g.us",
+               query_timeout: 456
+             )
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{
+                        "to" => "120363001234567890@g.us",
+                        "type" => "get",
+                        "xmlns" => "w:g2"
+                      }
+                    }, 456}
 
     assert :ok = BaileysEx.disconnect(connection)
   end

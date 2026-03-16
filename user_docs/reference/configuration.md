@@ -40,6 +40,10 @@ signal_store_module: MyApp.BaileysSignalStore
 
 Use this when the default in-memory Signal key store is not enough for your runtime.
 
+The callback options below are connection-lifetime subscriptions managed by `connect/2`.
+If you need to remove a handler without disconnecting, use `BaileysEx.subscribe/2` or
+`BaileysEx.subscribe_raw/2` instead.
+
 ### `signal_store_opts`
 
 - **Type:** `keyword()`

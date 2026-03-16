@@ -273,11 +273,19 @@ defmodule BaileysEx.Feature.Community do
 
   @doc "Fetch interactive metadata for a community."
   @spec metadata(term(), String.t()) :: {:ok, map()} | {:error, term()}
-  def metadata(conn, community_jid) when is_binary(community_jid) do
+  @spec metadata(term(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def metadata(conn, community_jid, opts \\ [])
+      when is_binary(community_jid) and is_list(opts) do
     with {:ok, result} <-
-           community_query(conn, community_jid, "get", [
-             %BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}
-           ]) do
+           community_query(
+             conn,
+             community_jid,
+             "get",
+             [
+               %BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}
+             ],
+             opts
+           ) do
       {:ok, extract_metadata(result)}
     end
   end
@@ -469,7 +477,7 @@ defmodule BaileysEx.Feature.Community do
     end)
   end
 
-  defp community_query(conn, jid, type, content) do
+  defp community_query(conn, jid, type, content, opts \\ []) do
     query(
       conn,
       %BinaryNode{
@@ -477,7 +485,7 @@ defmodule BaileysEx.Feature.Community do
         attrs: %{"type" => type, "xmlns" => "w:g2", "to" => jid},
         content: content
       },
-      @timeout
+      Keyword.get(opts, :query_timeout, @timeout)
     )
   end
 

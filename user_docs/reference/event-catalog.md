@@ -82,6 +82,20 @@ Each raw delivery is a map with one or more of these keys.
 
 Connection lifecycle, QR data, and disconnect details.
 
+Close updates include a Baileys-shaped disconnect payload under `last_disconnect`:
+
+```elixir
+%{
+  connection_update: %{
+    connection: :close,
+    last_disconnect: %{
+      error: %{reason: :logged_out, status_code: 401, message: "Logged Out"},
+      date: ~U[2026-03-16 12:00:00Z]
+    }
+  }
+}
+```
+
 #### `:creds_update`
 
 - **Type:** `map()`

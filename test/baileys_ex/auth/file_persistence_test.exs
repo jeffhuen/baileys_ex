@@ -2,6 +2,7 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Auth.FilePersistence
+  alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.State
   alias BaileysEx.TestSupport.DeterministicAuth
 
@@ -70,5 +71,28 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
 
     assert {:ok, %State{platform: platform}} = FilePersistence.load_credentials(tmp_dir)
     assert platform in ["alpha", "beta"]
+  end
+
+  @tag :tmp_dir
+  test "use_multi_file_auth_state/1 returns connect opts for the file-backed Signal store", %{
+    tmp_dir: tmp_dir
+  } do
+    state = DeterministicAuth.state(80) |> Map.put(:platform, "ios")
+    assert :ok = FilePersistence.save_credentials(tmp_dir, state)
+
+    assert {:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state(tmp_dir)
+
+    assert persisted_auth.state == state
+    assert persisted_auth.connect_opts[:signal_store_module] == KeyStore
+
+    assert Keyword.take(persisted_auth.connect_opts[:signal_store_opts], [
+             :persistence_module,
+             :persistence_context
+           ]) == [persistence_module: FilePersistence, persistence_context: tmp_dir]
+
+    updated_state = persisted_auth.state |> Map.put(:pairing_code, "ABC-123")
+
+    assert :ok = persisted_auth.save_creds.(updated_state)
+    assert {:ok, %State{pairing_code: "ABC-123"}} = FilePersistence.load_credentials(tmp_dir)
   end
 end

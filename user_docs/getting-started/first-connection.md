@@ -13,16 +13,16 @@ You will finish this page with a live BaileysEx connection that can pair by QR c
 
 ### 1. Load or create auth state
 
-Load the saved auth state before every connection attempt.
+Load the saved auth state and the matching file-backed Signal store options before every connection attempt.
 
 ```elixir
 alias BaileysEx.Auth.FilePersistence
 
 auth_path = "tmp/baileys_auth"
-{:ok, auth_state} = FilePersistence.load_credentials(auth_path)
+{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state(auth_path)
 ```
 
-If the directory is empty, `load_credentials/1` returns a fresh state for a new pairing flow.
+If the directory is empty, `use_multi_file_auth_state/1` returns a fresh state for a new pairing flow and the `connect/2` options needed to persist Signal keys in the same directory.
 
 ### 2. Start the connection with a real transport
 
@@ -34,10 +34,13 @@ alias BaileysEx.Connection.Transport.MintWebSocket
 parent = self()
 
 {:ok, connection} =
-  BaileysEx.connect(auth_state,
-    transport: {MintWebSocket, []},
-    on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
-    on_connection: fn update -> send(parent, {:connection_update, update}) end
+  BaileysEx.connect(
+    persisted_auth.state,
+    Keyword.merge(persisted_auth.connect_opts, [
+      transport: {MintWebSocket, []},
+      on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
+      on_connection: fn update -> send(parent, {:connection_update, update}) end
+    ])
   )
 ```
 
@@ -52,7 +55,7 @@ unsubscribe =
   BaileysEx.subscribe_raw(connection, fn events ->
     if Map.has_key?(events, :creds_update) do
       {:ok, latest_auth_state} = BaileysEx.auth_state(connection)
-      :ok = FilePersistence.save_credentials(auth_path, struct(BaileysEx.Auth.State, latest_auth_state))
+      :ok = persisted_auth.save_creds.(latest_auth_state)
     end
   end)
 ```

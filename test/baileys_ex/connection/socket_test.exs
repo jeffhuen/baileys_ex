@@ -687,7 +687,8 @@ defmodule BaileysEx.Connection.SocketTest do
     {:ok, pid, _server_transport} =
       start_connected_socket(
         event_emitter: event_emitter,
-        config: Config.new(keep_alive_interval_ms: 5_000)
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        date_time_fun: fn -> ~U[2026-03-16 12:00:00Z] end
       )
 
     Kernel.send(pid, {:scripted_transport, {:closed, :tcp_closed}})
@@ -698,7 +699,10 @@ defmodule BaileysEx.Connection.SocketTest do
                     %{
                       connection_update: %{
                         connection: :close,
-                        last_disconnect: %{reason: :tcp_closed}
+                        last_disconnect: %{
+                          error: %{reason: :tcp_closed, status_code: 428},
+                          date: ~U[2026-03-16 12:00:00Z]
+                        }
                       }
                     }}
   end
@@ -1303,7 +1307,10 @@ defmodule BaileysEx.Connection.SocketTest do
                     %{
                       connection_update: %{
                         connection: :close,
-                        last_disconnect: %{reason: :connection_replaced}
+                        last_disconnect: %{
+                          error: %{reason: :connection_replaced, status_code: 440},
+                          date: %DateTime{}
+                        }
                       }
                     }}
 
@@ -1333,7 +1340,10 @@ defmodule BaileysEx.Connection.SocketTest do
                     %{
                       connection_update: %{
                         connection: :close,
-                        last_disconnect: %{reason: :logged_out}
+                        last_disconnect: %{
+                          error: %{reason: :logged_out, status_code: 401},
+                          date: %DateTime{}
+                        }
                       }
                     }}
 
@@ -1368,7 +1378,10 @@ defmodule BaileysEx.Connection.SocketTest do
                     %{
                       connection_update: %{
                         connection: :close,
-                        last_disconnect: %{reason: :multidevice_mismatch}
+                        last_disconnect: %{
+                          error: %{reason: :multidevice_mismatch, status_code: 411},
+                          date: %DateTime{}
+                        }
                       }
                     }}
 
@@ -1438,6 +1451,7 @@ defmodule BaileysEx.Connection.SocketTest do
         transport: {ScriptedTransport, %{test_pid: self()}}
       ]
       |> maybe_put_opt(:clock_ms_fun, opts[:clock_ms_fun])
+      |> maybe_put_opt(:date_time_fun, opts[:date_time_fun])
       |> maybe_put_opt(:monotonic_ms_fun, opts[:monotonic_ms_fun])
       |> maybe_put_opt(:message_tag_fun, opts[:message_tag_fun])
 

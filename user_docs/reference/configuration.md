@@ -40,6 +40,10 @@ signal_store_module: MyApp.BaileysSignalStore
 
 Use this when the default in-memory Signal key store is not enough for your runtime.
 
+For the built-in Baileys-style persisted setup, prefer
+`BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` and pass the returned
+`connect_opts` into `BaileysEx.connect/2`.
+
 The callback options below are connection-lifetime subscriptions managed by `connect/2`.
 If you need to remove a handler without disconnecting, use `BaileysEx.subscribe/2` or
 `BaileysEx.subscribe_raw/2` instead.

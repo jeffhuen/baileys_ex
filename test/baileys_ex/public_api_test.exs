@@ -3,6 +3,8 @@ defmodule BaileysEx.PublicApiTest do
 
   import ExUnit.CaptureLog
 
+  alias BaileysEx.Auth.FilePersistence
+  alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.State, as: AuthState
   alias BaileysEx.BinaryNode
   alias BaileysEx.Crypto
@@ -263,6 +265,44 @@ defmodule BaileysEx.PublicApiTest do
 
     assert {:error, :signal_repository_not_ready} =
              BaileysEx.send_status(connection, %{text: "status"})
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  @tag :tmp_dir
+  test "use_multi_file_auth_state/1 wires Auth.KeyStore into the runtime and saves creds", %{
+    tmp_dir: tmp_dir
+  } do
+    assert {:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state(tmp_dir)
+
+    assert {:ok, connection} =
+             BaileysEx.connect(
+               persisted_auth.state,
+               Keyword.merge(persisted_auth.connect_opts,
+                 config: Config.new(fire_init_queries: false),
+                 socket_module: FakeSocket,
+                 test_pid: self()
+               )
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert {:ok, %Store{module: KeyStore} = signal_store} = BaileysEx.signal_store(connection)
+    assert :ok = Store.set(signal_store, %{:"device-list" => %{"15551234567" => ["0"]}})
+
+    assert {:ok, ["0"]} =
+             FilePersistence.load_keys(tmp_dir, :"device-list", "15551234567")
+
+    assert {:ok, emitter} = BaileysEx.event_emitter(connection)
+    assert :ok = EventEmitter.emit(emitter, :creds_update, %{me: %{name: "Persisted"}})
+
+    assert_eventually(fn ->
+      match?({:ok, %{me: %{name: "Persisted"}}}, BaileysEx.auth_state(connection))
+    end)
+
+    assert {:ok, latest_auth_state} = BaileysEx.auth_state(connection)
+    assert :ok = persisted_auth.save_creds.(latest_auth_state)
+    assert {:ok, %AuthState{me: %{name: "Persisted"}}} = FilePersistence.load_credentials(tmp_dir)
 
     assert :ok = BaileysEx.disconnect(connection)
   end
@@ -812,4 +852,17 @@ defmodule BaileysEx.PublicApiTest do
       ]
     }
   end
+
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition was not met in time")
 end

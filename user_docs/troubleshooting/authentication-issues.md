@@ -13,13 +13,14 @@ The first run pairs successfully, but the next restart asks for a new QR code.
 
 ```elixir
 alias BaileysEx.Auth.FilePersistence
-alias BaileysEx.Auth.State
+
+{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state("tmp/baileys_auth")
 
 unsubscribe =
   BaileysEx.subscribe_raw(connection, fn events ->
     if Map.has_key?(events, :creds_update) do
       {:ok, auth_state} = BaileysEx.auth_state(connection)
-      :ok = FilePersistence.save_credentials("tmp/baileys_auth", struct(State, auth_state))
+      :ok = persisted_auth.save_creds.(auth_state)
     end
   end)
 ```
@@ -64,10 +65,10 @@ Message state, history sync, or encryption state no longer matches the previous 
 
 ```elixir
 auth_path = Path.expand("tmp/baileys_auth", File.cwd!())
-{:ok, auth_state} = BaileysEx.Auth.FilePersistence.load_credentials(auth_path)
+{:ok, persisted_auth} = BaileysEx.Auth.FilePersistence.use_multi_file_auth_state(auth_path)
 ```
 
-Keep the same auth path and the same `signal_store_module:` configuration for the lifetime of one linked device.
+Keep the same auth path and the same persisted-auth helper configuration for the lifetime of one linked device.
 
 ---
 

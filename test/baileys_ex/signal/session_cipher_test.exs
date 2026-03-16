@@ -336,7 +336,10 @@ defmodule BaileysEx.Signal.SessionCipherTest do
 
     assert %{
              chain_type: :sending
-           } = updated_alice_session.chains[Base.encode64(signal_public_key(next_alice_ratchet.public))]
+           } =
+             updated_alice_session.chains[
+               Base.encode64(signal_public_key(next_alice_ratchet.public))
+             ]
   end
 
   defp signal_public_key(public_key) do

@@ -33,15 +33,14 @@ You have two main subscription surfaces:
 
 ```elixir
 alias BaileysEx.Auth.FilePersistence
-alias BaileysEx.Auth.State
 
-auth_path = "tmp/baileys_auth"
+{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state("tmp/baileys_auth")
 
 unsubscribe =
   BaileysEx.subscribe_raw(connection, fn events ->
     if Map.has_key?(events, :creds_update) do
       {:ok, auth_state} = BaileysEx.auth_state(connection)
-      :ok = FilePersistence.save_credentials(auth_path, struct(State, auth_state))
+      :ok = persisted_auth.save_creds.(auth_state)
     end
   end)
 ```

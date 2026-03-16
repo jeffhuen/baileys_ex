@@ -34,6 +34,7 @@ defmodule BaileysEx.Signal.SessionBuilder do
     pre_key_id = Map.get(bundle, :pre_key_id)
 
     our_identity_key = Keyword.fetch!(opts, :identity_key_pair)
+
     base_key_pair =
       opts
       |> Keyword.get_lazy(:base_key_pair, &Curve.generate_key_pair/0)

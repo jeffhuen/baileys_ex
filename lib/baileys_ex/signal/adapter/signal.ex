@@ -141,20 +141,22 @@ defmodule BaileysEx.Signal.Adapter.Signal do
   end
 
   defp prepare_pkmsg_record(store, address, session_key, record, ciphertext) do
-    with {:ok, pkmsg} <- BaileysEx.Signal.PreKeyWhisperMessage.decode(ciphertext) do
-      case Identity.save(store, address, pkmsg.identity_key) do
-        {:ok, :changed} ->
-          Store.set(store, %{session: %{session_key => nil}})
-          SessionRecord.new()
+    case BaileysEx.Signal.PreKeyWhisperMessage.decode(ciphertext) do
+      {:ok, pkmsg} ->
+        case Identity.save(store, address, pkmsg.identity_key) do
+          {:ok, :changed} ->
+            Store.set(store, %{session: %{session_key => nil}})
+            SessionRecord.new()
 
-        {:ok, _save_result} ->
-          record
+          {:ok, _save_result} ->
+            record
 
-        {:error, _reason} ->
-          record
-      end
-    else
-      _ -> record
+          {:error, _reason} ->
+            record
+        end
+
+      _ ->
+        record
     end
   end
 
@@ -174,25 +176,41 @@ defmodule BaileysEx.Signal.Adapter.Signal do
       Enum.reduce(operations, {0, 0, 0}, fn op, {m, s, t} ->
         from_key = session_key(op.from)
         to_key = session_key(op.to)
-
-        case load_session_raw(state.store, from_key) do
-          %SessionRecord{} = session_data ->
-            if SessionRecord.have_open_session?(session_data) do
-              Store.set(state.store, %{
-                session: %{to_key => session_data, from_key => nil}
-              })
-
-              {m + 1, s, t + 1}
-            else
-              {m, s + 1, t + 1}
-            end
-
-          _ ->
-            {m, s + 1, t + 1}
-        end
+        migrate_session(state.store, from_key, to_key, {m, s, t})
       end)
 
     {:ok, state, %{migrated: migrated, skipped: skipped, total: total}}
+  end
+
+  defp migrate_session(store, from_key, to_key, {migrated, skipped, total}) do
+    case load_session_raw(store, from_key) do
+      %SessionRecord{} = session_data ->
+        maybe_migrate_open_session(
+          store,
+          from_key,
+          to_key,
+          session_data,
+          {migrated, skipped, total}
+        )
+
+      _ ->
+        {migrated, skipped + 1, total + 1}
+    end
+  end
+
+  defp maybe_migrate_open_session(
+         store,
+         from_key,
+         to_key,
+         session_data,
+         {migrated, skipped, total}
+       ) do
+    if SessionRecord.have_open_session?(session_data) do
+      Store.set(store, %{session: %{to_key => session_data, from_key => nil}})
+      {migrated + 1, skipped, total + 1}
+    else
+      {migrated, skipped + 1, total + 1}
+    end
   end
 
   # -- Group callbacks (delegate to existing group modules) --

@@ -66,6 +66,7 @@ defmodule BaileysEx.Connection.Socket do
           pending_queries: %{optional(binary()) => {pid(), reference(), reference()}},
           server_time_offset_ms: integer(),
           clock_ms_fun: (-> integer()),
+          date_time_fun: (-> DateTime.t()),
           monotonic_ms_fun: (-> integer()),
           message_tag_fun: (-> binary())
         }
@@ -93,6 +94,7 @@ defmodule BaileysEx.Connection.Socket do
     pending_queries: %{},
     server_time_offset_ms: 0,
     clock_ms_fun: nil,
+    date_time_fun: nil,
     monotonic_ms_fun: nil,
     message_tag_fun: nil,
     retry_count: 0,
@@ -249,6 +251,7 @@ defmodule BaileysEx.Connection.Socket do
       transport_module: transport_module,
       transport_options: transport_options,
       clock_ms_fun: Keyword.get(opts, :clock_ms_fun, fn -> System.os_time(:millisecond) end),
+      date_time_fun: Keyword.get(opts, :date_time_fun, &DateTime.utc_now/0),
       monotonic_ms_fun:
         Keyword.get(opts, :monotonic_ms_fun, fn -> System.monotonic_time(:millisecond) end),
       message_tag_fun:
@@ -787,7 +790,10 @@ defmodule BaileysEx.Connection.Socket do
     if emit_close? do
       emit_event(data, :connection_update, %{
         connection: :close,
-        last_disconnect: %{reason: reason}
+        last_disconnect: %{
+          error: disconnect_error(reason),
+          date: disconnect_date(data)
+        }
       })
     end
 
@@ -1351,6 +1357,55 @@ defmodule BaileysEx.Connection.Socket do
       _ -> nil
     end
   end
+
+  defp disconnect_date(%__MODULE__{date_time_fun: fun}) when is_function(fun, 0), do: fun.()
+
+  defp disconnect_error(reason) do
+    %{
+      reason: reason,
+      status_code: disconnect_status_code(reason)
+    }
+    |> maybe_put_disconnect_message(reason)
+  end
+
+  defp disconnect_status_code(:tcp_closed), do: 428
+  defp disconnect_status_code(:disconnected), do: 428
+  defp disconnect_status_code(:connection_replaced), do: 440
+  defp disconnect_status_code(:restart_required), do: 515
+  defp disconnect_status_code(:multidevice_mismatch), do: 411
+  defp disconnect_status_code(:logged_out), do: 401
+  defp disconnect_status_code(:forbidden), do: 403
+  defp disconnect_status_code(:unavailable_service), do: 503
+  defp disconnect_status_code(:connection_lost), do: 408
+  defp disconnect_status_code(:bad_session), do: 500
+  defp disconnect_status_code(:qr_refs_exhausted), do: 408
+  defp disconnect_status_code({:disconnect, code, _reason}) when is_integer(code), do: code
+  defp disconnect_status_code(_reason), do: nil
+
+  defp maybe_put_disconnect_message(error, reason) do
+    case disconnect_message(reason) do
+      nil -> error
+      message -> Map.put(error, :message, message)
+    end
+  end
+
+  defp disconnect_message(:tcp_closed), do: "Connection Closed"
+  defp disconnect_message(:disconnected), do: "Connection Closed"
+  defp disconnect_message(:connection_replaced), do: "Connection Replaced"
+  defp disconnect_message(:restart_required), do: "Restart Required"
+  defp disconnect_message(:multidevice_mismatch), do: "Multi-device Mismatch"
+  defp disconnect_message(:logged_out), do: "Logged Out"
+  defp disconnect_message(:forbidden), do: "Forbidden"
+  defp disconnect_message(:unavailable_service), do: "Unavailable Service"
+  defp disconnect_message(:connection_lost), do: "Connection Lost"
+  defp disconnect_message(:bad_session), do: "Bad Session"
+  defp disconnect_message(:qr_refs_exhausted), do: "Timed Out"
+
+  defp disconnect_message({:disconnect, code, stream_reason}) when is_integer(code) do
+    "Stream Errored (#{stream_reason})"
+  end
+
+  defp disconnect_message(_reason), do: nil
 
   defp unified_session_node(data) do
     session_id =

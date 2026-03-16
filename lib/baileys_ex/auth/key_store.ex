@@ -29,11 +29,14 @@ defmodule BaileysEx.Auth.KeyStore do
   end
 
   defmodule Ref do
-    @moduledoc false
+    @moduledoc """
+    Store reference returned by `wrap/1` and passed into the KeyStore operations.
+    """
 
     @enforce_keys [:pid, :table]
     defstruct [:pid, :table]
 
+    @typedoc "Opaque auth key store reference."
     @type t :: %__MODULE__{pid: pid(), table: :ets.tid()}
   end
 

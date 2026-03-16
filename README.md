@@ -18,29 +18,31 @@ end
 
 ```elixir
 alias BaileysEx.Auth.FilePersistence
-alias BaileysEx.Auth.State
 alias BaileysEx.Connection.Transport.MintWebSocket
 
 auth_path = "tmp/baileys_auth"
 parent = self()
 
-{:ok, auth_state} = FilePersistence.load_credentials(auth_path)
+{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state(auth_path)
 
 {:ok, connection} =
-  BaileysEx.connect(auth_state,
+  BaileysEx.connect(
+    persisted_auth.state,
+    Keyword.merge(persisted_auth.connect_opts, [
     transport: {MintWebSocket, []},
     on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
     on_connection: fn update ->
       IO.inspect(update, label: "connection")
       send(parent, {:connection_update, update})
     end
+  ])
   )
 
 _unsubscribe =
   BaileysEx.subscribe_raw(connection, fn events ->
     if Map.has_key?(events, :creds_update) do
       {:ok, latest_auth_state} = BaileysEx.auth_state(connection)
-      :ok = FilePersistence.save_credentials(auth_path, struct(State, latest_auth_state))
+      :ok = persisted_auth.save_creds.(latest_auth_state)
     end
   end)
 

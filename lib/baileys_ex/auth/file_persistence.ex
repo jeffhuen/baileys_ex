@@ -5,10 +5,37 @@ defmodule BaileysEx.Auth.FilePersistence do
 
   @behaviour BaileysEx.Auth.Persistence
 
+  alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.State
 
   @buffer_tag "Buffer"
   @default_dir "baileys_auth_info"
+
+  @type multi_file_auth_state :: %{
+          required(:state) => State.t(),
+          required(:connect_opts) => keyword(),
+          required(:save_creds) => (State.t() | map() -> :ok | {:error, term()})
+        }
+
+  @doc """
+  Loads the auth state and returns the runtime options needed to mirror
+  Baileys' multi-file auth helper with the built-in file-backed Signal store.
+  """
+  @spec use_multi_file_auth_state(Path.t()) ::
+          {:ok, multi_file_auth_state()} | {:error, term()}
+  def use_multi_file_auth_state(path \\ default_path()) when is_binary(path) do
+    with {:ok, %State{} = state} <- load_credentials(path) do
+      {:ok,
+       %{
+         state: state,
+         connect_opts: [
+           signal_store_module: KeyStore,
+           signal_store_opts: [persistence_module: __MODULE__, persistence_context: path]
+         ],
+         save_creds: &save_credentials(path, normalize_credentials_state(&1))
+       }}
+    end
+  end
 
   @doc """
   Loads the core credentials state from the default configured directory.
@@ -290,6 +317,16 @@ defmodule BaileysEx.Auth.FilePersistence do
 
   defp decode_term(list) when is_list(list), do: Enum.map(list, &decode_term/1)
   defp decode_term(other), do: other
+
+  defp normalize_credentials_state(%State{} = state), do: state
+
+  defp normalize_credentials_state(%{} = state) do
+    state
+    |> State.creds_view()
+    |> then(&struct(State, &1))
+  end
+
+  defp normalize_credentials_state(_state), do: State.new()
 
   defp encode_json_object(map) do
     map

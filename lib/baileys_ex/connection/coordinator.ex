@@ -390,8 +390,10 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp handle_connection_update(
          %State{} = state,
-         %{connection_update: %{connection: :close, last_disconnect: %{reason: reason}}}
+         %{connection_update: %{connection: :close, last_disconnect: last_disconnect}}
        ) do
+    reason = disconnect_reason(last_disconnect)
+
     if reconnectable_reason?(reason) do
       schedule_reconnect(state, reason)
     else
@@ -519,6 +521,18 @@ defmodule BaileysEx.Connection.Coordinator do
     Process.cancel_timer(timer)
     %{state | initial_sync_timer: nil}
   end
+
+  defp disconnect_reason(%{error: %{reason: reason}}), do: reason
+  defp disconnect_reason(%{reason: reason}), do: reason
+  defp disconnect_reason(%{error: %{status_code: 401}}), do: :logged_out
+  defp disconnect_reason(%{error: %{status_code: 440}}), do: :connection_replaced
+  defp disconnect_reason(%{error: %{status_code: 411}}), do: :multidevice_mismatch
+  defp disconnect_reason(%{error: %{status_code: 515}}), do: :restart_required
+  defp disconnect_reason(%{error: %{status_code: 403}}), do: :forbidden
+  defp disconnect_reason(%{error: %{status_code: 503}}), do: :unavailable_service
+  defp disconnect_reason(%{error: %{status_code: 408}}), do: :connection_lost
+  defp disconnect_reason(%{error: %{status_code: 500}}), do: :bad_session
+  defp disconnect_reason(_last_disconnect), do: nil
 
   defp reconnectable_reason?(:logged_out), do: false
   defp reconnectable_reason?(_reason), do: true

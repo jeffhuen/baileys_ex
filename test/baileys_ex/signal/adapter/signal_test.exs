@@ -313,7 +313,8 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
         9
       )
 
-    {:ok, first_alice} = SignalAdapter.inject_e2e_session(first_alice, alice_address, first_bundle)
+    {:ok, first_alice} =
+      SignalAdapter.inject_e2e_session(first_alice, alice_address, first_bundle)
 
     {:ok, _first_alice, first_message} =
       SignalAdapter.encrypt_message(first_alice, alice_address, "hello from alice one")
@@ -407,17 +408,17 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
 
     session = %{
       current_ratchet: %{
-        root_key: <<(seed + 1)::unsigned-big-256>>,
+        root_key: <<seed + 1::unsigned-big-256>>,
         ephemeral_key_pair: %{
-          public: <<(seed + 2)::unsigned-big-256>>,
-          private: <<(seed + 3)::unsigned-big-256>>
+          public: <<seed + 2::unsigned-big-256>>,
+          private: <<seed + 3::unsigned-big-256>>
         },
-        last_remote_ephemeral: <<(seed + 4)::unsigned-big-256>>,
+        last_remote_ephemeral: <<seed + 4::unsigned-big-256>>,
         previous_counter: 0
       },
       index_info: %{
-        remote_identity_key: <<5, (seed + 5)::unsigned-big-256>>,
-        local_identity_key: <<5, (seed + 6)::unsigned-big-256>>,
+        remote_identity_key: <<5, seed + 5::unsigned-big-256>>,
+        local_identity_key: <<5, seed + 6::unsigned-big-256>>,
         base_key: base_key,
         base_key_type: :sending,
         closed: if(status == :open, do: nil, else: seed)

@@ -4,19 +4,32 @@ defmodule BaileysEx do
 
   ## Quick Start
 
+      alias BaileysEx.Auth.FilePersistence
       alias BaileysEx.Connection.Transport.MintWebSocket
 
+      {:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state("tmp/baileys_auth")
       parent = self()
 
       {:ok, connection} =
-        BaileysEx.connect(auth_state,
-          transport: {MintWebSocket, []},
-          on_qr: fn qr -> IO.puts("Scan QR: \#{qr}") end,
-          on_connection: fn update ->
-            IO.inspect({:connection, update})
-            send(parent, {:connection_update, update})
-          end
+        BaileysEx.connect(
+          persisted_auth.state,
+          Keyword.merge(persisted_auth.connect_opts, [
+            transport: {MintWebSocket, []},
+            on_qr: fn qr -> IO.puts("Scan QR: \#{qr}") end,
+            on_connection: fn update ->
+              IO.inspect({:connection, update})
+              send(parent, {:connection_update, update})
+            end
+          ])
         )
+
+      _creds_unsubscribe =
+        BaileysEx.subscribe_raw(connection, fn events ->
+          if Map.has_key?(events, :creds_update) do
+            {:ok, latest_auth_state} = BaileysEx.auth_state(connection)
+            :ok = persisted_auth.save_creds.(latest_auth_state)
+          end
+        end)
 
       receive do
         {:connection_update, %{connection: :open}} -> :ok
@@ -66,6 +79,10 @@ defmodule BaileysEx do
   Pass a real `:transport` such as `{BaileysEx.Connection.Transport.MintWebSocket, []}`
   when you want an actual WhatsApp connection. Without it, the default transport
   returns `{:error, :transport_not_configured}`.
+
+  Use `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` when you want the
+  Baileys-style multi-file setup that pairs persisted credentials with the built-in
+  file-backed Signal store.
 
   Supported callback options:
   - `:on_connection` receives each `connection_update` payload

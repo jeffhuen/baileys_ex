@@ -43,9 +43,9 @@ defmodule BaileysEx.Auth.Pairing do
              @device_sig_prefix <>
                account.details <> signed_identity_key.public <> account.account_signature_key
            ),
-         {:ok, signal_identity} <- create_signal_identity(lid, account.account_signature_key),
-         {:ok, reply} <- reply_node(message_id, key_index, encode_account(account)) do
+         {:ok, signal_identity} <- create_signal_identity(lid, account.account_signature_key) do
       account = %{account | device_signature: device_signature}
+      {:ok, reply} = reply_node(message_id, key_index, encode_account(account))
 
       creds_update = %{
         account: account,

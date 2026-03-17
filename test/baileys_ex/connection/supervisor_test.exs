@@ -928,8 +928,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     assert :ok = EventEmitter.emit(emitter_pid, :creds_update, %{me: %{name: "New"}})
 
-    assert_receive {:fake_socket_send_node,
-                    %BinaryNode{tag: "presence", attrs: %{"name" => "New"}}}
+    assert_receive {:fake_socket_presence_update, :available}
   end
 
   test "account sync dirty updates last_account_sync_timestamp and cleans from the previous timestamp" do

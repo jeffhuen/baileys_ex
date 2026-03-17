@@ -199,10 +199,17 @@ defmodule BaileysEx.Message.Receiver do
 
     msg_type =
       cond do
-        is_nil(msg) -> "nil_message"
-        is_struct(msg) -> msg.__struct__ |> Module.split() |> List.last()
-        is_map(msg) -> "map(#{Map.keys(msg) |> Enum.reject(&is_nil(Map.get(msg, &1))) |> inspect()})"
-        true -> inspect(msg)
+        is_nil(msg) ->
+          "nil_message"
+
+        is_struct(msg) ->
+          msg.__struct__ |> Module.split() |> List.last()
+
+        is_map(msg) ->
+          "map(#{Map.keys(msg) |> Enum.reject(&is_nil(Map.get(msg, &1))) |> inspect()})"
+
+        true ->
+          inspect(msg)
       end
 
     # Find the non-nil content field in the proto message

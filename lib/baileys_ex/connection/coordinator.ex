@@ -834,11 +834,16 @@ defmodule BaileysEx.Connection.Coordinator do
     next_name = nested_name(%{me: me_update})
 
     if is_binary(next_name) and next_name != "" and next_name != previous_name do
-      node = %BinaryNode{tag: "presence", attrs: %{"name" => next_name}, content: nil}
+      Logger.warning(
+        "[Coordinator] push name changed: #{inspect(previous_name)} → #{inspect(next_name)}, sending presence available"
+      )
 
       case fetch_socket_pid(state) do
-        {:ok, socket_pid} -> _ = state.socket_module.send_node(socket_pid, node)
-        :error -> :ok
+        {:ok, socket_pid} ->
+          _ = state.socket_module.send_presence_update(socket_pid, :available)
+
+        :error ->
+          :ok
       end
     end
 
@@ -1282,6 +1287,22 @@ defmodule BaileysEx.Connection.Coordinator do
          %{creds_update: %{my_app_state_key_id: key_id}}
        )
        when is_binary(key_id) and key_id != "" do
+    maybe_launch_initial_app_state_sync(state)
+  end
+
+  # Trigger app state sync when AppStateSyncKeyShare arrives, regardless of
+  # sync_state. On fresh pairing, the sync state machine may skip :syncing
+  # (when should_sync_history_message? returns false), but the critical app
+  # state sync still needs to run to pull push name and other settings.
+  defp maybe_start_initial_app_state_sync(
+         %State{app_state_sync_ref: nil} = state,
+         %{creds_update: %{my_app_state_key_id: key_id}}
+       )
+       when is_binary(key_id) and key_id != "" do
+    Logger.warning(
+      "[Coordinator] AppStateSyncKeyShare received, triggering initial app state sync"
+    )
+
     maybe_launch_initial_app_state_sync(state)
   end
 

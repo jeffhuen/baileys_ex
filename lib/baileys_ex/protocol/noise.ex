@@ -259,8 +259,25 @@ defmodule BaileysEx.Protocol.Noise do
         <<state.in_bytes::binary, new_data::binary>>
       end
 
-    with {:ok, state, frames, rest} <- do_decode_frames(%{state | in_bytes: @empty}, buffer, []) do
-      {:ok, {%{state | in_bytes: rest}, frames}}
+    transport_phase = if state.transport, do: :transport, else: :handshake
+
+    case do_decode_frames(%{state | in_bytes: @empty}, buffer, []) do
+      {:ok, state, frames, rest} ->
+        {:ok, {%{state | in_bytes: rest}, frames}}
+
+      {:error, reason} = error ->
+        require Logger
+
+        Logger.error(
+          "[Noise] decode_frames FAILED — " <>
+            "phase=#{transport_phase}, " <>
+            "reason=#{inspect(reason)}, " <>
+            "buffer_size=#{byte_size(buffer)}, " <>
+            "in_bytes_size=#{byte_size(state.in_bytes)}, " <>
+            "new_data_size=#{byte_size(new_data)}"
+        )
+
+        error
     end
   rescue
     error -> {:error, normalize_error(error)}
@@ -349,14 +366,18 @@ defmodule BaileysEx.Protocol.Noise do
   defp maybe_decrypt_transport(%__MODULE__{transport: nil} = state, data), do: {:ok, state, data}
 
   defp maybe_decrypt_transport(%__MODULE__{transport: transport} = state, data) do
-    with {:ok, transport, plaintext} <- transport_decrypt(transport, data) do
-      Telemetry.execute(
-        [:nif, :noise, :decrypt],
-        %{bytes: byte_size(plaintext)},
-        %{phase: :transport}
-      )
+    case transport_decrypt(transport, data) do
+      {:ok, transport, plaintext} ->
+        Telemetry.execute(
+          [:nif, :noise, :decrypt],
+          %{bytes: byte_size(plaintext)},
+          %{phase: :transport}
+        )
 
-      {:ok, %{state | transport: transport}, plaintext}
+        {:ok, %{state | transport: transport}, plaintext}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -380,8 +401,12 @@ defmodule BaileysEx.Protocol.Noise do
   defp transport_decrypt(%TransportState{} = transport, ciphertext) do
     iv = generate_iv(transport.read_counter)
 
-    with {:ok, plaintext} <- Crypto.aes_gcm_decrypt(transport.dec_key, iv, ciphertext, @empty) do
-      {:ok, %{transport | read_counter: transport.read_counter + 1}, plaintext}
+    case Crypto.aes_gcm_decrypt(transport.dec_key, iv, ciphertext, @empty) do
+      {:ok, plaintext} ->
+        {:ok, %{transport | read_counter: transport.read_counter + 1}, plaintext}
+
+      {:error, :decrypt_failed} = error ->
+        error
     end
   end
 

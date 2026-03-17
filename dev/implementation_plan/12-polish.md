@@ -90,6 +90,10 @@ defmodule BaileysEx do
 end
 ```
 
+The public facade also now exposes Baileys-style version discovery helpers via
+`fetch_latest_baileys_version/1` and `fetch_latest_wa_web_version/1`, backed by
+`BaileysEx.Connection.Version`.
+
 ### 12.3 Documentation
 
 - `@moduledoc` on every public module

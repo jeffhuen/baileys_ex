@@ -45,6 +45,14 @@ accounts. That harness is intentionally manual and gated; it exists so the team
 can validate the true end-to-end purpose of the project without pretending that
 public CI or Hex users should run it.
 
+The live checklist should explicitly cover the QR-scan restart path. A real
+runtime parity bug here came from the Mint transport delivering multi-frame
+WebSocket batches out of order, which broke the first post-auth decrypts after
+`restart_required`. Live validation should confirm that QR scan succeeds, the
+socket reconnects, the post-auth responses are processed in wire order, and the
+runtime reaches `connection: :open` after restart, not just that the pre-QR
+HTTP/1.1 transport setup works.
+
 **The Node reference is the oracle.**
 Do not duplicate expected values in Elixir when the Baileys reference can
 generate them. Prefer:

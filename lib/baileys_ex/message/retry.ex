@@ -265,7 +265,7 @@ defmodule BaileysEx.Message.Retry do
   Parses an incoming retry receipt and retrieves cached messages for re-encryption.
   """
   @spec handle_retry_receipt(Store.Ref.t(), BinaryNode.t(), keyword()) ::
-          {:ok, [proto_message()]} | {:error, term()}
+          {:ok, [map()]} | {:error, term()}
   def handle_retry_receipt(
         %Store.Ref{} = store_ref,
         %BinaryNode{tag: "receipt", attrs: attrs} = node,
@@ -281,15 +281,19 @@ defmodule BaileysEx.Message.Retry do
       remote_jid = attrs["from"] || attrs["recipient"] || attrs["to"]
       resend_fun = opts[:resend_fun]
 
-      messages =
+      entries =
         ids
-        |> Enum.map(&get_recent_message(store_ref, remote_jid, &1))
+        |> Enum.map(fn id ->
+          case get_recent_message(store_ref, remote_jid, id) do
+            %{message: message} = entry -> %{id: id, message: message, entry: entry}
+            nil -> nil
+          end
+        end)
         |> Enum.reject(&is_nil/1)
-        |> Enum.map(& &1.message)
 
-      maybe_resend_messages(messages, resend_fun, remote_jid, ids)
+      maybe_resend_messages(entries, resend_fun, remote_jid, ids)
 
-      {:ok, messages}
+      {:ok, entries}
     end
   end
 
@@ -429,14 +433,14 @@ defmodule BaileysEx.Message.Retry do
   defp send_placeholder_resend_request(_message_key, _fun),
     do: {:error, :send_request_fun_not_configured}
 
-  defp maybe_resend_messages(messages, resend_fun, remote_jid, ids)
+  defp maybe_resend_messages(entries, resend_fun, remote_jid, ids)
        when is_function(resend_fun, 2) do
-    Enum.each(messages, fn message ->
-      resend_fun.(message, %{remote_jid: remote_jid, ids: ids})
+    Enum.each(entries, fn %{id: id, message: message} ->
+      resend_fun.(message, %{id: id, remote_jid: remote_jid, ids: ids})
     end)
   end
 
-  defp maybe_resend_messages(_messages, _resend_fun, _remote_jid, _ids), do: :ok
+  defp maybe_resend_messages(_entries, _resend_fun, _remote_jid, _ids), do: :ok
 
   defp recreate_cooldown_elapsed?(%Store.Ref{} = store_ref, jid, now_ms) do
     history = Store.get(store_ref, @session_history_key, %{})

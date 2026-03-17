@@ -54,6 +54,14 @@ defmodule BaileysEx.Connection.Transport.MintAdapter do
     Mint.WebSocket.stream_request_body(conn, request_ref, data)
   end
 
+  @spec http_take_buffer(Mint.HTTP.t()) :: {Mint.HTTP.t(), binary()}
+  def http_take_buffer(%{buffer: buffer} = conn)
+      when is_binary(buffer) and byte_size(buffer) > 0 do
+    {put_in(conn.buffer, <<>>), buffer}
+  end
+
+  def http_take_buffer(conn), do: {conn, <<>>}
+
   @spec http_close(Mint.HTTP.t()) :: {:ok, Mint.HTTP.t()}
   def http_close(conn), do: Mint.HTTP.close(conn)
 

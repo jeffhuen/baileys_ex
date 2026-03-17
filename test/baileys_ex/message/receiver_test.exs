@@ -184,6 +184,64 @@ defmodule BaileysEx.Message.ReceiverTest do
     unsubscribe.()
   end
 
+  test "process_node/3 caches recently received messages when runtime retry cache is enabled" do
+    assert {:ok, emitter} = EventEmitter.start_link()
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+    {:ok, runtime_store} = ConnectionStore.start_link()
+    runtime_store_ref = ConnectionStore.wrap(runtime_store)
+    session = MessageSignalHelpers.session_fixture()
+
+    assert {:ok, repo} =
+             Repository.inject_e2e_session(repo, %{
+               jid: "15551234567:1@s.whatsapp.net",
+               session: session
+             })
+
+    plaintext = Builder.build(%{text: "cache received"}) |> Message.encode()
+
+    assert {:ok, repo, %{ciphertext: ciphertext}} =
+             Repository.encrypt_message(repo, %{
+               jid: "15551234567:1@s.whatsapp.net",
+               data: plaintext
+             })
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "msg-cache-recv",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => "15551234567:1@s.whatsapp.net",
+        "t" => "1710000003"
+      },
+      content: [
+        %BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg"}, content: {:binary, ciphertext}}
+      ]
+    }
+
+    context = %{
+      enable_recent_message_cache: true,
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid",
+      store_ref: runtime_store_ref
+    }
+
+    assert {:ok, _message, _context} = Receiver.process_node(node, context)
+
+    assert %{
+             message: %Message{
+               extended_text_message: %Message.ExtendedTextMessage{text: "cache received"}
+             }
+           } =
+             Retry.get_recent_message(
+               runtime_store_ref,
+               "15551234567@s.whatsapp.net",
+               "msg-cache-recv"
+             )
+  end
+
   test "process_node/3 emits receive telemetry" do
     assert {:ok, emitter} = EventEmitter.start_link()
 

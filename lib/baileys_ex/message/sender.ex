@@ -4,9 +4,11 @@ defmodule BaileysEx.Message.Sender do
   """
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Connection.Store, as: RuntimeStore
   alias BaileysEx.Feature.TcToken
   alias BaileysEx.JID
   alias BaileysEx.Media.MessageBuilder, as: MediaMessageBuilder
+  alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Reporting
   alias BaileysEx.Message.Wire
@@ -25,7 +27,9 @@ defmodule BaileysEx.Message.Sender do
           required(:signal_store) => Store.t(),
           required(:me_id) => String.t(),
           optional(:device_identity) => binary(),
+          optional(:enable_recent_message_cache) => boolean(),
           optional(:me_lid) => String.t(),
+          optional(:store_ref) => RuntimeStore.Ref.t(),
           optional(:query_fun) => (BinaryNode.t() -> {:ok, BinaryNode.t()} | {:error, term()}),
           optional(:send_node_fun) => (BinaryNode.t() -> :ok | {:error, term()}),
           optional(:socket) => GenServer.server()
@@ -89,28 +93,35 @@ defmodule BaileysEx.Message.Sender do
   end
 
   defp do_send_proto(%{} = context, %JID{} = jid, %Message{} = proto_message, opts) do
-    with {:ok, message_id} <- generate_message_id(context, opts),
-         {:ok, updated_context, stanza_children} <-
-           relay_content(context, jid, proto_message, opts),
-         :ok <-
-           relay(
-             updated_context,
-             build_relay_node(
-               updated_context,
-               jid,
-               message_id,
-               proto_message,
-               stanza_children,
-               opts
-             )
-           ) do
-      {:ok,
-       %{
-         id: message_id,
-         jid: jid,
-         message: proto_message,
-         timestamp: now(opts)
-       }, updated_context}
+    with {:ok, message_id} <- generate_message_id(context, opts) do
+      if retry_participant?(opts[:participant]) do
+        do_send_retry_resend(context, jid, proto_message, message_id, opts)
+      else
+        with {:ok, updated_context, stanza_children} <-
+               relay_content(context, jid, proto_message, opts),
+             :ok <-
+               relay(
+                 updated_context,
+                 build_relay_node(
+                   updated_context,
+                   jid,
+                   message_id,
+                   proto_message,
+                   stanza_children,
+                   opts
+                 )
+               ),
+             :ok <-
+               maybe_cache_recent_message(updated_context, jid, message_id, proto_message, opts) do
+          {:ok,
+           %{
+             id: message_id,
+             jid: jid,
+             message: proto_message,
+             timestamp: now(opts)
+           }, updated_context}
+        end
+      end
     end
   end
 
@@ -315,6 +326,53 @@ defmodule BaileysEx.Message.Sender do
 
   defp relay(_context, %BinaryNode{} = _node), do: {:error, :send_node_not_configured}
 
+  defp do_send_retry_resend(%{} = context, %JID{} = jid, %Message{} = message, message_id, opts) do
+    participant = opts[:participant]
+    participant_jid = participant[:jid]
+    count = participant[:count] || 1
+    destination_jid = JIDUtil.to_string(jid)
+    participant_message = retry_resend_message(context, message, destination_jid, participant_jid)
+    bytes = Wire.encode(participant_message)
+
+    with {:ok, updated_context} <- maybe_assert_sessions(context, [participant_jid]),
+         {:ok, repo, %{type: type, ciphertext: ciphertext}} <-
+           Repository.encrypt_message(updated_context.signal_repository, %{
+             jid: participant_jid,
+             data: bytes
+           }),
+         :ok <-
+           relay(
+             %{updated_context | signal_repository: repo},
+             retry_resend_node(
+               context,
+               jid,
+               participant,
+               message_id,
+               message,
+               type,
+               ciphertext,
+               count,
+               opts
+             )
+           ),
+         :ok <-
+           maybe_cache_recent_message(
+             %{updated_context | signal_repository: repo},
+             jid,
+             message_id,
+             message,
+             opts
+           ) do
+      {:ok,
+       %{
+         id: message_id,
+         jid: jid,
+         message: message,
+         timestamp: now(opts)
+       }, %{updated_context | signal_repository: repo}}
+    end
+  end
+
   defp build_relay_node(context, jid, message_id, %Message{} = message, content, opts) do
     attrs =
       %{
@@ -368,6 +426,12 @@ defmodule BaileysEx.Message.Sender do
   defp retry_resend?(%{jid: jid}) when is_binary(jid), do: true
   defp retry_resend?(_participant), do: false
 
+  defp retry_participant?(%{jid: jid, count: count}) when is_binary(jid) and is_integer(count),
+    do: true
+
+  defp retry_participant?(%{jid: jid}) when is_binary(jid), do: true
+  defp retry_participant?(_participant), do: false
+
   defp maybe_append_participants(children, []), do: children
 
   defp maybe_append_participants(children, participants) do
@@ -411,6 +475,97 @@ defmodule BaileysEx.Message.Sender do
   end
 
   defp same_user?(jid1, jid2), do: JIDUtil.same_user?(jid1, jid2)
+
+  defp retry_resend_message(%{} = context, %Message{} = message, destination_jid, participant_jid) do
+    me_identity = context[:me_lid] || context[:me_id]
+
+    if same_user?(participant_jid, me_identity) do
+      wrap_device_sent_message(message, destination_jid)
+    else
+      message
+    end
+  end
+
+  defp retry_resend_node(
+         %{} = context,
+         %JID{} = jid,
+         participant,
+         message_id,
+         %Message{} = message,
+         type,
+         ciphertext,
+         count,
+         opts
+       ) do
+    participant_jid = participant[:jid]
+    destination_jid = JIDUtil.to_string(jid)
+    me_identity = context[:me_lid] || context[:me_id]
+
+    attrs =
+      %{
+        "id" => message_id,
+        "to" => destination_jid,
+        "type" => stanza_type(message)
+      }
+      |> Map.merge(stringify_attrs(opts[:additional_attributes] || %{}))
+      |> maybe_put_attr("device_fanout", if(retry_device_fanout?(jid), do: "false"))
+
+    attrs =
+      cond do
+        JIDUtil.group?(jid) ->
+          Map.put(attrs, "participant", participant_jid)
+
+        same_user?(participant_jid, me_identity) ->
+          attrs
+          |> Map.put("to", participant_jid)
+          |> Map.put("recipient", destination_jid)
+
+        true ->
+          Map.put(attrs, "to", participant_jid)
+      end
+
+    content =
+      [
+        %BinaryNode{
+          tag: "enc",
+          attrs: %{
+            "v" => "2",
+            "type" => Atom.to_string(type),
+            "count" => Integer.to_string(count)
+          },
+          content: {:binary, ciphertext}
+        }
+      ]
+      |> maybe_append_device_identity(
+        Map.has_key?(context, :device_identity),
+        context[:device_identity]
+      )
+
+    %BinaryNode{tag: "message", attrs: attrs, content: content}
+  end
+
+  defp retry_device_fanout?(%JID{} = jid),
+    do: not JIDUtil.group?(jid) and not JIDUtil.status_broadcast?(jid)
+
+  defp maybe_cache_recent_message(
+         %{store_ref: %RuntimeStore.Ref{} = store_ref, enable_recent_message_cache: true},
+         %JID{} = jid,
+         message_id,
+         %Message{} = proto_message,
+         opts
+       )
+       when is_binary(message_id) do
+    if retry_participant?(opts[:participant]) do
+      :ok
+    else
+      Retry.add_recent_message(store_ref, JIDUtil.to_string(jid), message_id, proto_message)
+    end
+  end
+
+  defp maybe_cache_recent_message(_context, _jid, _message_id, _proto_message, _opts), do: :ok
+
+  defp maybe_put_attr(attrs, _key, nil), do: attrs
+  defp maybe_put_attr(attrs, key, value), do: Map.put(attrs, key, value)
 
   defp stringify_attrs(attrs) do
     Map.new(attrs, fn {key, value} -> {to_string(key), value} end)

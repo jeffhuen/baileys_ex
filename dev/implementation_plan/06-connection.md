@@ -20,12 +20,22 @@ reference behavior while fitting OTP.
 > `offline`, `edge_routing`, `logout/1`, `send_presence_update/2`,
 > `send_node/2`, `query/3`, and `pair-device` / `pair-success`), plus
 > `Connection.EventEmitter`, `Connection.Store`, `Connection.Supervisor`, and
-> `Connection.Coordinator` runtime support for auto-connect/reconnect,
-> `creds_update` persistence, ETS-backed reads, init queries
+> `Connection.Coordinator` runtime support for configurable reconnect policy
+> (`:disabled`, `:restart_required`, `:all_non_logged_out`) with enforced
+> `max_retries`, synchronous `creds_update` mirroring into `Connection.Store`
+> before subscriber callbacks, ETS-backed reads, init queries
 > (`fetchProps`/`fetchBlocklist`/`fetchPrivacySettings`), dirty-bit handling,
+> HTTP/1.1-default WebSocket transport parity with Baileys' Node `ws` client,
+> upgrade-buffer flushing, in-order delivery for multi-frame WebSocket decode
+> batches, plus response-preserving Mint error handling for the WebSocket path,
 > and the `connecting -> awaiting_initial_sync -> syncing -> online`
-> choreography from `chats.ts`. Remaining auth persistence, phone pairing-code,
-> and pre-key upload work now belongs to Phase 7+ rather than Phase 6.
+> choreography from `chats.ts`. Successful login now defers the `me.lid`
+> `creds_update` until post-auth startup completes, matching the rc.9
+> `success` handler ordering, and the native QR-scan restart path now reaches
+> `connection: :open` after fixing Mint transport frame-order drift on
+> multi-frame post-auth batches. Remaining auth persistence, phone
+> pairing-code, and pre-key upload work now belongs to Phase 7+ rather than
+> Phase 6.
 
 ## Design Decisions
 
@@ -38,6 +48,14 @@ dependency and is well-supported in OTP 27+.
 Low-level, process-less HTTP/WebSocket client. Fits perfectly: we need raw frame
 access to layer Noise encryption on top. Mint returns data to the owning process
 via `Mint.WebSocket.stream/2`.
+
+**Force HTTP/1.1 for the WhatsApp WebSocket path.**
+Baileys rc.9 uses Node's `ws` client, which performs a classic HTTP/1.1
+`Upgrade: websocket` handshake. Mint negotiates `[:http1, :http2]` by default,
+which can drift into HTTP/2 extended CONNECT and fail against
+`web.whatsapp.com` with `:extended_connect_disabled`. The BaileysEx
+`MintWebSocket` transport should therefore default to `protocols: [:http1]`
+while still allowing explicit overrides for tests and non-WhatsApp callers.
 
 **Match Baileys layering before adding Elixir structure.**
 `Connection.Socket` should correspond to Baileys `makeSocket`, not absorb the
@@ -548,11 +566,12 @@ defmodule BaileysEx.Connection.Supervisor do
 end
 ```
 
-This supervisor now owns OTP-specific auto-connect/reconnect around the parity
-socket through a wrapper coordinator process. It observes
-`connection.update(connection: :close, last_disconnect: ...)`, reconnects on
-unexpected close reasons, persists `creds.update` into the runtime store, and
-starts the `AwaitingInitialSync` buffer timeout on
+This supervisor now owns OTP-specific runtime policy around the parity socket
+through a wrapper coordinator process. It observes
+`connection.update(connection: :close, last_disconnect: ...)`, optionally
+reconnects according to `Connection.Config.reconnect_policy` and
+`Connection.Config.max_retries`, persists `creds.update` into the runtime
+store, and starts the `AwaitingInitialSync` buffer timeout on
 `receivedPendingNotifications: true`.
 
 ### 6.5 Event emitter (`makeEventBuffer` parity, GAP-07, GAP-22)
@@ -713,7 +732,9 @@ end
 - [x] `connection.update` mirrors rc.9 field sequencing (`connecting`, `open`, `close`, `qr`, `isNewLogin`, `receivedPendingNotifications`, `isOnline`, `lastDisconnect`)
 - [x] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
 - [x] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
-- [x] Reconnection works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
+- [x] Reconnect behavior remains outside the raw socket and is configurable at the supervisor/wrapper layer, with `max_retries` enforced when reconnect is enabled
+- [x] `MintWebSocket` defaults WebSocket connects to HTTP/1.1 to match Baileys' `ws` transport while still allowing explicit protocol overrides
+- [x] `MintWebSocket` flushes buffered upgrade bytes into the WebSocket decoder, preserves in-order delivery across multi-frame WebSocket batches, and preserves parsed frames when Mint returns responses alongside an error
 - [x] Supervisor :rest_for_one restarts children correctly
 - [x] Event emitter dispatches to subscribers and supports batched `process` handling
 - [x] Store reads are concurrent via ETS
@@ -739,7 +760,7 @@ end
 - `lib/baileys_ex/auth/pairing.ex` — rc.9 pairing verification/signing helper for `pair-success`
 - `lib/baileys_ex/auth/qr.ex` — rc.9 QR payload generation helper for `pair-device`
 - `lib/baileys_ex/connection/socket.ex` — accepted in the current slice; covers post-handshake `makeSocket` foundations through `:connected`, including `pair-device` / `pair-success`
-- `lib/baileys_ex/connection/coordinator.ex` — accepted in the current slice; wrapper runtime for auto-connect/reconnect, `creds_update` persistence, and sync-state choreography
+- `lib/baileys_ex/connection/coordinator.ex` — accepted in the current slice; wrapper runtime for configurable reconnect policy, synchronous `creds_update` store mirroring before subscriber dispatch, and sync-state choreography
 - `lib/baileys_ex/connection/supervisor.ex` — accepted in the current slice; `:rest_for_one` wrapper with socket/store/emitter/task/coordinator wiring
 - `lib/baileys_ex/connection/event_emitter.ex` — accepted in the current slice; `makeEventBuffer` foundation with the rc.9 bufferable catalog, nested buffered-function support, and internal runtime taps
 - `lib/baileys_ex/connection/store.ex` — accepted in the current slice; runtime store with ETS-backed concurrent reads and serialized writes

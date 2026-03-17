@@ -28,6 +28,7 @@ defmodule BaileysEx.Message.Receiver do
           required(:event_emitter) => GenServer.server(),
           required(:me_id) => String.t(),
           optional(:me_lid) => String.t(),
+          optional(:enable_recent_message_cache) => boolean(),
           optional(:store_ref) => ConnectionStore.Ref.t(),
           optional(:signal_store) => Store.t(),
           optional(:send_receipt_fun) => (BinaryNode.t() -> :ok | {:error, term()}),
@@ -50,6 +51,13 @@ defmodule BaileysEx.Message.Receiver do
          {:ok, context} <-
            maybe_persist_lid_mapping(envelope, %{context | signal_repository: decrypted_repo}),
          {:ok, proto_message} <- Wire.decode(plaintext),
+         :ok <-
+           maybe_cache_recent_message(
+             context,
+             envelope.remote_jid,
+             node.attrs["id"],
+             proto_message
+           ),
          received_message <- build_received_message(node, envelope, proto_message),
          {:ok, received_message, message_side_effects} <-
            normalize_received_message(received_message, context),
@@ -617,6 +625,18 @@ defmodule BaileysEx.Message.Receiver do
 
   defp direct_message_type("pkmsg"), do: :pkmsg
   defp direct_message_type("msg"), do: :msg
+
+  defp maybe_cache_recent_message(
+         %{store_ref: %ConnectionStore.Ref{} = store_ref, enable_recent_message_cache: true},
+         remote_jid,
+         message_id,
+         %Message{} = proto_message
+       )
+       when is_binary(remote_jid) and is_binary(message_id) do
+    Retry.add_recent_message(store_ref, remote_jid, message_id, proto_message)
+  end
+
+  defp maybe_cache_recent_message(_context, _remote_jid, _message_id, _proto_message), do: :ok
 
   defp verified_biz_name(%BinaryNode{content: content}) when is_list(content) do
     case Enum.find(content, &match?(%BinaryNode{tag: "verified_name"}, &1)) do

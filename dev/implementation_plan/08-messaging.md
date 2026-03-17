@@ -23,7 +23,7 @@ Implementation status:
 - Phase 8 is complete on `phase-08-messaging`.
 - The branch now carries the WAProto subset required for the full send/receive core, including template/buttons wrappers, sender-key distribution content, device-sent messages, poll update payloads, encrypted reactions, encrypted event responses, verified-name certificates, and the history-sync/message shapes exercised by the Phase 8 runtime.
 - Because the repo already exposes `BaileysEx.Signal.Repository`, `Signal.Store`, and `Protocol.USync`, the implemented sender/receiver path binds to those existing boundaries instead of inventing a parallel `SessionCipher` API.
-- `BaileysEx.Message.Retry`, `BaileysEx.Message.PeerData`, `BaileysEx.Signal.Device`, `BaileysEx.Signal.Session`, and the raw node dispatch seam from `Connection.Socket` through `Connection.Coordinator` now cover the rc.9 retry, PDO, device discovery, session assertion, and runtime receive responsibilities for the messaging layer.
+- `BaileysEx.Message.Retry`, `BaileysEx.Message.PeerData`, `BaileysEx.Signal.Device`, `BaileysEx.Signal.Session`, and the raw node dispatch seam from `Connection.Socket` through `Connection.Coordinator` now cover the rc.9 retry, PDO, device discovery, session assertion, and runtime receive responsibilities for the messaging layer, including runtime recent-message caching for sent/received messages and retry-receipt replay through the live coordinator/send pipeline.
 - `BaileysEx.Message.NotificationHandler`, `BaileysEx.Message.IdentityChangeHandler`, `BaileysEx.Message.Normalizer`, and `BaileysEx.Message.Reporting` now cover the remaining notification families, identity-change refreshes, received-message normalization/decryption side effects, and reporting-token attachment rules in scope.
 - History sync has a dedicated module for inline/download payload resolution, decompression, PN↔LID fallback extraction, and receiver-side `messaging_history_set` emission with sync-type-specific payloads.
 
@@ -910,8 +910,9 @@ end
 ```
 
 Implementation status:
-- Complete on `phase-08-messaging`.
-- `BaileysEx.Message.Retry` now mirrors the rc.9 manager semantics needed at this phase boundary: all 14 retry reasons are represented, MAC failures force immediate session recreation with a 1-hour cooldown, recent-message cache entries are bounded and TTL-pruned, scheduled phone requests are debounced, outbound retry receipts are built and sent with the expected node shape, and placeholder resend requests deduplicate/respect resolution and timeout windows.
+- Complete on `phase-08-messaging` for the in-tree manager/runtime surface.
+- `BaileysEx.Message.Retry` now mirrors the rc.9 manager semantics needed at this phase boundary: all 14 retry reasons are represented, MAC failures force immediate session recreation with a 1-hour cooldown, recent-message cache entries are bounded and TTL-pruned, scheduled phone requests are debounced, outbound retry receipts are built and sent with the expected node shape, placeholder resend requests deduplicate/respect resolution and timeout windows, and the production runtime now caches sent/received messages plus replays retry receipts through `Connection.Coordinator` and `Message.Sender`.
+- Remaining parity follow-up: automatic Baileys-style retry-request emission from the inbound decrypt-failure path is still separate work.
 
 ### 8.5a Peer Data Operations (PDO)
 

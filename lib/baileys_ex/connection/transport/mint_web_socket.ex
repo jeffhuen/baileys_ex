@@ -1,6 +1,10 @@
 defmodule BaileysEx.Connection.Transport.MintWebSocket do
   @moduledoc """
   Mint-backed WebSocket transport for the connection socket.
+
+  Defaults the WebSocket HTTP transport to HTTP/1.1 so the WhatsApp socket
+  matches Baileys' `ws` client behavior instead of attempting Mint's HTTP/2
+  extended CONNECT path.
   """
 
   @behaviour BaileysEx.Connection.Transport
@@ -37,7 +41,8 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
     adapter = Keyword.get(opts, :adapter, MintAdapter)
     connect_opts = connect_opts(config, opts)
 
-    with {:ok, {http_scheme, ws_scheme, host, port, path}} <- parse_ws_url(config.ws_url),
+    with {:ok, {http_scheme, ws_scheme, host, port, path}} <-
+           parse_ws_url(ws_url_with_routing_info(config.ws_url, Keyword.get(opts, :routing_info))),
          {:ok, conn} <- adapter.http_connect(http_scheme, host, port, connect_opts),
          {:ok, conn, request_ref} <-
            adapter.websocket_upgrade(ws_scheme, conn, path, [], connect_opts) do
@@ -63,8 +68,11 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
       {:ok, conn, responses} ->
         handle_responses(%{state | conn: conn}, responses, [])
 
-      {:error, conn, reason, _responses} ->
-        {:error, %{state | conn: conn}, reason}
+      {:error, conn, reason, responses} ->
+        case handle_responses(%{state | conn: conn}, responses, []) do
+          {:ok, state, events} -> {:ok, state, events ++ [error: reason]}
+          {:error, state, response_reason} -> {:error, state, response_reason}
+        end
 
       :unknown ->
         :unknown
@@ -117,11 +125,17 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
                state.response_headers
              ) do
           {:ok, conn, websocket} ->
-            handle_responses(
-              %{state | conn: conn, websocket: websocket, phase: :open},
-              rest,
-              [:connected | events]
-            )
+            case flush_upgrade_buffer(%{state | conn: conn, websocket: websocket, phase: :open}) do
+              {:ok, state, buffered_events} ->
+                handle_responses(
+                  state,
+                  rest,
+                  Enum.reverse(buffered_events, [:connected | events])
+                )
+
+              {:error, state, reason} ->
+                {:error, state, reason}
+            end
 
           {:error, conn, reason} ->
             {:error, %{state | conn: conn}, reason}
@@ -150,12 +164,29 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
   end
 
   defp map_frames_to_events(frames) do
-    Enum.reduce(frames, [], fn
-      {:binary, payload}, acc -> [{:binary, payload} | acc]
-      {:close, code, reason}, acc -> [{:closed, {code, reason}} | acc]
-      {:error, reason}, acc -> [{:error, reason} | acc]
-      _frame, acc -> acc
+    Enum.flat_map(frames, fn
+      {:binary, payload} -> [{:binary, payload}]
+      {:close, code, reason} -> [{:closed, {code, reason}}]
+      {:error, reason} -> [{:error, reason}]
+      _frame -> []
     end)
+  end
+
+  defp flush_upgrade_buffer(%__MODULE__{} = state) do
+    {conn, buffered_data} = state.adapter.http_take_buffer(state.conn)
+    state = %{state | conn: conn}
+
+    if buffered_data == <<>> do
+      {:ok, state, []}
+    else
+      case state.adapter.websocket_decode(state.websocket, buffered_data) do
+        {:ok, websocket, frames} ->
+          {:ok, %{state | websocket: websocket}, map_frames_to_events(frames)}
+
+        {:error, websocket, reason} ->
+          {:error, %{state | websocket: websocket}, reason}
+      end
+    end
   end
 
   defp parse_ws_url(ws_url) when is_binary(ws_url) do
@@ -189,10 +220,27 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
   defp fetch_ws_host(host) when is_binary(host) and byte_size(host) > 0, do: {:ok, host}
   defp fetch_ws_host(_host), do: {:error, {:invalid_ws_url, :missing_host}}
 
+  defp ws_url_with_routing_info(ws_url, routing_info)
+       when is_binary(ws_url) and is_binary(routing_info) and byte_size(routing_info) > 0 do
+    uri = URI.parse(ws_url)
+    ed = Base.url_encode64(routing_info, padding: false)
+
+    query =
+      [uri.query, "ED=#{ed}"]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("&")
+
+    %{uri | query: query}
+    |> URI.to_string()
+  end
+
+  defp ws_url_with_routing_info(ws_url, _routing_info), do: ws_url
+
   defp connect_opts(%Config{} = config, opts) do
-    [
-      timeout: config.connect_timeout_ms,
-      transport_opts: [cacerts: :public_key.cacerts_get()]
-    ] ++ Keyword.drop(opts, [:adapter])
+    opts
+    |> Keyword.drop([:adapter])
+    |> Keyword.put_new(:timeout, config.connect_timeout_ms)
+    |> Keyword.put_new(:transport_opts, cacerts: :public_key.cacerts_get())
+    |> Keyword.put_new(:protocols, [:http1])
   end
 end

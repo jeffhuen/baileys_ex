@@ -25,6 +25,7 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Message.IdentityChangeHandler
   alias BaileysEx.Message.NotificationHandler
   alias BaileysEx.Message.Receipt
+  alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Receiver
   alias BaileysEx.Message.Sender
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
@@ -83,7 +84,8 @@ defmodule BaileysEx.Connection.Coordinator do
       :app_state_sync_ref,
       event_buffer_seed: %{},
       identity_change_cache: %{},
-      sync_state: :connecting
+      sync_state: :connecting,
+      reconnect_attempts: 0
     ]
   end
 
@@ -137,11 +139,11 @@ defmodule BaileysEx.Connection.Coordinator do
 
     coordinator_pid = self()
 
-    unsubscribe =
-      EventEmitter.tap(state.event_emitter, &Kernel.send(coordinator_pid, {:events, &1}))
-
     wrapped_signal_store = wrap_signal_store(state.signal_store)
     store_ref = Store.wrap(state.store)
+
+    unsubscribe =
+      EventEmitter.tap(state.event_emitter, coordinator_event_tap(coordinator_pid, store_ref))
 
     state =
       state
@@ -211,6 +213,22 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   @impl true
+  def handle_info({:events, previous_creds, events}, %State{} = state)
+      when is_map(previous_creds) and is_map(events) do
+    state =
+      state
+      |> handle_socket_node(events)
+      |> persist_lid_mapping_update(events)
+      |> maybe_seed_event_buffer(events)
+      |> maybe_send_push_name_presence_update(previous_creds, events)
+      |> handle_connection_update(events)
+      |> handle_sync_event(events)
+      |> maybe_start_initial_app_state_sync(events)
+      |> handle_dirty_update(events)
+
+    {:noreply, state}
+  end
+
   def handle_info({:events, events}, %State{} = state) when is_map(events) do
     previous_creds = Store.get(state.store_ref, :creds, %{})
 
@@ -286,6 +304,21 @@ defmodule BaileysEx.Connection.Coordinator do
 
   def terminate(_reason, _state), do: :ok
 
+  defp coordinator_event_tap(coordinator_pid, store_ref) do
+    fn events ->
+      previous_creds = Store.get(store_ref, :creds, %{})
+      :ok = persist_tapped_creds_update(store_ref, events)
+      Kernel.send(coordinator_pid, {:events, previous_creds, events})
+    end
+  end
+
+  defp persist_tapped_creds_update(store_ref, %{creds_update: creds_update})
+       when is_map(creds_update) do
+    Store.merge_creds(store_ref, creds_update)
+  end
+
+  defp persist_tapped_creds_update(_store_ref, _events), do: :ok
+
   defp handle_socket_node(
          %State{signal_repository: %Repository{} = repository} = state,
          %{socket_node: %{node: %BinaryNode{tag: "message"} = node}}
@@ -319,6 +352,7 @@ defmodule BaileysEx.Connection.Coordinator do
   defp handle_socket_node(%State{} = state, %{
          socket_node: %{node: %BinaryNode{tag: "receipt"} = node}
        }) do
+    state = maybe_handle_retry_receipt(state, node)
     :ok = Receipt.process_receipt(node, state.event_emitter)
     state
   end
@@ -384,6 +418,7 @@ defmodule BaileysEx.Connection.Coordinator do
   defp handle_connection_update(%State{} = state, %{connection_update: %{connection: :open}}) do
     state
     |> cancel_reconnect()
+    |> Map.put(:reconnect_attempts, 0)
     |> maybe_execute_init_queries()
     |> maybe_send_presence_update()
   end
@@ -394,7 +429,7 @@ defmodule BaileysEx.Connection.Coordinator do
        ) do
     reason = disconnect_reason(last_disconnect)
 
-    if reconnectable_reason?(reason) do
+    if should_schedule_reconnect?(state.config, reason, state.reconnect_attempts + 1) do
       schedule_reconnect(state, reason)
     else
       cancel_reconnect(state)
@@ -496,14 +531,22 @@ defmodule BaileysEx.Connection.Coordinator do
   defp handle_dirty_update(%State{} = state, _events), do: state
 
   defp schedule_reconnect(%State{reconnect_timer: nil} = state, reason) do
+    attempt = state.reconnect_attempts + 1
+
     Telemetry.execute(
       [:connection, :reconnect],
       %{count: 1},
-      %{reason: reason, retry_delay_ms: state.config.retry_delay_ms}
+      %{
+        reason: reason,
+        retry_delay_ms: state.config.retry_delay_ms,
+        attempt: attempt,
+        max_retries: state.config.max_retries,
+        reconnect_policy: state.config.reconnect_policy
+      }
     )
 
     timer = Process.send_after(self(), :reconnect_socket, state.config.retry_delay_ms)
-    %{state | reconnect_timer: timer}
+    %{state | reconnect_timer: timer, reconnect_attempts: attempt}
   end
 
   defp schedule_reconnect(%State{} = state, _reason), do: state
@@ -534,8 +577,8 @@ defmodule BaileysEx.Connection.Coordinator do
   defp disconnect_reason(%{error: %{status_code: 500}}), do: :bad_session
   defp disconnect_reason(_last_disconnect), do: nil
 
-  defp reconnectable_reason?(:logged_out), do: false
-  defp reconnectable_reason?(_reason), do: true
+  defp should_schedule_reconnect?(config, reason, attempt),
+    do: BaileysEx.Connection.Config.should_reconnect?(config, reason, attempt)
 
   defp should_sync_history_message?(%{should_sync_history_message: fun}, history_message)
        when is_function(fun, 1) do
@@ -846,6 +889,7 @@ defmodule BaileysEx.Connection.Coordinator do
     %{
       signal_repository: repository,
       event_emitter: state.event_emitter,
+      enable_recent_message_cache: state.config.enable_recent_message_cache,
       me_id: nested_id(creds),
       me_lid: nested_lid(creds),
       store_ref: state.store_ref,
@@ -861,14 +905,92 @@ defmodule BaileysEx.Connection.Coordinator do
     creds = Store.get(state.store_ref, :creds, %{})
 
     %{
+      enable_recent_message_cache: state.config.enable_recent_message_cache,
       signal_repository: repository,
       signal_store: state.signal_store,
       me_id: nested_id(creds),
       me_lid: nested_lid(creds)
     }
     |> maybe_put(:device_identity, encoded_device_identity(creds))
+    |> maybe_put(:store_ref, state.store_ref)
     |> maybe_put_callback(:query_fun, sender_query_fun(state))
     |> maybe_put_callback(:send_node_fun, receipt_sender_fun(state))
+  end
+
+  defp maybe_handle_retry_receipt(
+         %State{signal_repository: %Repository{} = repository} = state,
+         %BinaryNode{attrs: %{"type" => "retry"}} = node
+       ) do
+    case Retry.handle_retry_receipt(state.store_ref, node,
+           max_retry_count: state.config.max_msg_retry_count
+         ) do
+      {:ok, entries} ->
+        Enum.reduce(entries, state, fn %{id: id, message: message}, acc ->
+          resend_retry_message(acc, repository_for_retry(acc, repository), node, id, message)
+        end)
+
+      {:error, _reason} ->
+        state
+    end
+  end
+
+  defp maybe_handle_retry_receipt(%State{} = state, %BinaryNode{}), do: state
+
+  defp resend_retry_message(
+         %State{} = state,
+         %Repository{} = repository,
+         %BinaryNode{attrs: attrs} = node,
+         message_id,
+         %BaileysEx.Protocol.Proto.Message{} = message
+       ) do
+    with {:ok, jid} <- normalize_retry_jid(attrs["from"] || attrs["recipient"] || attrs["to"]),
+         participant <- retry_participant(node),
+         {:ok, _result, %{signal_repository: %Repository{} = updated_repository}} <-
+           Sender.send_proto(
+             sender_context(%{state | signal_repository: repository}, repository),
+             jid,
+             message,
+             message_id_fun: fn -> message_id end,
+             participant: participant
+           ) do
+      %{state | signal_repository: updated_repository}
+    else
+      _ -> state
+    end
+  end
+
+  defp repository_for_retry(%State{signal_repository: %Repository{} = repository}, _fallback),
+    do: repository
+
+  defp repository_for_retry(%State{}, %Repository{} = repository), do: repository
+
+  defp retry_participant(%BinaryNode{attrs: %{"participant" => participant}} = node)
+       when is_binary(participant) do
+    count =
+      case BinaryNodeUtil.child(node, "retry") do
+        %BinaryNode{attrs: %{"count" => retry_count}} -> parse_retry_count(retry_count)
+        _ -> 1
+      end
+
+    %{jid: participant, count: count}
+  end
+
+  defp retry_participant(_node), do: nil
+
+  defp parse_retry_count(count) when is_binary(count) do
+    case Integer.parse(count) do
+      {parsed, ""} when parsed > 0 -> parsed
+      _ -> 1
+    end
+  end
+
+  defp parse_retry_count(_count), do: 1
+
+  defp normalize_retry_jid(jid) when is_binary(jid) do
+    case BaileysEx.Protocol.JID.parse(jid) do
+      %BaileysEx.JID{} = parsed -> {:ok, parsed}
+      _ -> {:error, {:invalid_jid, jid}}
+    end
   end
 
   defp notification_context(%State{} = state) do

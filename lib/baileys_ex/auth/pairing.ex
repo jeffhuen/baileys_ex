@@ -22,8 +22,10 @@ defmodule BaileysEx.Auth.Pairing do
   @spec configure_successful_pairing(BinaryNode.t(), map()) ::
           {:ok, %{reply: BinaryNode.t(), creds_update: map()}} | {:error, term()}
   def configure_successful_pairing(%BinaryNode{} = stanza, auth_state) when is_map(auth_state) do
-    with {:ok, pair_success_node} <- fetch_child(stanza, "pair-success"),
+    with {:ok, message_id} <- fetch_node_attr(stanza, "id"),
+         {:ok, pair_success_node} <- fetch_child(stanza, "pair-success"),
          {:ok, device_identity_node} <- fetch_child(pair_success_node, "device-identity"),
+         {:ok, device_node} <- fetch_child(pair_success_node, "device"),
          {:ok, device_identity_hmac} <- fetch_binary_content(device_identity_node),
          {:ok, device_identity_hmac} <- ADVSignedDeviceIdentityHMAC.decode(device_identity_hmac),
          {:ok, adv_secret_key} <- fetch_adv_secret_key(auth_state),
@@ -32,25 +34,24 @@ defmodule BaileysEx.Auth.Pairing do
          {:ok, device_identity} <- ADVDeviceIdentity.decode(account.details),
          {:ok, signed_identity_key} <- fetch_signed_identity_key(auth_state),
          :ok <- verify_account_signature(account, device_identity, signed_identity_key.public),
+         {:ok, key_index} <- fetch_device_identity_key_index(device_identity),
+         {:ok, jid} <- fetch_node_attr(device_node, "jid"),
+         {:ok, lid} <- fetch_node_attr(device_node, "lid"),
          {:ok, device_signature} <-
            Curve.sign(
              signed_identity_key.private,
              @device_sig_prefix <>
                account.details <> signed_identity_key.public <> account.account_signature_key
            ),
-         {:ok, signal_identity} <-
-           create_signal_identity(
-             fetch_attr!(pair_success_node, "device", "lid"),
-             account.account_signature_key
-           ) do
+         {:ok, signal_identity} <- create_signal_identity(lid, account.account_signature_key),
+         {:ok, reply} <- reply_node(message_id, key_index, encode_account(account)) do
       account = %{account | device_signature: device_signature}
-      reply = reply_node(stanza.attrs["id"], device_identity.key_index, encode_account(account))
 
       creds_update = %{
         account: account,
         me: %{
-          id: fetch_attr!(pair_success_node, "device", "jid"),
-          lid: fetch_attr!(pair_success_node, "device", "lid"),
+          id: jid,
+          lid: lid,
           name: fetch_optional_attr(pair_success_node, "biz", "name")
         },
         signal_identities:
@@ -125,25 +126,30 @@ defmodule BaileysEx.Auth.Pairing do
     |> ADVSignedDeviceIdentity.encode()
   end
 
-  defp reply_node(message_id, key_index, encoded_identity) do
-    %BinaryNode{
-      tag: "iq",
-      attrs: %{"to" => @s_whatsapp_net, "type" => "result", "id" => message_id},
-      content: [
-        %BinaryNode{
-          tag: "pair-device-sign",
-          attrs: %{},
-          content: [
-            %BinaryNode{
-              tag: "device-identity",
-              attrs: %{"key-index" => Integer.to_string(key_index || 0)},
-              content: {:binary, encoded_identity}
-            }
-          ]
-        }
-      ]
-    }
+  defp reply_node(message_id, key_index, encoded_identity)
+       when is_binary(message_id) and is_integer(key_index) and key_index >= 0 do
+    {:ok,
+     %BinaryNode{
+       tag: "iq",
+       attrs: %{"to" => @s_whatsapp_net, "type" => "result", "id" => message_id},
+       content: [
+         %BinaryNode{
+           tag: "pair-device-sign",
+           attrs: %{},
+           content: [
+             %BinaryNode{
+               tag: "device-identity",
+               attrs: %{"key-index" => Integer.to_string(key_index)},
+               content: {:binary, encoded_identity}
+             }
+           ]
+         }
+       ]
+     }}
   end
+
+  defp reply_node(_message_id, _key_index, _encoded_identity),
+    do: {:error, :invalid_pairing_reply}
 
   defp fetch_signed_identity_key(%{
          signed_identity_key: %{public: public, private: private} = key_pair
@@ -180,18 +186,17 @@ defmodule BaileysEx.Auth.Pairing do
 
   defp fetch_binary_content(_node), do: {:error, :invalid_device_identity}
 
-  defp fetch_attr!(node, child_tag, attr_name) do
-    node
-    |> BinaryNodeUtil.child(child_tag)
-    |> case do
-      %BinaryNode{attrs: attrs} ->
-        case attrs[attr_name] do
-          value when is_binary(value) -> value
-          _ -> raise ArgumentError, "missing #{child_tag}.#{attr_name}"
-        end
+  defp fetch_device_identity_key_index(%ADVDeviceIdentity{key_index: key_index})
+       when is_integer(key_index) and key_index >= 0,
+       do: {:ok, key_index}
 
-      nil ->
-        raise ArgumentError, "missing #{child_tag}"
+  defp fetch_device_identity_key_index(_device_identity),
+    do: {:error, :missing_device_identity_key_index}
+
+  defp fetch_node_attr(%BinaryNode{attrs: attrs}, attr_name) when is_binary(attr_name) do
+    case attrs[attr_name] do
+      value when is_binary(value) -> {:ok, value}
+      _ -> {:error, {:missing_attr, attr_name}}
     end
   end
 

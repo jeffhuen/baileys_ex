@@ -308,7 +308,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert child_pid!(supervisor, Socket) == socket_pid
   end
 
-  test "supervisor auto-connects the socket and reconnects after unexpected close" do
+  test "supervisor does not auto-reconnect by default after an unexpected close" do
     telemetry_id =
       TelemetryHelpers.attach_events(self(), [
         [:baileys_ex, :connection, :reconnect]
@@ -331,10 +331,92 @@ defmodule BaileysEx.Connection.SupervisorTest do
     socket_pid = child_pid!(supervisor, Socket)
     Kernel.send(socket_pid, {:emit_closed, :tcp_closed})
 
-    assert_receive {:telemetry, [:baileys_ex, :connection, :reconnect], %{count: 1},
-                    %{reason: :tcp_closed, retry_delay_ms: 10}}
+    refute_receive {:telemetry, [:baileys_ex, :connection, :reconnect], _, _}, 50
+    refute_receive :transport_connected_attempt, 200
+  end
+
+  test "supervisor does not reconnect for non-restart closes under restart-required policy" do
+    name = {:phase6_test, System.unique_integer([:positive])}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(retry_delay_ms: 10, reconnect_policy: :restart_required),
+               auth_state: %{creds: %{}},
+               transport: {ReconnectTransport, %{test_pid: self()}}
+             )
+
+    assert_receive :transport_connected_attempt
+
+    socket_pid = child_pid!(supervisor, Socket)
+    Kernel.send(socket_pid, {:emit_closed, :tcp_closed})
+
+    refute_receive :transport_connected_attempt, 50
+  end
+
+  test "supervisor reconnects for restart-required when configured" do
+    name = {:phase6_test, System.unique_integer([:positive])}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(retry_delay_ms: 10, reconnect_policy: :restart_required),
+               auth_state: %{creds: %{}},
+               transport: {ReconnectTransport, %{test_pid: self()}}
+             )
+
+    assert_receive :transport_connected_attempt
+
+    socket_pid = child_pid!(supervisor, Socket)
+    Kernel.send(socket_pid, {:emit_closed, :restart_required})
 
     assert_receive :transport_connected_attempt, 200
+  end
+
+  test "supervisor enforces max_retries for configured reconnect policy" do
+    telemetry_id =
+      TelemetryHelpers.attach_events(self(), [
+        [:baileys_ex, :connection, :reconnect]
+      ])
+
+    on_exit(fn -> TelemetryHelpers.detach(telemetry_id) end)
+
+    name = {:phase6_test, System.unique_integer([:positive])}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   retry_delay_ms: 10,
+                   reconnect_policy: :all_non_logged_out,
+                   max_retries: 1
+                 ),
+               auth_state: %{creds: %{}},
+               transport: {ReconnectTransport, %{test_pid: self()}}
+             )
+
+    assert_receive :transport_connected_attempt
+
+    socket_pid = child_pid!(supervisor, Socket)
+    Kernel.send(socket_pid, {:emit_closed, :tcp_closed})
+
+    assert_receive {:telemetry, [:baileys_ex, :connection, :reconnect], %{count: 1},
+                    %{
+                      reason: :tcp_closed,
+                      retry_delay_ms: 10,
+                      attempt: 1,
+                      max_retries: 1,
+                      reconnect_policy: :all_non_logged_out
+                    }}
+
+    assert_receive :transport_connected_attempt, 200
+
+    socket_pid = child_pid!(supervisor, Socket)
+    Kernel.send(socket_pid, {:emit_closed, :tcp_closed})
+
+    refute_receive {:telemetry, [:baileys_ex, :connection, :reconnect], %{count: 1}, _}, 50
+    refute_receive :transport_connected_attempt, 200
   end
 
   test "supervisor does not reconnect after a logged out close" do
@@ -343,7 +425,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert {:ok, supervisor} =
              Supervisor.start_link(
                name: name,
-               config: Config.new(retry_delay_ms: 10),
+               config: Config.new(retry_delay_ms: 10, reconnect_policy: :all_non_logged_out),
                auth_state: %{creds: %{}},
                transport: {ReconnectTransport, %{test_pid: self()}}
              )
@@ -354,6 +436,79 @@ defmodule BaileysEx.Connection.SupervisorTest do
     Kernel.send(socket_pid, {:emit_closed, :logged_out})
 
     refute_receive :transport_connected_attempt, 200
+  end
+
+  test "supervisor replays cached messages for retry receipts through the runtime" do
+    {repo, _signal_store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    assert {:ok, repo} =
+             BaileysEx.Signal.Repository.inject_e2e_session(repo, %{
+               jid: "15551234567:2@s.whatsapp.net",
+               session: session
+             })
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111:1@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: self(),
+               signal_repository: repo
+             )
+
+    assert_receive :fake_socket_connect
+
+    runtime_store =
+      supervisor
+      |> child_pid!(Store)
+      |> Store.wrap()
+
+    assert :ok =
+             BaileysEx.Message.Retry.add_recent_message(
+               runtime_store,
+               "15551234567@s.whatsapp.net",
+               "retry-runtime-1",
+               Builder.build(%{text: "retry runtime replay"})
+             )
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+
+    receipt = %BinaryNode{
+      tag: "receipt",
+      attrs: %{
+        "id" => "retry-runtime-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => "15551234567:2@s.whatsapp.net",
+        "type" => "retry",
+        "count" => "2"
+      },
+      content: [
+        %BinaryNode{
+          tag: "retry",
+          attrs: %{"count" => "2"},
+          content: nil
+        }
+      ]
+    }
+
+    assert :ok = EventEmitter.emit(emitter_pid, :socket_node, %{node: receipt})
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{
+                        "id" => "retry-runtime-1",
+                        "to" => "15551234567:2@s.whatsapp.net",
+                        "device_fanout" => "false"
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "enc",
+                          attrs: %{"count" => "2", "v" => "2"}
+                        }
+                      ]
+                    }}
   end
 
   test "supervisor persists creds updates into the store" do

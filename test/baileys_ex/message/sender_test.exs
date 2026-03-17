@@ -2,7 +2,9 @@ defmodule BaileysEx.Message.SenderTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Connection.Store, as: RuntimeStore
   alias BaileysEx.JID
+  alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Sender
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Signal.Repository
@@ -565,6 +567,101 @@ defmodule BaileysEx.Message.SenderTest do
 
     assert_receive {:relay_node, %BinaryNode{content: content}}
     refute Enum.any?(content, &match?(%BinaryNode{tag: "tctoken"}, &1))
+  end
+
+  test "send/4 caches recently sent messages when runtime retry cache is enabled" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    {:ok, runtime_store} = RuntimeStore.start_link()
+    runtime_store_ref = RuntimeStore.wrap(runtime_store)
+    session = MessageSignalHelpers.session_fixture()
+
+    repo =
+      repo
+      |> inject_session!("15551234567:0@s.whatsapp.net", session)
+      |> inject_session!("15550001111:2@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => ["1", "2"]}
+             })
+
+    context = %{
+      enable_recent_message_cache: true,
+      signal_repository: repo,
+      signal_store: store,
+      store_ref: runtime_store_ref,
+      me_id: "15550001111:1@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    assert {:ok, %{id: "3EB0RECENT1"}, _updated_context} =
+             Sender.send(context, jid, %{text: "cache me"},
+               message_id_fun: fn _me_id -> "3EB0RECENT1" end
+             )
+
+    assert %{
+             message: %Message{
+               extended_text_message: %Message.ExtendedTextMessage{text: "cache me"}
+             }
+           } =
+             Retry.get_recent_message(
+               runtime_store_ref,
+               "15551234567@s.whatsapp.net",
+               "3EB0RECENT1"
+             )
+  end
+
+  test "send_proto/4 performs participant-targeted retry resends" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    repo = inject_session!(repo, "15551234567:2@s.whatsapp.net", session)
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111:1@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    message = BaileysEx.Message.Builder.build(%{text: "retry replay"})
+
+    assert {:ok, %{id: "3EB0RETRY1"}, _updated_context} =
+             Sender.send_proto(context, jid, message,
+               message_id_fun: fn _me_id -> "3EB0RETRY1" end,
+               participant: %{jid: "15551234567:2@s.whatsapp.net", count: 2}
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{
+                        "id" => "3EB0RETRY1",
+                        "to" => "15551234567:2@s.whatsapp.net",
+                        "type" => "text",
+                        "device_fanout" => "false"
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "enc",
+                          attrs: %{"type" => type, "count" => "2", "v" => "2"}
+                        }
+                      ]
+                    }}
+
+    assert type in ["msg", "pkmsg"]
   end
 
   defp inject_session!(repo, jid, session) do

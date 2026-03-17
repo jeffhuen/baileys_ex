@@ -9,6 +9,8 @@ defmodule BaileysEx.Connection.Socket do
 
   @behaviour :gen_statem
 
+  require Logger
+
   alias BaileysEx.BinaryNode
   alias BaileysEx.Auth.ConnectionValidator
   alias BaileysEx.Auth.Pairing
@@ -24,6 +26,10 @@ defmodule BaileysEx.Connection.Socket do
   alias BaileysEx.Signal.Store, as: SignalStore
 
   @s_whatsapp_net "s.whatsapp.net"
+  @print_qr_in_terminal_warning """
+  The `print_qr_in_terminal` option is deprecated. QR codes are not printed automatically.
+  Listen to the `connection.update` event and handle the `qr` payload yourself.
+  """
 
   @type state ::
           :disconnected
@@ -50,6 +56,7 @@ defmodule BaileysEx.Connection.Socket do
           task_supervisor: term(),
           noise_opts: keyword(),
           noise: Noise.t() | nil,
+          pending_lid: binary() | nil,
           transport_module: module(),
           transport_options: term(),
           transport_state: term() | nil,
@@ -78,6 +85,7 @@ defmodule BaileysEx.Connection.Socket do
     :event_emitter,
     :signal_store,
     :noise,
+    :pending_lid,
     :task_supervisor,
     :transport_module,
     :transport_options,
@@ -260,6 +268,10 @@ defmodule BaileysEx.Connection.Socket do
         end)
     }
 
+    if data.config.print_qr_in_terminal do
+      Logger.warning(@print_qr_in_terminal_warning)
+    end
+
     {:ok, :disconnected, data}
   end
 
@@ -277,7 +289,7 @@ defmodule BaileysEx.Connection.Socket do
   def connecting(:enter, _old_state, data), do: {:keep_state, data}
 
   def connecting(:internal, :establish_transport, data) do
-    case data.transport_module.connect(data.config, data.transport_options) do
+    case data.transport_module.connect(data.config, effective_transport_options(data)) do
       {:ok, transport_state} ->
         {:keep_state, %{data | transport_state: transport_state, last_error: nil}}
 
@@ -564,13 +576,19 @@ defmodule BaileysEx.Connection.Socket do
     case Noise.decode_frames(data.noise, raw_payload) do
       {:ok, {noise, [server_hello]}} ->
         case finish_noise_handshake(%{data | noise: noise}, server_hello) do
-          {:ok, data} -> {:ok, :authenticating, data}
-          {:error, reason, data} -> {:error, reason, data}
+          {:ok, data} ->
+            {:ok, :authenticating, data}
+
+          {:error, reason, data} ->
+            {:error, reason, data}
         end
 
-      {:ok, {_noise, []}} ->
-        # Partial frame — buffer accumulated in noise state, wait for more data
-        {:ok, :noise_handshake, data}
+      {:ok, {_noise, frames}} ->
+        if frames == [] do
+          {:ok, :noise_handshake, data}
+        else
+          {:error, {:unexpected_handshake_frames, length(frames)}, data}
+        end
 
       {:error, reason} ->
         {:error, reason, data}
@@ -654,7 +672,7 @@ defmodule BaileysEx.Connection.Socket do
       data
       |> clear_pairing_qr()
       |> maybe_update_server_time_offset(attrs["t"])
-      |> maybe_update_lid(attrs["lid"])
+      |> maybe_store_pending_lid(attrs["lid"])
 
     case start_post_auth_sequence(data) do
       :ok -> {:ok, :authenticating, data}
@@ -808,6 +826,7 @@ defmodule BaileysEx.Connection.Socket do
         | transport_state: nil,
           transport_connected?: false,
           noise: nil,
+          pending_lid: nil,
           retry_count: data.retry_count + if(increment_retry?, do: 1, else: 0),
           last_error: reason,
           last_date_recv_at: nil
@@ -830,7 +849,7 @@ defmodule BaileysEx.Connection.Socket do
     data = data |> clear_pairing_qr() |> maybe_update_server_time_offset(node.attrs["t"])
 
     with {:ok, %{reply: reply, creds_update: creds_update}} <-
-           Pairing.configure_successful_pairing(node, data.auth_state),
+           safe_configure_successful_pairing(node, data.auth_state),
          {:ok, data} <-
            send_pair_success_reply(
              data,
@@ -888,11 +907,11 @@ defmodule BaileysEx.Connection.Socket do
           data
           |> clear_pairing_qr()
           |> Map.put(:qr_refs, remaining_refs)
-          |> Map.put(:next_qr_timeout_ms, data.config.pairing_qr_refresh_timeout_ms)
+          |> Map.put(:next_qr_timeout_ms, Config.pairing_qr_refresh_timeout(data.config))
 
         emit_event(data, :connection_update, %{qr: QR.generate(ref, data.auth_state)})
 
-        {:ok, schedule_pairing_qr(data, data.config.pairing_qr_initial_timeout_ms)}
+        {:ok, schedule_pairing_qr(data, Config.pairing_qr_initial_timeout(data.config))}
     end
   end
 
@@ -959,6 +978,14 @@ defmodule BaileysEx.Connection.Socket do
     {:next_state, :disconnected, close_connection(data, reason)}
   end
 
+  defp safe_configure_successful_pairing(node, auth_state) do
+    Pairing.configure_successful_pairing(node, auth_state)
+  rescue
+    error -> {:error, {:pairing_error, error}}
+  catch
+    kind, reason -> {:error, {:pairing_error, {kind, reason}}}
+  end
+
   defp send_keep_alive_ping(data) do
     send_node_internal(data, keep_alive_node(data))
   end
@@ -974,7 +1001,7 @@ defmodule BaileysEx.Connection.Socket do
   defp send_presence_update_node(%__MODULE__{} = data, type)
        when type in [:available, :unavailable] do
     me = AuthState.get(data.auth_state, :me, %{}) || %{}
-    name = me[:name] || me["name"]
+    name = me[:name] || me["name"] || browser_fallback_name(data.config)
 
     if is_binary(name) and name != "" do
       emit_event(data, :connection_update, %{is_online: type == :available})
@@ -985,6 +1012,9 @@ defmodule BaileysEx.Connection.Socket do
       {:ok, data}
     end
   end
+
+  defp browser_fallback_name(%{browser: {name, _, _}}) when is_binary(name), do: name
+  defp browser_fallback_name(_config), do: nil
 
   defp maybe_send_presence_unified_session(data, :available), do: send_unified_session(data)
   defp maybe_send_presence_unified_session(data, :unavailable), do: {:ok, data}
@@ -1017,6 +1047,7 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp handle_post_auth_result(:ok, %__MODULE__{} = data) do
+    data = maybe_emit_pending_lid_creds_update(data)
     emit_event(data, :connection_update, %{connection: :open})
 
     case send_unified_session(data) do
@@ -1040,15 +1071,26 @@ defmodule BaileysEx.Connection.Socket do
     socket_pid = self()
 
     start_socket_task(data, fn ->
+      :ok =
+        maybe_warn_post_auth_error(
+          :upload_prekeys,
+          maybe_upload_post_auth_prekeys(data, socket_pid)
+        )
+
       result =
-        with :ok <- maybe_upload_post_auth_prekeys(data, socket_pid),
-             {:ok, _response} <-
-               query(
-                 socket_pid,
-                 passive_iq_node(:active, data),
-                 data.config.default_query_timeout_ms
-               ) do
-          maybe_digest_post_auth_prekeys(data, socket_pid)
+        case query(
+               socket_pid,
+               passive_iq_node(:active, data),
+               data.config.default_query_timeout_ms
+             ) do
+          {:ok, _response} ->
+            maybe_warn_post_auth_error(
+              :digest_key_bundle,
+              maybe_digest_post_auth_prekeys(data, socket_pid)
+            )
+
+          {:error, _reason} = error ->
+            maybe_warn_post_auth_error(:passive_iq, error)
         end
 
       Kernel.send(socket_pid, {:post_auth_result, result})
@@ -1086,6 +1128,13 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  defp maybe_warn_post_auth_error(_step, :ok), do: :ok
+
+  defp maybe_warn_post_auth_error(step, {:error, reason}) do
+    Logger.warning("post-auth #{step} failed: #{inspect(reason)}")
+    :ok
+  end
+
   defp maybe_start_low_prekey_upload(%__MODULE__{} = data, count)
        when is_integer(count) and count >= 0 do
     socket_pid = self()
@@ -1104,6 +1153,24 @@ defmodule BaileysEx.Connection.Socket do
 
       _ ->
         :ok
+    end
+  end
+
+  defp effective_transport_options(%__MODULE__{} = data) do
+    routing_info = AuthState.get(data.auth_state, :routing_info)
+
+    cond do
+      not (is_binary(routing_info) and byte_size(routing_info) > 0) ->
+        data.transport_options
+
+      is_list(data.transport_options) ->
+        Keyword.put_new(data.transport_options, :routing_info, routing_info)
+
+      is_map(data.transport_options) ->
+        Map.put_new(data.transport_options, :routing_info, routing_info)
+
+      true ->
+        data.transport_options
     end
   end
 
@@ -1239,11 +1306,24 @@ defmodule BaileysEx.Connection.Socket do
 
   defp maybe_emit_socket_node(result, _node), do: result
 
-  defp maybe_update_lid(data, nil), do: data
+  defp maybe_store_pending_lid(data, nil), do: data
 
-  defp maybe_update_lid(%__MODULE__{} = data, lid) when is_binary(lid) do
+  defp maybe_store_pending_lid(%__MODULE__{} = data, lid) when is_binary(lid) do
+    %{data | pending_lid: lid}
+  end
+
+  defp maybe_emit_pending_lid_creds_update(%__MODULE__{pending_lid: nil} = data), do: data
+
+  defp maybe_emit_pending_lid_creds_update(%__MODULE__{} = data) do
+    lid = data.pending_lid
     creds_update = %{me: merge_maps(AuthState.get(data.auth_state, :me, %{}) || %{}, %{lid: lid})}
-    data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)}
+
+    data = %{
+      data
+      | auth_state: AuthState.merge_updates(data.auth_state, creds_update),
+        pending_lid: nil
+    }
+
     emit_event(data, :creds_update, creds_update)
     data
   end

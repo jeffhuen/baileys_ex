@@ -307,6 +307,36 @@ defmodule BaileysEx.PublicApiTest do
     assert :ok = BaileysEx.disconnect(connection)
   end
 
+  test "auth_state/1 returns the live socket auth state during creds_update callbacks" do
+    initial_auth_state = %{creds: %{me: %{name: "Initial"}}}
+    updated_auth_state = %{creds: %{me: %{name: "Live"}}}
+    parent = self()
+
+    assert {:ok, connection} =
+             BaileysEx.connect(initial_auth_state,
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+    assert {:ok, emitter} = BaileysEx.event_emitter(connection)
+
+    unsubscribe =
+      BaileysEx.subscribe_raw(connection, fn events ->
+        if creds_update = events[:creds_update] do
+          send(parent, {:seen_live_auth_state, BaileysEx.auth_state(connection), creds_update})
+        end
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :creds_update, %{me: %{name: "Live"}})
+
+    assert_receive {:seen_live_auth_state, {:ok, ^updated_auth_state}, %{me: %{name: "Live"}}}
+
+    unsubscribe.()
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
   test "send_message/4 uses the default production Signal adapter when auth credentials are present" do
     bundles = %{
       "15551234567:0@s.whatsapp.net" => signal_bundle(200, 201, 202, 2_000, 5, 10),

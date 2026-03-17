@@ -12,9 +12,11 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.retry_request_delay_ms == 250
     assert config.max_msg_retry_count == 5
     assert config.retry_delay_ms == 2_000
+    assert config.reconnect_policy == :disabled
     assert config.max_retries == 5
     assert config.connect_timeout_ms == 20_000
     assert config.initial_sync_timeout_ms == 20_000
+    assert config.pairing_qr_timeout_ms == nil
     assert config.pairing_qr_initial_timeout_ms == 60_000
     assert config.pairing_qr_refresh_timeout_ms == 20_000
     assert config.fire_init_queries == true
@@ -41,10 +43,13 @@ defmodule BaileysEx.Connection.ConfigTest do
         keep_alive_interval_ms: 5_000,
         default_query_timeout_ms: 15_000,
         initial_sync_timeout_ms: 10_000,
+        pairing_qr_timeout_ms: 30_000,
         pairing_qr_initial_timeout_ms: 45_000,
         pairing_qr_refresh_timeout_ms: 15_000,
         retry_request_delay_ms: 500,
         max_msg_retry_count: 7,
+        reconnect_policy: :restart_required,
+        max_retries: 2,
         fire_init_queries: false,
         mark_online_on_connect: false,
         enable_auto_session_recreation: false,
@@ -62,10 +67,13 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.keep_alive_interval_ms == 5_000
     assert config.default_query_timeout_ms == 15_000
     assert config.initial_sync_timeout_ms == 10_000
+    assert config.pairing_qr_timeout_ms == 30_000
     assert config.pairing_qr_initial_timeout_ms == 45_000
     assert config.pairing_qr_refresh_timeout_ms == 15_000
     assert config.retry_request_delay_ms == 500
     assert config.max_msg_retry_count == 7
+    assert config.reconnect_policy == :restart_required
+    assert config.max_retries == 2
     assert config.fire_init_queries == false
     assert config.mark_online_on_connect == false
     assert config.enable_auto_session_recreation == false
@@ -86,5 +94,28 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert Config.platform_type("Mac OS") == :DARWIN
     assert Config.platform_type("Linux") == :LINUX
     assert Config.platform_type("Something Else") == :UNKNOWN
+  end
+
+  test "single pairing_qr_timeout_ms override matches Baileys semantics for initial and refresh" do
+    config = Config.new(pairing_qr_timeout_ms: 12_345)
+
+    assert Config.pairing_qr_initial_timeout(config) == 12_345
+    assert Config.pairing_qr_refresh_timeout(config) == 12_345
+  end
+
+  test "should_reconnect?/3 honors the configured reconnect policy and retry cap" do
+    disabled = Config.new()
+    restart_only = Config.new(reconnect_policy: :restart_required, max_retries: 1)
+    all_non_logged_out = Config.new(reconnect_policy: :all_non_logged_out, max_retries: 2)
+
+    refute Config.should_reconnect?(disabled, :restart_required, 1)
+
+    assert Config.should_reconnect?(restart_only, :restart_required, 1)
+    refute Config.should_reconnect?(restart_only, :tcp_closed, 1)
+    refute Config.should_reconnect?(restart_only, :restart_required, 2)
+
+    assert Config.should_reconnect?(all_non_logged_out, :connection_lost, 1)
+    refute Config.should_reconnect?(all_non_logged_out, :logged_out, 1)
+    refute Config.should_reconnect?(all_non_logged_out, :connection_lost, 3)
   end
 end

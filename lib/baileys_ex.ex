@@ -57,6 +57,7 @@ defmodule BaileysEx do
   """
 
   alias BaileysEx.Connection.Supervisor, as: ConnectionSupervisor
+  alias BaileysEx.Connection.Version, as: ConnectionVersion
   alias BaileysEx.Feature.Business
   alias BaileysEx.Feature.Community
   alias BaileysEx.Feature.Group
@@ -135,7 +136,12 @@ defmodule BaileysEx do
     end
   end
 
-  @doc "Return the current auth state snapshot persisted in the connection store."
+  @doc """
+  Return the current auth state snapshot from the connection store.
+
+  `creds_update` events are mirrored into the store before public subscribers run,
+  so callers can safely read `auth_state/1` from inside those callbacks.
+  """
   @spec auth_state(connection()) :: {:ok, map()} | {:error, :store_not_available}
   def auth_state(connection) do
     case ConnectionSupervisor.store(connection) do
@@ -218,6 +224,16 @@ defmodule BaileysEx do
   def send_wam_buffer(connection, wam_buffer) when is_binary(wam_buffer) do
     ConnectionSupervisor.send_wam_buffer(connection, wam_buffer)
   end
+
+  @doc "Fetch the latest version published by Baileys' current `Defaults/index.ts`."
+  @spec fetch_latest_baileys_version(keyword()) :: map()
+  def fetch_latest_baileys_version(opts \\ []),
+    do: ConnectionVersion.fetch_latest_baileys_version(opts)
+
+  @doc "Fetch the latest WhatsApp Web client revision from `web.whatsapp.com/sw.js`."
+  @spec fetch_latest_wa_web_version(keyword()) :: map()
+  def fetch_latest_wa_web_version(opts \\ []),
+    do: ConnectionVersion.fetch_latest_wa_web_version(opts)
 
   @doc "Send an availability or chatstate update."
   @spec send_presence_update(connection(), Presence.presence(), String.t() | nil, keyword()) ::

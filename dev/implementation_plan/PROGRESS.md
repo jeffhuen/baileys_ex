@@ -274,11 +274,20 @@
 > the rc.9 bufferable event set, `create_buffered_function/2`, flush/auto-flush,
 > mixed `messages_upsert` boundaries, and conditional `chats_update`
 > preservation. `Connection.Supervisor`, `Connection.Coordinator`, and
-> `Connection.Store` now provide auto-connect/reconnect, `creds_update`
-> persistence, ETS-backed concurrent reads, init queries, dirty-bit handling,
-> and the `connecting -> awaiting_initial_sync -> syncing -> online`
-> runtime choreography. Remaining auth persistence / pre-key upload work now
-> belongs to Phase 7+, not Phase 6.
+> `Connection.Store` now provide configurable reconnect policy
+> (`:disabled`, `:restart_required`, `:all_non_logged_out`) with enforced
+> `max_retries`, synchronous `creds_update` mirroring into `Connection.Store`
+> before subscriber callbacks, ETS-backed concurrent reads, init queries,
+> dirty-bit handling, HTTP/1.1-default WebSocket transport parity with
+> Baileys' Node `ws` client, upgrade-buffer flushing, in-order delivery for
+> multi-frame WebSocket decode batches, plus response-preserving Mint error
+> handling for the WebSocket path, and the `connecting -> awaiting_initial_sync
+> -> syncing -> online` runtime choreography. Successful login now defers the
+> `me.lid` `creds_update` until post-auth startup completes, matching rc.9,
+> and the native QR-scan restart path now reaches `connection: :open` after
+> fixing Mint transport frame-order drift on multi-frame post-auth batches.
+> Remaining auth persistence / pre-key upload work now belongs to Phase 7+, not
+> Phase 6.
 
 ### Tasks
 
@@ -298,7 +307,9 @@
 - [x] `connection.update` mirrors rc.9 field sequencing (`connecting`, `open`, `close`, `qr`, `isNewLogin`, `receivedPendingNotifications`, `isOnline`, `lastDisconnect`)
 - [x] Keep-alive uses `w:p` IQ ping and closes after `interval + 5s` without inbound traffic
 - [x] `offline_preview`, `offline`, and `edge_routing` handlers match rc.9 behavior
-- [x] Reconnect works after unexpected disconnect via the supervisor/wrapper layer without inventing new raw-socket semantics
+- [x] Reconnect behavior remains outside the raw socket and is configurable at the supervisor/wrapper layer, with `max_retries` enforced when reconnect is enabled
+- [x] `MintWebSocket` defaults WebSocket connects to HTTP/1.1 to match Baileys' `ws` transport while still allowing explicit protocol overrides
+- [x] `MintWebSocket` flushes buffered upgrade bytes into the WebSocket decoder, preserves in-order delivery across multi-frame WebSocket batches, and preserves parsed frames when Mint returns responses alongside an error
 - [x] Supervisor `:rest_for_one` restarts children correctly
 - [x] Event emitter dispatches to subscribers and supports batched `process` handling
 - [x] Store reads are concurrent via ETS
@@ -420,6 +431,7 @@ Current branch progress:
 - Phase 8 is complete on `phase-08-messaging`.
 - The branch now includes the WAProto subset and runtime helpers required for the full rc.9 message path: builder/parser parity for the sendable content set, repo-threaded direct/group/status send fanout, USync-backed device discovery caching, padded message wire helpers, receive-side decrypt/decode/event emission, and end-to-end roundtrip tests.
 - The messaging runtime also now includes the remaining rc.9 support surfaces: offline FIFO batching, LID-aware envelope decoding, receipt send/process helpers, retry/PDO handling, history sync, bad-ack handling, verified-name extraction, identity-change refresh, normalization/decryption side effects, reporting tokens, and the raw node dispatch seam from `Connection.Socket` through `Connection.Coordinator`.
+- Recent-message cache and retry-receipt replay are now wired through the production runtime for sent/received messages. Remaining retry parity follow-up: automatic retry-request emission from inbound decrypt failures.
 
 ### Tasks
 
@@ -805,10 +817,11 @@ Noise, and Signal events, and the connection/message/media modules emit those
 spans and counters along the main runtime path. `BaileysEx` is now a real public
 facade over the supervised runtime, covering connection lifecycle, message send,
 presence, media download, group/community/privacy/business/newsletter helpers,
-and WAM buffer delivery. Phase 12 also adds the guide set, a runnable echo-bot
-example, Hex package metadata and artifact filtering, CI workflow coverage, and
-a full Baileys-derived WAM registry plus pure Elixir encoder wired to the
-socket-layer `w:stats` IQ path.
+WAM buffer delivery, and Baileys-style version discovery helpers
+(`fetch_latest_baileys_version/1`, `fetch_latest_wa_web_version/1`). Phase 12
+also adds the guide set, a runnable echo-bot example, Hex package metadata and
+artifact filtering, CI workflow coverage, and a full Baileys-derived WAM
+registry plus pure Elixir encoder wired to the socket-layer `w:stats` IQ path.
 
 ### Tasks
 

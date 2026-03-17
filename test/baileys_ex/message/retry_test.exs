@@ -171,7 +171,7 @@ defmodule BaileysEx.Message.RetryTest do
       ]
     }
 
-    assert {:ok, [%Message{}]} =
+    assert {:ok, [%{id: "retry-1", message: %Message{}}]} =
              Retry.handle_retry_receipt(ref, node,
                resend_fun: fn message, meta ->
                  send(parent, {:resent, message, meta})

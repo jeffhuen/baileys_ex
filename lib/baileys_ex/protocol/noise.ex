@@ -259,25 +259,8 @@ defmodule BaileysEx.Protocol.Noise do
         <<state.in_bytes::binary, new_data::binary>>
       end
 
-    transport_phase = if state.transport, do: :transport, else: :handshake
-
-    case do_decode_frames(%{state | in_bytes: @empty}, buffer, []) do
-      {:ok, state, frames, rest} ->
-        {:ok, {%{state | in_bytes: rest}, frames}}
-
-      {:error, reason} = error ->
-        require Logger
-
-        Logger.error(
-          "[Noise] decode_frames FAILED — " <>
-            "phase=#{transport_phase}, " <>
-            "reason=#{inspect(reason)}, " <>
-            "buffer_size=#{byte_size(buffer)}, " <>
-            "in_bytes_size=#{byte_size(state.in_bytes)}, " <>
-            "new_data_size=#{byte_size(new_data)}"
-        )
-
-        error
+    with {:ok, state, frames, rest} <- do_decode_frames(%{state | in_bytes: @empty}, buffer, []) do
+      {:ok, {%{state | in_bytes: rest}, frames}}
     end
   rescue
     error -> {:error, normalize_error(error)}

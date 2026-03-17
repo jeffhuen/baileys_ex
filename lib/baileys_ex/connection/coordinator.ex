@@ -421,6 +421,7 @@ defmodule BaileysEx.Connection.Coordinator do
     |> Map.put(:reconnect_attempts, 0)
     |> maybe_execute_init_queries()
     |> maybe_send_presence_update()
+    |> maybe_register_own_lid_session()
   end
 
   defp handle_connection_update(
@@ -618,6 +619,80 @@ defmodule BaileysEx.Connection.Coordinator do
 
       :error ->
         state
+    end
+  end
+
+  # Mirrors Baileys socket.ts:944-965 — after connection:open, register the
+  # companion's own LID↔PN mapping and device list so the server can route
+  # messages to this device and the phone clears "Logging in..."
+  defp maybe_register_own_lid_session(%State{} = state) do
+    auth_state = Store.get(state.store_ref, :auth_state, %{})
+    me = AuthState.get(auth_state, :me, %{}) || %{}
+    lid = me[:lid] || me["lid"]
+    pn = me[:id] || me["id"]
+
+    cond do
+      not (is_binary(lid) and is_binary(pn)) ->
+        state
+
+      state.signal_store == nil ->
+        state
+
+      true ->
+        Task.Supervisor.start_child(state.task_supervisor, fn ->
+          register_own_lid_session(state, pn, lid)
+        end)
+
+        state
+    end
+  end
+
+  defp register_own_lid_session(%State{} = state, pn, lid) do
+    require Logger
+
+    try do
+      # 1. Store own LID-PN mapping
+      :ok = LIDMappingStore.store_lid_pn_mappings(state.signal_store, [%{lid: lid, pn: pn}])
+
+      # 2. Create device list for own user
+      {user, device} = parse_own_device(pn)
+
+      if user do
+        SignalStore.set(state.signal_store, %{
+          :"device-list" => %{user => [device]}
+        })
+      end
+
+      # 3. Migrate own session PN → LID (if signal repository available)
+      if state.signal_repository do
+        case Repository.migrate_session(state.signal_repository, pn, lid) do
+          {:ok, _repo, result} ->
+            Logger.info(
+              "[Coordinator] own LID session registered — pn=#{pn}, lid=#{lid}, " <>
+                "migrated=#{result.migrated}"
+            )
+
+          {:error, reason} ->
+            Logger.warning("[Coordinator] own LID session migration failed: #{inspect(reason)}")
+        end
+      else
+        Logger.info(
+          "[Coordinator] own LID session registered (no session migration) — pn=#{pn}, lid=#{lid}"
+        )
+      end
+    rescue
+      error ->
+        Logger.warning("[Coordinator] own LID registration failed: #{Exception.message(error)}")
+    end
+  end
+
+  defp parse_own_device(pn) when is_binary(pn) do
+    case BaileysEx.Protocol.JID.parse(pn) do
+      %BaileysEx.JID{user: user, device: device} when is_binary(user) ->
+        {user, Integer.to_string(device || 0)}
+
+      _ ->
+        {nil, nil}
     end
   end
 

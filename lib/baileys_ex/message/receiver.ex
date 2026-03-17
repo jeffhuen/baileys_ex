@@ -63,6 +63,7 @@ defmodule BaileysEx.Message.Receiver do
            normalize_received_message(received_message, context),
          :ok <- emit_message_side_effects(message_side_effects, context.event_emitter),
          {:ok, context} <- emit_protocol_side_effects(received_message, context),
+         :ok <- log_received_message(received_message),
          :ok <-
            EventEmitter.emit(context.event_emitter, :messages_upsert, %{
              type: :notify,
@@ -193,6 +194,37 @@ defmodule BaileysEx.Message.Receiver do
     }
   end
 
+  defp log_received_message(received_message) do
+    msg = received_message[:message]
+
+    msg_type =
+      cond do
+        is_nil(msg) -> "nil_message"
+        is_struct(msg) -> msg.__struct__ |> Module.split() |> List.last()
+        is_map(msg) -> "map(#{Map.keys(msg) |> Enum.reject(&is_nil(Map.get(msg, &1))) |> inspect()})"
+        true -> inspect(msg)
+      end
+
+    # Find the non-nil content field in the proto message
+    content_fields =
+      if is_struct(msg) do
+        msg
+        |> Map.from_struct()
+        |> Enum.filter(fn {_k, v} -> v != nil and v != "" and v != [] and v != 0 end)
+        |> Enum.map(fn {k, _v} -> k end)
+      else
+        []
+      end
+
+    Logger.warning(
+      "[Receiver] message emitted — id=#{received_message[:key][:id]}, " <>
+        "from=#{received_message[:key][:remote_jid]}, " <>
+        "msg_type=#{msg_type}, content_fields=#{inspect(content_fields)}"
+    )
+
+    :ok
+  end
+
   defp send_receipt(%BinaryNode{attrs: attrs}, envelope, context) do
     case Map.get(context, :send_receipt_fun) do
       fun when is_function(fun, 1) ->
@@ -240,7 +272,9 @@ defmodule BaileysEx.Message.Receiver do
          %{event_emitter: event_emitter} = context
        ) do
     case Map.get(message, :protocol_message) do
-      %Message.ProtocolMessage{} = protocol_message ->
+      %Message.ProtocolMessage{type: proto_type} = protocol_message ->
+        Logger.warning("[Receiver] protocol_message type=#{inspect(proto_type)}")
+
         emit_protocol_message_side_effect(
           protocol_message,
           key,

@@ -631,8 +631,14 @@ defmodule BaileysEx.Connection.Coordinator do
         |> Task.async_stream(fn fun -> fun.() end,
           ordered: false,
           max_concurrency: 3,
-          timeout: state.config.default_query_timeout_ms
+          timeout: state.config.default_query_timeout_ms,
+          on_timeout: :kill_task
         )
+        |> Stream.each(fn
+          {:ok, _} -> :ok
+          {:exit, :timeout} -> Logger.warning("[Coordinator] init query timed out")
+          {:exit, reason} -> Logger.warning("[Coordinator] init query failed: #{inspect(reason)}")
+        end)
         |> Stream.run()
       end)
 

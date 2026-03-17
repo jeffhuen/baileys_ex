@@ -39,6 +39,8 @@ defmodule BaileysEx.Connection.Config do
           country_code: String.t(),
           sync_full_history: boolean(),
           should_sync_history_message: should_sync_history_message_fun(),
+          validate_snapshot_macs: boolean(),
+          validate_patch_macs: boolean(),
           print_qr_in_terminal: boolean()
         }
 
@@ -89,6 +91,8 @@ defmodule BaileysEx.Connection.Config do
             country_code: "US",
             sync_full_history: true,
             should_sync_history_message: &__MODULE__.default_should_sync_history_message/1,
+            validate_snapshot_macs: false,
+            validate_patch_macs: false,
             print_qr_in_terminal: false
 
   @doc """

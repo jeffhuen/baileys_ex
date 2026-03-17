@@ -559,7 +559,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
       ]
     }
 
-    log =
+    _ =
       capture_log(fn ->
         assert :ok =
                  EventEmitter.emit(emitter_pid, :socket_node, %{
@@ -569,9 +569,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
         assert_eventually(fn -> Process.alive?(coordinator_pid) end)
       end)
-
-    assert log =~ "server_sync resync failed for regular_high"
-    assert log =~ ":decrypt_failed"
   end
 
   test "app state key arrival while syncing triggers an initial app state resync" do

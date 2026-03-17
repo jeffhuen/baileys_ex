@@ -462,7 +462,7 @@ defmodule BaileysEx.Syncd.RuntimeTest do
       assert :ok = AppState.resync_app_state(queryable, store, [:regular_high])
     end
 
-    test "emits version 0 patches during a fresh sync from scratch" do
+    test "uses JS-parity MAC defaults for version 0 patches during a fresh sync" do
       store = start_store()
       {:ok, emitter} = EventEmitter.start_link()
       parent = self()
@@ -529,9 +529,7 @@ defmodule BaileysEx.Syncd.RuntimeTest do
 
       assert :ok =
                AppState.resync_app_state(queryable, store, [:regular_high],
-                 event_emitter: emitter,
-                 validate_snapshot_macs: false,
-                 validate_patch_macs: false
+                 event_emitter: emitter
                )
 
       assert_receive {:events,

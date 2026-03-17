@@ -57,8 +57,8 @@ defmodule BaileysEx.Feature.AppState do
       - `:is_initial_sync` — boolean (default `false`)
       - `:event_emitter` — pid to receive events
       - `:me` — current user contact info
-      - `:validate_snapshot_macs` — boolean (default `true`)
-      - `:validate_patch_macs` — boolean (default `true`)
+      - `:validate_snapshot_macs` — boolean (default `false`)
+      - `:validate_patch_macs` — boolean (default `false`)
   """
   @spec resync_app_state(term(), GenServer.server(), [patch_type()], keyword()) ::
           :ok | {:error, term()}
@@ -66,8 +66,8 @@ defmodule BaileysEx.Feature.AppState do
     is_initial_sync = Keyword.get(opts, :is_initial_sync, false)
     me = Keyword.get(opts, :me, %{})
     event_emitter = Keyword.get(opts, :event_emitter)
-    validate_snapshot = Keyword.get(opts, :validate_snapshot_macs, true)
-    validate_patch = Keyword.get(opts, :validate_patch_macs, true)
+    validate_snapshot = Keyword.get(opts, :validate_snapshot_macs, false)
+    validate_patch = Keyword.get(opts, :validate_patch_macs, false)
     state_store = app_state_store(store, opts)
     transaction_key = app_state_transaction_key(store, opts)
     codec_opts = Keyword.take(opts, [:external_blob_fetcher])

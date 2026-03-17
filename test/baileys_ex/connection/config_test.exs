@@ -25,6 +25,8 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.version == [2, 3000, 1_033_846_690]
     assert config.country_code == "US"
     assert config.sync_full_history == true
+    assert config.validate_snapshot_macs == false
+    assert config.validate_patch_macs == false
     assert config.print_qr_in_terminal == false
     assert config.should_sync_history_message.(%{sync_type: :RECENT}) == true
     assert config.should_sync_history_message.(%{sync_type: :FULL}) == false
@@ -51,6 +53,8 @@ defmodule BaileysEx.Connection.ConfigTest do
         version: [2, 24, 7],
         country_code: "GB",
         sync_full_history: false,
+        validate_snapshot_macs: true,
+        validate_patch_macs: true,
         should_sync_history_message: should_sync_history_message
       )
 
@@ -70,6 +74,8 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.version == [2, 24, 7]
     assert config.country_code == "GB"
     assert config.sync_full_history == false
+    assert config.validate_snapshot_macs == true
+    assert config.validate_patch_macs == true
     assert config.should_sync_history_message.(%{sync_type: :ON_DEMAND}) == true
     assert config.should_sync_history_message.(%{sync_type: :RECENT}) == false
   end

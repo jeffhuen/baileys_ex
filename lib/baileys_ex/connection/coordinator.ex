@@ -1117,6 +1117,8 @@ defmodule BaileysEx.Connection.Coordinator do
       signal_store: state.signal_store,
       event_emitter: state.event_emitter,
       me: me,
+      validate_snapshot_macs: state.config.validate_snapshot_macs,
+      validate_patch_macs: state.config.validate_patch_macs,
       is_initial_sync: Keyword.get(opts, :initial_sync, false)
     )
   end

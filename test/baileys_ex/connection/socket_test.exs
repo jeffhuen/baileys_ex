@@ -1305,6 +1305,11 @@ defmodule BaileysEx.Connection.SocketTest do
 
     Kernel.send(pid, {:scripted_transport, {:binary, notification_frame}})
 
+    # Skip the notification ack
+    assert_receive {:transport_sent, ack_frame}
+    {server_transport, ack_node} = decode_client_transport_frame(server_transport, ack_frame)
+    assert %BinaryNode{tag: "ack", attrs: %{"class" => "notification"}} = ack_node
+
     assert_receive {:transport_sent, finish_frame}
 
     {server_transport, finish_node} =

@@ -660,6 +660,24 @@ defmodule BaileysEx.Connection.Socket do
   defp apply_protocol_frame(current_state, frame, data) do
     case BinaryNodeUtil.decode(frame) do
       {:ok, node} ->
+        require Logger
+
+        child_tags =
+          case node.content do
+            [_ | _] = children ->
+              Enum.map_join(children, ",", fn
+                %BinaryNode{tag: t} -> t
+                _ -> "?"
+              end)
+
+            _ ->
+              ""
+          end
+
+        Logger.warning(
+          "[Wire] RECV tag=#{node.tag} id=#{node.attrs["id"]} children=[#{child_tags}] state=#{current_state}"
+        )
+
         apply_binary_node(current_state, node, data)
 
       {:error, reason} ->
@@ -1020,6 +1038,10 @@ defmodule BaileysEx.Connection.Socket do
   defp maybe_send_presence_unified_session(data, :unavailable), do: {:ok, data}
 
   defp apply_notification_node(current_state, %BinaryNode{} = node, %__MODULE__{} = data) do
+    # Ack every notification — Baileys sends ack for all notification nodes.
+    # Without this, the server waits ~60s before confirming the companion device.
+    data = send_notification_ack(data, node)
+
     result =
       cond do
         BinaryNodeUtil.child(node, "link_code_companion_reg") ->
@@ -1035,6 +1057,27 @@ defmodule BaileysEx.Connection.Socket do
 
     maybe_emit_socket_node(result, node)
   end
+
+  defp send_notification_ack(data, %BinaryNode{attrs: attrs}) do
+    ack = %BinaryNode{
+      tag: "ack",
+      attrs:
+        %{"id" => attrs["id"], "class" => "notification"}
+        |> maybe_put_attr("type", attrs["type"])
+        |> maybe_put_attr("to", attrs["from"] || @s_whatsapp_net)
+        |> maybe_put_attr("participant", attrs["participant"]),
+      content: nil
+    }
+
+    case send_node_internal(data, ack) do
+      {:ok, data} -> data
+      {:error, _reason, data} -> data
+    end
+  end
+
+  defp maybe_put_attr(attrs, _key, nil), do: attrs
+  defp maybe_put_attr(attrs, key, value) when is_binary(value), do: Map.put(attrs, key, value)
+  defp maybe_put_attr(attrs, _key, _value), do: attrs
 
   defp handle_phone_pairing_finish_result({:ok, _response}, creds_update, %__MODULE__{} = data) do
     data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)}
@@ -1230,6 +1273,13 @@ defmodule BaileysEx.Connection.Socket do
   defp encrypt_notification_count(_node), do: nil
 
   defp send_node_internal(data, %BinaryNode{} = node) do
+    require Logger
+
+    Logger.warning(
+      "[Wire] SEND tag=#{node.tag} id=#{node.attrs["id"]} xmlns=#{node.attrs["xmlns"]} " <>
+        "type=#{node.attrs["type"]} to=#{node.attrs["to"]}"
+    )
+
     node
     |> BinaryNodeUtil.encode()
     |> then(&send_transport_binary(data, &1))

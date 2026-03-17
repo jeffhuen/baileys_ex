@@ -323,13 +323,28 @@ defmodule BaileysEx.Connection.Coordinator do
          %State{signal_repository: %Repository{} = repository} = state,
          %{socket_node: %{node: %BinaryNode{tag: "message"} = node}}
        ) do
+    msg_id = node.attrs["id"]
+
     case Receiver.process_node(node, receiver_context(state, repository)) do
       {:ok, _message, %{signal_repository: %Repository{} = updated_repository}} ->
+        Logger.warning("[Coordinator] message #{msg_id} processed OK")
         %{state | signal_repository: updated_repository}
 
-      _ ->
+      {:error, reason} ->
+        Logger.warning("[Coordinator] message #{msg_id} failed: #{inspect(reason)}")
         state
     end
+  end
+
+  defp handle_socket_node(
+         %State{signal_repository: nil} = state,
+         %{socket_node: %{node: %BinaryNode{tag: "message"} = node}}
+       ) do
+    Logger.warning(
+      "[Coordinator] message #{node.attrs["id"]} DROPPED — no signal_repository configured"
+    )
+
+    state
   end
 
   defp handle_socket_node(%State{} = state, %{
@@ -394,7 +409,21 @@ defmodule BaileysEx.Connection.Coordinator do
     state
   end
 
-  defp handle_socket_node(%State{} = state, _events), do: state
+  defp handle_socket_node(%State{} = state, events) do
+    # Diagnostic catch-all: log any socket_node events that aren't handled above
+    case events do
+      %{socket_node: %{node: %BinaryNode{tag: tag}}} ->
+        Logger.warning(
+          "[Coordinator] UNHANDLED socket_node tag=#{tag} " <>
+            "signal_repo=#{inspect(state.signal_repository != nil and is_struct(state.signal_repository, Repository))}"
+        )
+
+      _ ->
+        :ok
+    end
+
+    state
+  end
 
   defp persist_creds_update(%State{} = state, %{creds_update: creds_update})
        when is_map(creds_update) do
@@ -586,7 +615,11 @@ defmodule BaileysEx.Connection.Coordinator do
     !!fun.(history_message)
   end
 
-  defp should_sync_history_message?(_config, _history_message), do: true
+  # Default: don't buffer events waiting for history sync unless the consumer
+  # explicitly opts in via the should_sync_history_message config callback.
+  # Buffering with no callback blocks all subscriber event delivery for
+  # initial_sync_timeout_ms (20s default) with no way to complete the sync.
+  defp should_sync_history_message?(_config, _history_message), do: false
 
   defp maybe_execute_init_queries(%State{config: %{fire_init_queries: false}} = state), do: state
 

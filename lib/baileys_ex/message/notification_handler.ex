@@ -6,6 +6,8 @@ defmodule BaileysEx.Message.NotificationHandler do
   group, newsletter, and account-side effects above the raw socket layer.
   """
 
+  require Logger
+
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Feature.TcToken
@@ -222,14 +224,27 @@ defmodule BaileysEx.Message.NotificationHandler do
     case context[:resync_app_state_fun] do
       fun when is_function(fun, 1) ->
         case BinaryNodeUtil.child(node, "collection") do
-          %BinaryNode{attrs: %{"name" => name}} -> _ = fun.(name)
-          _ -> :ok
+          %BinaryNode{attrs: %{"name" => name}} ->
+            normalize_server_sync_result(name, fun.(name))
+
+          _ ->
+            :ok
         end
 
       _ ->
         :ok
     end
   end
+
+  @spec normalize_server_sync_result(String.t(), term()) :: :ok
+  defp normalize_server_sync_result(_name, :ok), do: :ok
+
+  defp normalize_server_sync_result(name, {:error, reason}) do
+    Logger.warning("server_sync resync failed for #{name}: #{inspect(reason)}")
+    :ok
+  end
+
+  defp normalize_server_sync_result(_name, _result), do: :ok
 
   defp handle_media_retry_notification(%BinaryNode{attrs: attrs} = node, context) do
     _ = attrs

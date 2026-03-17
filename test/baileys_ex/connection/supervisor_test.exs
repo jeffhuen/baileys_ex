@@ -532,6 +532,48 @@ defmodule BaileysEx.Connection.SupervisorTest do
                     }, _timeout}
   end
 
+  test "server_sync resync failures do not crash the coordinator" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: self(),
+               resync_app_state_fun: fn "regular_high" -> {:error, :decrypt_failed} end,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+
+    notification = %BinaryNode{
+      tag: "notification",
+      attrs: %{"type" => "server_sync", "from" => "s.whatsapp.net"},
+      content: [
+        %BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}, content: nil}
+      ]
+    }
+
+    log =
+      capture_log(fn ->
+        assert :ok =
+                 EventEmitter.emit(emitter_pid, :socket_node, %{
+                   node: notification,
+                   state: :connected
+                 })
+
+        assert_eventually(fn -> Process.alive?(coordinator_pid) end)
+      end)
+
+    assert log =~ "server_sync resync failed for regular_high"
+    assert log =~ ":decrypt_failed"
+  end
+
   test "app state key arrival while syncing triggers an initial app state resync" do
     name = {:phase10_test, System.unique_integer([:positive])}
 

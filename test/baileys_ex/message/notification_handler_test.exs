@@ -1,6 +1,8 @@
 defmodule BaileysEx.Message.NotificationHandlerTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Message.Builder
@@ -531,5 +533,27 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
              ])
 
     assert_receive {:privacy_token, "15551234567@s.whatsapp.net", "token-1", "1710000704"}
+  end
+
+  test "process_node/2 swallows server_sync resync failures and returns :ok" do
+    node = %BinaryNode{
+      tag: "notification",
+      attrs: %{"type" => "server_sync", "from" => "s.whatsapp.net"},
+      content: [
+        %BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}, content: nil}
+      ]
+    }
+
+    log =
+      capture_log(fn ->
+        assert :ok =
+                 apply(BaileysEx.Message.NotificationHandler, :process_node, [
+                   node,
+                   %{resync_app_state_fun: fn "regular_high" -> {:error, :decrypt_failed} end}
+                 ])
+      end)
+
+    assert log =~ "server_sync resync failed"
+    assert log =~ ":decrypt_failed"
   end
 end

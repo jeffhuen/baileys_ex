@@ -4,13 +4,16 @@ defmodule BaileysEx.Media.Retry do
   """
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Crypto
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.Proto.MediaRetryNotification
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Protocol.Proto.MessageKey
   alias BaileysEx.Protocol.Proto.ServerErrorReceipt
+  alias BaileysEx.Protocol.Proto.WebMessageInfo
 
   @mmg_host "https://mmg.whatsapp.net"
   @retry_info "WhatsApp Media Retry Notification"
@@ -99,6 +102,139 @@ defmodule BaileysEx.Media.Retry do
 
     with {:ok, node} <- build_retry_request(key, media_key, me_id, opts) do
       send_fun.(socket, node)
+    end
+  end
+
+  @default_timeout_ms 10_000
+
+  @doc """
+  Composed helper that performs the full media re-upload round trip.
+
+  Mirrors Baileys' `updateMediaMessage`: sends the retry request, subscribes to
+  `:messages_media_update` events, waits for the matching message ID, decrypts the
+  retry payload, and applies the refreshed `directPath`/`url` to the message.
+
+  Returns `{:ok, updated_web_message_info}` or `{:error, reason}`.
+
+  ## Options
+
+    * `:timeout` — milliseconds to wait for the media update event (default `#{@default_timeout_ms}`)
+    * `:me_id` — the caller's JID (required)
+    * `:send_fun` — override the node send function (default `Socket.send_node/2`)
+    * `:iv` — deterministic IV for testing
+
+  """
+  @spec update_media_message(
+          GenServer.server() | term(),
+          GenServer.server(),
+          WebMessageInfo.t(),
+          keyword()
+        ) :: {:ok, WebMessageInfo.t()} | {:error, term()}
+  def update_media_message(socket, event_emitter, %WebMessageInfo{} = wa_message, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
+
+    with {:ok, %MessageKey{id: msg_id} = key} when is_binary(msg_id) <-
+           extract_message_key(wa_message),
+         {:ok, media_content} <- assert_media_content(wa_message.message),
+         media_key when is_binary(media_key) <- media_key_from(media_content) do
+      caller = self()
+      ref = make_ref()
+
+      unsubscribe =
+        EventEmitter.process(event_emitter, fn events ->
+          case events do
+            %{messages_media_update: updates} when is_list(updates) ->
+              case Enum.find(updates, &(&1.key.id == msg_id)) do
+                nil -> :ok
+                match -> send(caller, {ref, match})
+              end
+
+            _ ->
+              :ok
+          end
+        end)
+
+      retry_key = %{
+        id: msg_id,
+        remote_jid: key.remote_jid || "",
+        from_me: key.from_me || false,
+        participant: key.participant
+      }
+
+      send_result = request_reupload(socket, retry_key, media_key, opts)
+
+      case send_result do
+        :ok ->
+          result = await_media_update(ref, wa_message, media_key, timeout)
+          unsubscribe.()
+          result
+
+        {:error, _} = err ->
+          unsubscribe.()
+          err
+      end
+    else
+      {:error, _} = err -> err
+      nil -> {:error, :missing_media_key}
+    end
+  end
+
+  defp extract_message_key(%WebMessageInfo{key: %MessageKey{id: id} = key})
+       when is_binary(id) do
+    {:ok, key}
+  end
+
+  defp extract_message_key(%WebMessageInfo{}) do
+    {:error, :missing_message_key}
+  end
+
+  @doc """
+  Extract the media-bearing content from a `Message`, mirroring Baileys'
+  `assertMediaContent`.
+
+  Returns `{:ok, media_content}` or `{:error, :not_a_media_message}`.
+  """
+  @spec assert_media_content(Message.t() | nil) ::
+          {:ok, struct()} | {:error, :not_a_media_message}
+  def assert_media_content(%Message{} = msg) do
+    content =
+      msg.document_message ||
+        msg.image_message ||
+        msg.video_message ||
+        msg.audio_message ||
+        msg.sticker_message
+
+    if content do
+      {:ok, content}
+    else
+      {:error, :not_a_media_message}
+    end
+  end
+
+  def assert_media_content(_), do: {:error, :not_a_media_message}
+
+  defp media_key_from(%{media_key: media_key}) when is_binary(media_key), do: media_key
+  defp media_key_from(_), do: nil
+
+  defp await_media_update(ref, wa_message, media_key, timeout) do
+    receive do
+      {^ref, %{error: _} = update_event} ->
+        case apply_media_update(wa_message.message, media_key, update_event) do
+          {:error, _} = err -> err
+          # Should not happen for error events, but handle gracefully
+          {:ok, _} = ok -> ok
+        end
+
+      {^ref, update_event} ->
+        case apply_media_update(wa_message.message, media_key, update_event) do
+          {:ok, updated_message} ->
+            {:ok, %{wa_message | message: updated_message}}
+
+          {:error, _} = err ->
+            err
+        end
+    after
+      timeout -> {:error, :media_update_timeout}
     end
   end
 

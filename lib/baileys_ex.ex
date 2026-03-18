@@ -67,7 +67,9 @@ defmodule BaileysEx do
   alias BaileysEx.Feature.Profile
   alias BaileysEx.JID
   alias BaileysEx.Media.Download
+  alias BaileysEx.Media.Retry, as: MediaRetry
   alias BaileysEx.Protocol.JID, as: JIDUtil
+  alias BaileysEx.Protocol.Proto.WebMessageInfo
   alias BaileysEx.Signal.Store
   alias BaileysEx.WAM.BinaryInfo, as: WAMBinaryInfo
 
@@ -260,6 +262,41 @@ defmodule BaileysEx do
   @spec download_media_to_file(map(), Path.t(), keyword()) :: {:ok, Path.t()} | {:error, term()}
   def download_media_to_file(message, path, opts \\ []),
     do: Download.download_to_file(message, path, opts)
+
+  @doc """
+  Request media re-upload and return the updated message with refreshed URLs.
+
+  Sends a retry request, waits for the matching `messages_media_update` event,
+  decrypts the response, and applies the refreshed `directPath`/`url`.
+
+  ## Options
+
+    * `:timeout` — milliseconds to wait for the media update event (default 10_000)
+
+  """
+  @spec update_media_message(connection(), WebMessageInfo.t(), keyword()) ::
+          {:ok, WebMessageInfo.t()} | {:error, term()}
+  def update_media_message(connection, %WebMessageInfo{} = message, opts \\ [])
+      when is_list(opts) do
+    with {:ok, queryable} <- queryable(connection),
+         {:ok, emitter} <- event_emitter(connection),
+         {:ok, auth} <- auth_state(connection) do
+      me_id = get_in(auth, [:me, :id]) || get_in(auth, [:me_id])
+
+      if is_binary(me_id) do
+        {_mod, socket} = queryable
+
+        MediaRetry.update_media_message(
+          socket,
+          emitter,
+          message,
+          Keyword.put(opts, :me_id, me_id)
+        )
+      else
+        {:error, :me_id_not_available}
+      end
+    end
+  end
 
   @doc "Fetch a profile picture URL."
   @spec profile_picture_url(connection(), String.t(), Profile.picture_type(), keyword()) ::

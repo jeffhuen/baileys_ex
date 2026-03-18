@@ -2,12 +2,15 @@ defmodule BaileysEx.Media.RetryTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Crypto
   alias BaileysEx.Media.Retry
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Proto.MediaRetryNotification
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Protocol.Proto.MessageKey
   alias BaileysEx.Protocol.Proto.ServerErrorReceipt
+  alias BaileysEx.Protocol.Proto.WebMessageInfo
 
   test "request_reupload/4 sends a Baileys-style server-error receipt with encrypted retry data" do
     parent = self()
@@ -170,5 +173,273 @@ defmodule BaileysEx.Media.RetryTest do
 
     assert details.result == :NOT_FOUND
     assert details.status_code == 404
+  end
+
+  describe "update_media_message/4" do
+    setup do
+      media_key = :binary.copy(<<42>>, 32)
+      msg_id = "update-media-msg-1"
+      iv = :binary.copy(<<17>>, 12)
+
+      wa_message = %WebMessageInfo{
+        key: %MessageKey{
+          id: msg_id,
+          remote_jid: "15551234567@s.whatsapp.net",
+          from_me: false,
+          participant: nil
+        },
+        message: %Message{
+          image_message: %Message.ImageMessage{
+            media_key: media_key,
+            direct_path: "/mms/image/stale-path",
+            url: "https://mmg.whatsapp.net/mms/image/stale-path"
+          }
+        }
+      }
+
+      {:ok, retry_key} = Crypto.hkdf(media_key, "WhatsApp Media Retry Notification", 32)
+
+      notification = %MediaRetryNotification{
+        stanza_id: msg_id,
+        direct_path: "/mms/image/refreshed-path",
+        result: :SUCCESS
+      }
+
+      {:ok, ciphertext} =
+        Crypto.aes_gcm_encrypt(
+          retry_key,
+          iv,
+          MediaRetryNotification.encode(notification),
+          msg_id
+        )
+
+      %{
+        wa_message: wa_message,
+        media_key: media_key,
+        msg_id: msg_id,
+        iv: iv,
+        ciphertext: ciphertext
+      }
+    end
+
+    test "successful request-wait-apply round trip", ctx do
+      parent = self()
+      {:ok, emitter} = EventEmitter.start_link()
+
+      # Simulate sending (capture the node, return :ok)
+      send_fun = fn _socket, %BinaryNode{} ->
+        send(parent, :node_sent)
+        :ok
+      end
+
+      # Start the update in a task so we can deliver the event from the test process
+      task =
+        Task.async(fn ->
+          Retry.update_media_message(:fake_socket, emitter, ctx.wa_message,
+            me_id: "15550001111@s.whatsapp.net",
+            iv: ctx.iv,
+            send_fun: send_fun,
+            timeout: 5_000
+          )
+        end)
+
+      # Wait until the node is sent (subscription is active)
+      assert_receive :node_sent, 2_000
+
+      # Deliver the matching media update event
+      EventEmitter.emit(emitter, :messages_media_update, [
+        %{
+          key: %{
+            id: ctx.msg_id,
+            remote_jid: "15551234567@s.whatsapp.net",
+            from_me: false,
+            participant: nil
+          },
+          media: %{ciphertext: ctx.ciphertext, iv: ctx.iv}
+        }
+      ])
+
+      assert {:ok, %WebMessageInfo{message: updated_message}} = Task.await(task, 5_000)
+
+      assert updated_message.image_message.direct_path == "/mms/image/refreshed-path"
+
+      assert updated_message.image_message.url ==
+               "https://mmg.whatsapp.net/mms/image/refreshed-path"
+    end
+
+    test "times out when no matching update arrives", ctx do
+      {:ok, emitter} = EventEmitter.start_link()
+
+      send_fun = fn _socket, %BinaryNode{} -> :ok end
+
+      assert {:error, :media_update_timeout} =
+               Retry.update_media_message(:fake_socket, emitter, ctx.wa_message,
+                 me_id: "15550001111@s.whatsapp.net",
+                 iv: ctx.iv,
+                 send_fun: send_fun,
+                 timeout: 100
+               )
+    end
+
+    test "propagates error from request_reupload failure", ctx do
+      {:ok, emitter} = EventEmitter.start_link()
+
+      send_fun = fn _socket, %BinaryNode{} -> {:error, :not_connected} end
+
+      assert {:error, :not_connected} =
+               Retry.update_media_message(:fake_socket, emitter, ctx.wa_message,
+                 me_id: "15550001111@s.whatsapp.net",
+                 iv: ctx.iv,
+                 send_fun: send_fun,
+                 timeout: 5_000
+               )
+    end
+
+    test "returns error when message is not a media message" do
+      {:ok, emitter} = EventEmitter.start_link()
+
+      wa_message = %WebMessageInfo{
+        key: %MessageKey{
+          id: "text-msg",
+          remote_jid: "15551234567@s.whatsapp.net",
+          from_me: false
+        },
+        message: %Message{conversation: "hello"}
+      }
+
+      assert {:error, :not_a_media_message} =
+               Retry.update_media_message(:fake_socket, emitter, wa_message,
+                 me_id: "15550001111@s.whatsapp.net",
+                 timeout: 100
+               )
+    end
+
+    test "returns error for media update with error payload", ctx do
+      parent = self()
+      {:ok, emitter} = EventEmitter.start_link()
+
+      send_fun = fn _socket, %BinaryNode{} ->
+        send(parent, :node_sent)
+        :ok
+      end
+
+      task =
+        Task.async(fn ->
+          Retry.update_media_message(:fake_socket, emitter, ctx.wa_message,
+            me_id: "15550001111@s.whatsapp.net",
+            iv: ctx.iv,
+            send_fun: send_fun,
+            timeout: 5_000
+          )
+        end)
+
+      assert_receive :node_sent, 2_000
+
+      # Deliver an error event
+      EventEmitter.emit(emitter, :messages_media_update, [
+        %{
+          key: %{
+            id: ctx.msg_id,
+            remote_jid: "15551234567@s.whatsapp.net",
+            from_me: false,
+            participant: nil
+          },
+          error: %{code: 404, result: :NOT_FOUND, status_code: 404, attrs: %{}}
+        }
+      ])
+
+      assert {:error, {:media_retry_failed, _details}} = Task.await(task, 5_000)
+    end
+
+    test "ignores non-matching message IDs and waits for the right one", ctx do
+      parent = self()
+      {:ok, emitter} = EventEmitter.start_link()
+
+      send_fun = fn _socket, %BinaryNode{} ->
+        send(parent, :node_sent)
+        :ok
+      end
+
+      task =
+        Task.async(fn ->
+          Retry.update_media_message(:fake_socket, emitter, ctx.wa_message,
+            me_id: "15550001111@s.whatsapp.net",
+            iv: ctx.iv,
+            send_fun: send_fun,
+            timeout: 5_000
+          )
+        end)
+
+      assert_receive :node_sent, 2_000
+
+      # Emit an event with a different message ID — should be ignored
+      EventEmitter.emit(emitter, :messages_media_update, [
+        %{
+          key: %{
+            id: "other-msg-id",
+            remote_jid: "other@s.whatsapp.net",
+            from_me: false,
+            participant: nil
+          },
+          media: %{ciphertext: <<>>, iv: <<>>}
+        }
+      ])
+
+      # Small delay to prove the non-matching one didn't resolve
+      Process.sleep(50)
+      refute Task.yield(task, 0)
+
+      # Now emit the correct one
+      EventEmitter.emit(emitter, :messages_media_update, [
+        %{
+          key: %{
+            id: ctx.msg_id,
+            remote_jid: "15551234567@s.whatsapp.net",
+            from_me: false,
+            participant: nil
+          },
+          media: %{ciphertext: ctx.ciphertext, iv: ctx.iv}
+        }
+      ])
+
+      assert {:ok, %WebMessageInfo{message: updated}} = Task.await(task, 5_000)
+      assert updated.image_message.direct_path == "/mms/image/refreshed-path"
+    end
+  end
+
+  describe "assert_media_content/1" do
+    test "returns image message content" do
+      msg = %Message{image_message: %Message.ImageMessage{media_key: <<1>>}}
+      assert {:ok, %Message.ImageMessage{}} = Retry.assert_media_content(msg)
+    end
+
+    test "returns video message content" do
+      msg = %Message{video_message: %Message.VideoMessage{media_key: <<1>>}}
+      assert {:ok, %Message.VideoMessage{}} = Retry.assert_media_content(msg)
+    end
+
+    test "returns audio message content" do
+      msg = %Message{audio_message: %Message.AudioMessage{media_key: <<1>>}}
+      assert {:ok, %Message.AudioMessage{}} = Retry.assert_media_content(msg)
+    end
+
+    test "returns document message content" do
+      msg = %Message{document_message: %Message.DocumentMessage{media_key: <<1>>}}
+      assert {:ok, %Message.DocumentMessage{}} = Retry.assert_media_content(msg)
+    end
+
+    test "returns sticker message content" do
+      msg = %Message{sticker_message: %Message.StickerMessage{media_key: <<1>>}}
+      assert {:ok, %Message.StickerMessage{}} = Retry.assert_media_content(msg)
+    end
+
+    test "returns error for non-media message" do
+      msg = %Message{conversation: "hello"}
+      assert {:error, :not_a_media_message} = Retry.assert_media_content(msg)
+    end
+
+    test "returns error for nil" do
+      assert {:error, :not_a_media_message} = Retry.assert_media_content(nil)
+    end
   end
 end

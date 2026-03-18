@@ -1034,6 +1034,20 @@ defmodule BaileysEx.Connection.Coordinator do
     |> maybe_put(:store_ref, state.store_ref)
     |> maybe_put_callback(:query_fun, sender_query_fun(state))
     |> maybe_put_callback(:send_node_fun, receipt_sender_fun(state))
+    |> maybe_put_callback(:cached_group_metadata, state.config.cached_group_metadata)
+    |> maybe_put_callback(:group_metadata_fun, group_metadata_fun(state))
+  end
+
+  defp group_metadata_fun(%State{} = state) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        fn jid ->
+          Group.get_metadata(socket_pid, jid)
+        end
+
+      :error ->
+        nil
+    end
   end
 
   defp maybe_handle_retry_receipt(

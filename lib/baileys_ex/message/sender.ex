@@ -32,7 +32,9 @@ defmodule BaileysEx.Message.Sender do
           optional(:store_ref) => RuntimeStore.Ref.t(),
           optional(:query_fun) => (BinaryNode.t() -> {:ok, BinaryNode.t()} | {:error, term()}),
           optional(:send_node_fun) => (BinaryNode.t() -> :ok | {:error, term()}),
-          optional(:socket) => GenServer.server()
+          optional(:socket) => GenServer.server(),
+          optional(:cached_group_metadata) => (String.t() -> {:ok, map()} | nil),
+          optional(:group_metadata_fun) => (String.t() -> {:ok, map()} | {:error, term()})
         }
 
   @type proto_message :: struct()
@@ -141,7 +143,9 @@ defmodule BaileysEx.Message.Sender do
        ) do
     cond do
       JIDUtil.group?(jid) ->
-        relay_group_message(context, jid, message, opts)
+        with {:ok, opts} <- resolve_group_participants(context, jid, opts) do
+          relay_group_message(context, jid, message, opts)
+        end
 
       JIDUtil.status_broadcast?(jid) ->
         relay_group_message(
@@ -155,6 +159,71 @@ defmodule BaileysEx.Message.Sender do
         relay_direct_message(context, jid, message, opts)
     end
   end
+
+  # Resolution order matching Baileys relayMessage:
+  # 1. explicit group_participants: opt (always wins)
+  # 2. cached_group_metadata callback (if configured and returns metadata with participants)
+  # 3. live group_metadata_fun fallback
+  defp resolve_group_participants(context, jid, opts) do
+    if Keyword.has_key?(opts, :group_participants) do
+      {:ok, opts}
+    else
+      group_jid_str = JIDUtil.to_string(jid)
+      use_cached = Keyword.get(opts, :use_cached_group_metadata, true)
+
+      case resolve_metadata(context, group_jid_str, use_cached) do
+        {:ok, metadata} ->
+          participants = extract_participant_ids(metadata)
+          opts = Keyword.put(opts, :group_participants, participants)
+          {:ok, maybe_add_ephemeral_expiration(opts, metadata)}
+
+        _ ->
+          {:error, :group_participants_not_found}
+      end
+    end
+  end
+
+  defp resolve_metadata(context, group_jid, use_cached) do
+    cached_result =
+      if use_cached do
+        try_cached_metadata(context[:cached_group_metadata], group_jid)
+      else
+        nil
+      end
+
+    case cached_result do
+      {:ok, %{participants: participants}} = result when is_list(participants) ->
+        result
+
+      _ ->
+        try_live_metadata(context[:group_metadata_fun], group_jid)
+    end
+  end
+
+  defp try_cached_metadata(nil, _jid), do: nil
+  defp try_cached_metadata(fun, jid) when is_function(fun, 1), do: fun.(jid)
+
+  defp try_live_metadata(nil, _jid), do: nil
+  defp try_live_metadata(fun, jid) when is_function(fun, 1), do: fun.(jid)
+
+  defp extract_participant_ids(%{participants: participants}) when is_list(participants) do
+    Enum.map(participants, fn
+      %{id: id} when is_binary(id) -> id
+      %{"id" => id} when is_binary(id) -> id
+      id when is_binary(id) -> id
+    end)
+  end
+
+  defp extract_participant_ids(_metadata), do: []
+
+  defp maybe_add_ephemeral_expiration(opts, %{ephemeral_duration: duration})
+       when is_integer(duration) and duration > 0 do
+    additional = Keyword.get(opts, :additional_attributes, %{})
+    additional = Map.put_new(additional, "expiration", Integer.to_string(duration))
+    Keyword.put(opts, :additional_attributes, additional)
+  end
+
+  defp maybe_add_ephemeral_expiration(opts, _metadata), do: opts
 
   defp relay_direct_message(%{me_id: me_id} = context, jid, message, opts) do
     recipient_jid = JIDUtil.to_string(jid)

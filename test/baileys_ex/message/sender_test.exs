@@ -664,6 +664,306 @@ defmodule BaileysEx.Message.SenderTest do
     assert type in ["msg", "pkmsg"]
   end
 
+  describe "cached_group_metadata resolution" do
+    test "resolves group participants from cached_group_metadata callback" do
+      parent = self()
+      group_jid = %JID{user: "120363001234567890", server: "g.us"}
+
+      {repo, store} = MessageSignalHelpers.new_repo()
+      session = MessageSignalHelpers.session_fixture()
+
+      repo =
+        repo
+        |> inject_session!("15551234567:0@s.whatsapp.net", session)
+        |> inject_session!("15557654321:0@s.whatsapp.net", session)
+
+      context = %{
+        signal_repository: repo,
+        signal_store: store,
+        me_id: "15550001111@s.whatsapp.net",
+        device_identity: <<9, 9, 9>>,
+        send_node_fun: fn node ->
+          send(parent, {:relay_node, node})
+          :ok
+        end,
+        cached_group_metadata: fn jid ->
+          send(parent, {:cached_group_metadata, jid})
+
+          {:ok,
+           %{
+             participants: [
+               %{id: "15551234567@s.whatsapp.net"},
+               %{id: "15557654321@s.whatsapp.net"}
+             ]
+           }}
+        end,
+        query_fun: fn _node ->
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "usync",
+                 attrs: %{},
+                 content: [
+                   %BinaryNode{
+                     tag: "list",
+                     attrs: %{},
+                     content: [
+                       %BinaryNode{
+                         tag: "user",
+                         attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                         content: [
+                           %BinaryNode{
+                             tag: "devices",
+                             attrs: %{},
+                             content: [
+                               %BinaryNode{
+                                 tag: "device-list",
+                                 attrs: %{},
+                                 content: [%BinaryNode{tag: "device", attrs: %{"id" => "0"}}]
+                               }
+                             ]
+                           }
+                         ]
+                       },
+                       %BinaryNode{
+                         tag: "user",
+                         attrs: %{"jid" => "15557654321@s.whatsapp.net"},
+                         content: [
+                           %BinaryNode{
+                             tag: "devices",
+                             attrs: %{},
+                             content: [
+                               %BinaryNode{
+                                 tag: "device-list",
+                                 attrs: %{},
+                                 content: [%BinaryNode{tag: "device", attrs: %{"id" => "0"}}]
+                               }
+                             ]
+                           }
+                         ]
+                       }
+                     ]
+                   }
+                 ]
+               }
+             ]
+           }}
+        end
+      }
+
+      assert {:ok, _sent, _updated_context} =
+               Sender.send(context, group_jid, %{text: "auto-resolve hello"},
+                 message_id_fun: fn _me_id -> "3EB0CACHED1" end,
+                 timestamp_fun: fn -> 1_710_000_000_000 end
+               )
+
+      # Verify cached metadata was consulted
+      assert_receive {:cached_group_metadata, "120363001234567890@g.us"}
+
+      assert_receive {:relay_node,
+                      %BinaryNode{
+                        tag: "message",
+                        attrs: %{"to" => "120363001234567890@g.us"},
+                        content: content
+                      }}
+
+      assert Enum.any?(
+               content,
+               &match?(%BinaryNode{tag: "enc", attrs: %{"type" => "skmsg"}}, &1)
+             )
+    end
+
+    test "falls back to live group_metadata_fun when cache returns nil" do
+      parent = self()
+      group_jid = %JID{user: "120363001234567890", server: "g.us"}
+
+      {repo, store} = MessageSignalHelpers.new_repo()
+      session = MessageSignalHelpers.session_fixture()
+
+      repo =
+        repo
+        |> inject_session!("15551234567:0@s.whatsapp.net", session)
+
+      context = %{
+        signal_repository: repo,
+        signal_store: store,
+        me_id: "15550001111@s.whatsapp.net",
+        send_node_fun: fn node ->
+          send(parent, {:relay_node, node})
+          :ok
+        end,
+        cached_group_metadata: fn _jid ->
+          send(parent, {:cached_miss, true})
+          nil
+        end,
+        group_metadata_fun: fn jid ->
+          send(parent, {:live_group_metadata, jid})
+
+          {:ok,
+           %{
+             participants: [%{id: "15551234567@s.whatsapp.net"}]
+           }}
+        end,
+        query_fun: fn _node ->
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "usync",
+                 attrs: %{},
+                 content: [
+                   %BinaryNode{
+                     tag: "list",
+                     attrs: %{},
+                     content: [
+                       %BinaryNode{
+                         tag: "user",
+                         attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                         content: [
+                           %BinaryNode{
+                             tag: "devices",
+                             attrs: %{},
+                             content: [
+                               %BinaryNode{
+                                 tag: "device-list",
+                                 attrs: %{},
+                                 content: [%BinaryNode{tag: "device", attrs: %{"id" => "0"}}]
+                               }
+                             ]
+                           }
+                         ]
+                       }
+                     ]
+                   }
+                 ]
+               }
+             ]
+           }}
+        end
+      }
+
+      assert {:ok, _sent, _updated_context} =
+               Sender.send(context, group_jid, %{text: "fallback hello"},
+                 message_id_fun: fn _me_id -> "3EB0FALLBK1" end,
+                 timestamp_fun: fn -> 1_710_000_000_000 end
+               )
+
+      # Verify cache was tried first
+      assert_receive {:cached_miss, true}
+      # Verify live fallback was called
+      assert_receive {:live_group_metadata, "120363001234567890@g.us"}
+
+      assert_receive {:relay_node,
+                      %BinaryNode{
+                        tag: "message",
+                        attrs: %{"to" => "120363001234567890@g.us"}
+                      }}
+    end
+
+    test "explicit group_participants wins over cached_group_metadata" do
+      parent = self()
+      group_jid = %JID{user: "120363001234567890", server: "g.us"}
+
+      {repo, store} = MessageSignalHelpers.new_repo()
+      session = MessageSignalHelpers.session_fixture()
+
+      repo =
+        repo
+        |> inject_session!("15551234567:0@s.whatsapp.net", session)
+
+      context = %{
+        signal_repository: repo,
+        signal_store: store,
+        me_id: "15550001111@s.whatsapp.net",
+        send_node_fun: fn node ->
+          send(parent, {:relay_node, node})
+          :ok
+        end,
+        cached_group_metadata: fn _jid ->
+          send(parent, {:cached_should_not_be_called, true})
+          {:ok, %{participants: [%{id: "15559999999@s.whatsapp.net"}]}}
+        end,
+        query_fun: fn _node ->
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "usync",
+                 attrs: %{},
+                 content: [
+                   %BinaryNode{
+                     tag: "list",
+                     attrs: %{},
+                     content: [
+                       %BinaryNode{
+                         tag: "user",
+                         attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                         content: [
+                           %BinaryNode{
+                             tag: "devices",
+                             attrs: %{},
+                             content: [
+                               %BinaryNode{
+                                 tag: "device-list",
+                                 attrs: %{},
+                                 content: [%BinaryNode{tag: "device", attrs: %{"id" => "0"}}]
+                               }
+                             ]
+                           }
+                         ]
+                       }
+                     ]
+                   }
+                 ]
+               }
+             ]
+           }}
+        end
+      }
+
+      assert {:ok, _sent, _updated_context} =
+               Sender.send(context, group_jid, %{text: "explicit hello"},
+                 message_id_fun: fn _me_id -> "3EB0EXPLIC1" end,
+                 timestamp_fun: fn -> 1_710_000_000_000 end,
+                 group_participants: ["15551234567@s.whatsapp.net"]
+               )
+
+      # Cached metadata should NOT have been called
+      refute_receive {:cached_should_not_be_called, _}
+
+      assert_receive {:relay_node,
+                      %BinaryNode{
+                        tag: "message",
+                        attrs: %{"to" => "120363001234567890@g.us"}
+                      }}
+    end
+
+    test "returns error when no cache, no live fallback, and no explicit participants" do
+      group_jid = %JID{user: "120363001234567890", server: "g.us"}
+
+      {repo, store} = MessageSignalHelpers.new_repo()
+
+      context = %{
+        signal_repository: repo,
+        signal_store: store,
+        me_id: "15550001111@s.whatsapp.net",
+        send_node_fun: fn _node -> :ok end
+      }
+
+      assert {:error, :group_participants_not_found} =
+               Sender.send(context, group_jid, %{text: "should fail"},
+                 message_id_fun: fn _me_id -> "3EB0NOPTCPNT" end
+               )
+    end
+  end
+
   defp inject_session!(repo, jid, session) do
     assert {:ok, next_repo} = Repository.inject_e2e_session(repo, %{jid: jid, session: session})
     next_repo

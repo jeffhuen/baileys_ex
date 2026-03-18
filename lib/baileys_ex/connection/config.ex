@@ -11,6 +11,7 @@ defmodule BaileysEx.Connection.Config do
   @type reconnect_policy :: :disabled | :restart_required | :all_non_logged_out
   @type version :: [non_neg_integer()]
   @type should_sync_history_message_fun :: (map() -> boolean())
+  @type cached_group_metadata_fun :: (String.t() -> {:ok, map()} | nil)
   @type platform ::
           :CHROME
           | :FIREFOX
@@ -41,6 +42,7 @@ defmodule BaileysEx.Connection.Config do
           mark_online_on_connect: boolean(),
           enable_auto_session_recreation: boolean(),
           enable_recent_message_cache: boolean(),
+          cached_group_metadata: cached_group_metadata_fun() | nil,
           browser: browser(),
           version: version(),
           country_code: String.t(),
@@ -95,6 +97,7 @@ defmodule BaileysEx.Connection.Config do
             mark_online_on_connect: true,
             enable_auto_session_recreation: true,
             enable_recent_message_cache: true,
+            cached_group_metadata: nil,
             browser: {"Mac OS", "Chrome", "14.4.1"},
             version: [2, 3000, 1_033_846_690],
             country_code: "US",

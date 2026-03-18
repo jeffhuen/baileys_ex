@@ -556,4 +556,170 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     assert log =~ "server_sync resync failed"
     assert log =~ ":decrypt_failed"
   end
+
+  test "process_node/2 emits group_participants_update for participant add" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    node = %BinaryNode{
+      tag: "notification",
+      attrs: %{
+        "id" => "notif-add-1",
+        "type" => "w:gp2",
+        "from" => "120363001234567890@g.us",
+        "participant" => "15551234567@s.whatsapp.net",
+        "participant_pn" => "15551234567@s.whatsapp.net",
+        "t" => "1710000800"
+      },
+      content: [
+        %BinaryNode{
+          tag: "add",
+          attrs: %{},
+          content: [
+            %BinaryNode{
+              tag: "participant",
+              attrs: %{
+                "jid" => "15550001111@s.whatsapp.net",
+                "phone_number" => "15550001111@s.whatsapp.net"
+              },
+              content: nil
+            }
+          ]
+        }
+      ]
+    }
+
+    assert :ok =
+             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+               node,
+               %{event_emitter: emitter, me_id: "15559999999@s.whatsapp.net"}
+             ])
+
+    # Verify synthetic message is still emitted
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        messages: [%{message_stub_type: :GROUP_PARTICIPANT_ADD}]
+                      }
+                    }}
+
+    # Verify the new group_participants_update side effect is emitted
+    assert_receive {:events,
+                    %{
+                      group_participants_update: %{
+                        id: "120363001234567890@g.us",
+                        author: "15551234567@s.whatsapp.net",
+                        action: :add,
+                        participants: participants
+                      }
+                    }}
+
+    assert is_list(participants)
+    assert length(participants) >= 1
+
+    unsubscribe.()
+  end
+
+  test "process_node/2 emits groups_update for subject change" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    node = %BinaryNode{
+      tag: "notification",
+      attrs: %{
+        "id" => "notif-subject-1",
+        "type" => "w:gp2",
+        "from" => "120363001234567890@g.us",
+        "participant" => "15551234567@s.whatsapp.net",
+        "participant_pn" => "15551234567@s.whatsapp.net",
+        "t" => "1710000900"
+      },
+      content: [
+        %BinaryNode{
+          tag: "subject",
+          attrs: %{"subject" => "Updated Group Name"},
+          content: nil
+        }
+      ]
+    }
+
+    assert :ok =
+             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+               node,
+               %{event_emitter: emitter, me_id: "15559999999@s.whatsapp.net"}
+             ])
+
+    # Verify the groups_update side effect is emitted
+    assert_receive {:events,
+                    %{
+                      groups_update: [
+                        %{
+                          id: "120363001234567890@g.us",
+                          subject: "Updated Group Name",
+                          author: "15551234567@s.whatsapp.net"
+                        }
+                      ]
+                    }}
+
+    unsubscribe.()
+  end
+
+  test "process_node/2 emits chats_update with read_only true when current user is removed" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    me_id = "15559999999@s.whatsapp.net"
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    node = %BinaryNode{
+      tag: "notification",
+      attrs: %{
+        "id" => "notif-remove-me-1",
+        "type" => "w:gp2",
+        "from" => "120363001234567890@g.us",
+        "participant" => "15551234567@s.whatsapp.net",
+        "t" => "1710001000"
+      },
+      content: [
+        %BinaryNode{
+          tag: "remove",
+          attrs: %{},
+          content: [
+            %BinaryNode{
+              tag: "participant",
+              attrs: %{
+                "jid" => me_id,
+                "phone_number" => me_id
+              },
+              content: nil
+            }
+          ]
+        }
+      ]
+    }
+
+    assert :ok =
+             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+               node,
+               %{event_emitter: emitter, me_id: me_id}
+             ])
+
+    # Verify group_participants_update with remove action
+    assert_receive {:events,
+                    %{
+                      group_participants_update: %{
+                        id: "120363001234567890@g.us",
+                        action: :remove
+                      }
+                    }}
+
+    # Verify chats_update with read_only: true
+    assert_receive {:events,
+                    %{
+                      chats_update: [%{id: "120363001234567890@g.us", read_only: true}]
+                    }}
+
+    unsubscribe.()
+  end
 end

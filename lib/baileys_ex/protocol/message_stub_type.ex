@@ -6,11 +6,13 @@ defmodule BaileysEx.Protocol.MessageStubType do
   descriptive atoms for pattern matching in the message receiver.
   """
 
+  # Maps wire notification tags to WAMessageStubType atoms.
+  # Follows the switch in Baileys messages-recv.ts handleGroupNotification().
   @stub_types %{
     "create" => :GROUP_CREATE,
     "ephemeral" => :GROUP_CHANGE_EPHEMERAL_SETTING,
     "not_ephemeral" => :GROUP_CHANGE_NOT_EPHEMERAL,
-    "modify" => :GROUP_CHANGE_SUBJECT,
+    "modify" => :GROUP_PARTICIPANT_CHANGE_NUMBER,
     "promote" => :GROUP_PARTICIPANT_PROMOTE,
     "demote" => :GROUP_PARTICIPANT_DEMOTE,
     "remove" => :GROUP_PARTICIPANT_REMOVE,
@@ -18,11 +20,15 @@ defmodule BaileysEx.Protocol.MessageStubType do
     "leave" => :GROUP_PARTICIPANT_LEAVE,
     "subject" => :GROUP_CHANGE_SUBJECT,
     "description" => :GROUP_CHANGE_DESCRIPTION,
+    # Baileys maps both announcement/not_announcement to GROUP_CHANGE_ANNOUNCE
+    # with the parameter distinguishing on/off
     "announcement" => :GROUP_CHANGE_ANNOUNCE,
-    "not_announcement" => :GROUP_CHANGE_NOT_ANNOUNCE,
+    "not_announcement" => :GROUP_CHANGE_ANNOUNCE,
+    # Baileys maps both locked/unlocked to GROUP_CHANGE_RESTRICT
+    # with the parameter distinguishing on/off
     "locked" => :GROUP_CHANGE_RESTRICT,
-    "unlocked" => :GROUP_CHANGE_NOT_RESTRICT,
-    "invite" => :GROUP_PARTICIPANT_INVITE,
+    "unlocked" => :GROUP_CHANGE_RESTRICT,
+    "invite" => :GROUP_CHANGE_INVITE_LINK,
     "member_add_mode" => :GROUP_MEMBER_ADD_MODE,
     "membership_approval_mode" => :GROUP_MEMBERSHIP_JOIN_APPROVAL_MODE,
     "created_membership_requests" => :GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD,

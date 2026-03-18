@@ -12,6 +12,7 @@ defmodule BaileysEx.Message.NotificationHandler do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Feature.TcToken
   alias BaileysEx.Media.Retry, as: MediaRetry
+  alias BaileysEx.Message.StubSideEffects
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.MessageStubType
@@ -19,6 +20,7 @@ defmodule BaileysEx.Message.NotificationHandler do
 
   @type context :: %{
           optional(:event_emitter) => GenServer.server(),
+          optional(:me_id) => String.t(),
           optional(:store_privacy_token_fun) => (String.t(), binary(), String.t() | nil ->
                                                    :ok | {:error, term()}),
           optional(:handle_encrypt_notification_fun) => (BinaryNode.t() -> term()),
@@ -136,13 +138,34 @@ defmodule BaileysEx.Message.NotificationHandler do
          %BinaryNode{tag: tag} = child,
          context
        ) do
+    stub_type = group_stub_type(tag)
+    stub_parameters = group_stub_parameters(tag, child, attrs)
+
     message =
       %{}
-      |> Map.put(:message_stub_type, group_stub_type(tag))
-      |> maybe_put(:message_stub_parameters, group_stub_parameters(tag, child, attrs))
+      |> Map.put(:message_stub_type, stub_type)
+      |> maybe_put(:message_stub_parameters, stub_parameters)
       |> maybe_put(:participant, attrs["participant"])
 
     emit_group_message(context, attrs, message)
+
+    emit_stub_side_effects(context, %{
+      stub_type: stub_type,
+      stub_parameters: stub_parameters || [],
+      group_jid: attrs["from"],
+      author: attrs["participant"],
+      author_pn: attrs["participant_pn"],
+      me_id: context[:me_id] || ""
+    })
+  end
+
+  @spec emit_stub_side_effects(context(), StubSideEffects.stub_input()) :: :ok
+  defp emit_stub_side_effects(context, input) do
+    input
+    |> StubSideEffects.derive()
+    |> Enum.each(fn {event, data} ->
+      emit(context, event, data)
+    end)
   end
 
   defp handle_encrypt_notification(%BinaryNode{} = node, context) do

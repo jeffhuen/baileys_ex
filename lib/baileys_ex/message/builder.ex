@@ -387,6 +387,21 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
+  def build(%{limit_sharing: sharing_limited} = _content, opts)
+      when is_boolean(sharing_limited) do
+    %Message{
+      protocol_message: %Message.ProtocolMessage{
+        type: :LIMIT_SHARING,
+        limit_sharing: %Message.LimitSharing{
+          sharing_limited: sharing_limited,
+          trigger: :CHAT_SETTING,
+          limit_sharing_setting_timestamp: now_ms(opts),
+          initiated_by_me: true
+        }
+      }
+    }
+  end
+
   def build(%{event: %{name: name} = event}, _opts) do
     %Message{
       event_message: %Message.EventMessage{

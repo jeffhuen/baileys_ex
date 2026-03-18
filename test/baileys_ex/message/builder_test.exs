@@ -379,6 +379,52 @@ defmodule BaileysEx.Message.BuilderTest do
            } = Builder.build(%{text: "secret", view_once: true})
   end
 
+  test "builds limit_sharing: true protocol message with correct sub-fields" do
+    timestamp_ms = 1_710_000_500_000
+
+    assert %Message{
+             protocol_message: %ProtocolMessage{
+               type: :LIMIT_SHARING,
+               limit_sharing: %Message.LimitSharing{
+                 sharing_limited: true,
+                 trigger: :CHAT_SETTING,
+                 limit_sharing_setting_timestamp: ^timestamp_ms,
+                 initiated_by_me: true
+               }
+             }
+           } =
+             Builder.build(%{limit_sharing: true}, now_ms: fn -> timestamp_ms end)
+  end
+
+  test "builds limit_sharing: false protocol message" do
+    timestamp_ms = 1_710_000_600_000
+
+    assert %Message{
+             protocol_message: %ProtocolMessage{
+               type: :LIMIT_SHARING,
+               limit_sharing: %Message.LimitSharing{
+                 sharing_limited: false,
+                 trigger: :CHAT_SETTING,
+                 limit_sharing_setting_timestamp: ^timestamp_ms,
+                 initiated_by_me: true
+               }
+             }
+           } =
+             Builder.build(%{limit_sharing: false}, now_ms: fn -> timestamp_ms end)
+  end
+
+  test "limit_sharing respects injected timestamp and does not call system clock" do
+    fixed_ts = 1_710_999_999_000
+
+    result =
+      Builder.build(
+        %{limit_sharing: true},
+        now_ms: fn -> fixed_ts end
+      )
+
+    assert result.protocol_message.limit_sharing.limit_sharing_setting_timestamp == fixed_ts
+  end
+
   test "built non-text messages roundtrip through message encode/decode" do
     messages = [
       Builder.build(%{location: %{latitude: 37.0, longitude: -122.0, name: "SF"}}),
@@ -390,7 +436,9 @@ defmodule BaileysEx.Message.BuilderTest do
       Builder.build(%{button_reply: %{display_text: "Tap", id: "btn-2"}}),
       Builder.build(%{button_reply: %{display_text: "Tap", id: "btn-1", type: :template}}),
       Builder.build(%{list_reply: %{title: "Choice", row_id: "row-1"}}),
-      Builder.build(%{event: %{name: "Event", start_time: ~U[2026-03-11 12:00:00Z]}})
+      Builder.build(%{event: %{name: "Event", start_time: ~U[2026-03-11 12:00:00Z]}}),
+      Builder.build(%{limit_sharing: true}, now_ms: fn -> 1_710_000_000_000 end),
+      Builder.build(%{limit_sharing: false}, now_ms: fn -> 1_710_000_000_000 end)
     ]
 
     for message <- messages do

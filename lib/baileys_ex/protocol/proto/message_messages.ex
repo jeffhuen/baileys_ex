@@ -1512,6 +1512,46 @@ defmodule BaileysEx.Protocol.Proto.Message do
     end
   end
 
+  defmodule LimitSharing do
+    @moduledoc false
+
+    alias BaileysEx.Protocol.Proto.MessageSupport
+
+    @trigger_type_values %{UNKNOWN: 0, CHAT_SETTING: 1, BIZ_SUPPORTS_FB_HOSTING: 2}
+
+    defstruct sharing_limited: nil,
+              trigger: nil,
+              limit_sharing_setting_timestamp: nil,
+              initiated_by_me: nil
+
+    @type t :: %__MODULE__{
+            sharing_limited: boolean() | nil,
+            trigger: atom() | integer() | nil,
+            limit_sharing_setting_timestamp: non_neg_integer() | nil,
+            initiated_by_me: boolean() | nil
+          }
+
+    @spec encode(t()) :: binary()
+    def encode(%__MODULE__{} = limit_sharing) do
+      MessageSupport.encode_fields(limit_sharing,
+        sharing_limited: {:bool, 1},
+        trigger: {:enum, 2, @trigger_type_values},
+        limit_sharing_setting_timestamp: {:int64, 3},
+        initiated_by_me: {:bool, 4}
+      )
+    end
+
+    @spec decode(binary()) :: {:ok, t()} | {:error, term()}
+    def decode(binary) do
+      MessageSupport.decode_fields(binary, %__MODULE__{},
+        sharing_limited: {:bool, 1},
+        trigger: {:enum, 2, @trigger_type_values},
+        limit_sharing_setting_timestamp: {:int64, 3},
+        initiated_by_me: {:bool, 4}
+      )
+    end
+  end
+
   defmodule LIDMigrationMapping do
     @moduledoc false
 
@@ -1913,6 +1953,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
     alias BaileysEx.Protocol.Proto.Message.AppStateSyncKeyShare
     alias BaileysEx.Protocol.Proto.Message.HistorySyncNotification
     alias BaileysEx.Protocol.Proto.Message.LIDMigrationMappingSyncMessage
+    alias BaileysEx.Protocol.Proto.Message.LimitSharing
     alias BaileysEx.Protocol.Proto.Message.MemberLabel
     alias BaileysEx.Protocol.Proto.Message
     alias BaileysEx.Protocol.Proto.Message.PeerDataOperationRequestMessage
@@ -1930,6 +1971,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
       PEER_DATA_OPERATION_REQUEST_MESSAGE: 16,
       PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE: 17,
       LID_MIGRATION_MAPPING_SYNC: 22,
+      LIMIT_SHARING: 27,
       GROUP_MEMBER_LABEL_CHANGE: 30
     }
 
@@ -1944,6 +1986,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
               edited_message: nil,
               timestamp_ms: nil,
               lid_migration_mapping_sync_message: nil,
+              limit_sharing: nil,
               member_label: nil
 
     @type t :: %__MODULE__{
@@ -1959,6 +2002,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
             edited_message: Message.t() | nil,
             timestamp_ms: non_neg_integer() | nil,
             lid_migration_mapping_sync_message: LIDMigrationMappingSyncMessage.t() | nil,
+            limit_sharing: LimitSharing.t() | nil,
             member_label: MemberLabel.t() | nil
           }
 
@@ -1977,6 +2021,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
         peer_data_operation_request_response_message:
           {:message, 17, PeerDataOperationRequestResponseMessage},
         lid_migration_mapping_sync_message: {:message, 23, LIDMigrationMappingSyncMessage},
+        limit_sharing: {:message, 24, LimitSharing},
         member_label: {:message, 27, MemberLabel}
       )
     end
@@ -1996,6 +2041,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
         peer_data_operation_request_response_message:
           {:message, 17, PeerDataOperationRequestResponseMessage},
         lid_migration_mapping_sync_message: {:message, 23, LIDMigrationMappingSyncMessage},
+        limit_sharing: {:message, 24, LimitSharing},
         member_label: {:message, 27, MemberLabel}
       )
     end

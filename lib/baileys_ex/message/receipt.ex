@@ -7,7 +7,8 @@ defmodule BaileysEx.Message.Receipt do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Protocol.JID, as: JIDUtil
 
-  @type receipt_type :: :delivered | :read | :read_self | :played | :sender | :retry | :hist_sync
+  @type receipt_type ::
+          :delivered | :read | :read_self | :played | :sender | :retry | :hist_sync | :peer_msg
 
   @receipt_status %{
     nil => :delivery_ack,

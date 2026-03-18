@@ -335,6 +335,48 @@ defmodule BaileysEx.Signal.RepositoryTest do
                Repository.get_pn_for_lid(repo, "12345:99@lid")
     end
 
+    test "encrypts and validates through mapped LID sessions for PN device JIDs" do
+      repo = new_repo()
+
+      session = %{
+        registration_id: 42,
+        identity_key: fixed_bytes(32, 1),
+        signed_pre_key: %{
+          key_id: 7,
+          public_key: fixed_bytes(32, 2),
+          signature: fixed_bytes(64, 3)
+        },
+        pre_key: %{
+          key_id: 8,
+          public_key: fixed_bytes(32, 4)
+        }
+      }
+
+      assert {:ok, repo} =
+               Repository.store_lid_pn_mappings(repo, [
+                 %{lid: "12345@lid", pn: "5511999887766@s.whatsapp.net"}
+               ])
+
+      assert {:ok, repo} =
+               Repository.inject_e2e_session(repo, %{
+                 jid: "12345:2@lid",
+                 session: session
+               })
+
+      assert {:ok, %{exists: true}} =
+               Repository.validate_session(repo, "5511999887766:2@s.whatsapp.net")
+
+      assert {:ok, _repo, %{type: :pkmsg, ciphertext: ciphertext}} =
+               Repository.encrypt_message(repo, %{
+                 jid: "5511999887766:2@s.whatsapp.net",
+                 data: "hello"
+               })
+
+      refute String.starts_with?(ciphertext, "5511999887766")
+      assert String.starts_with?(ciphertext, "12345")
+      assert String.ends_with?(ciphertext, "|hello")
+    end
+
     test "trusts first use and loads identity keys through the repository" do
       {:ok, store} = Store.start_link()
       repo = new_repo(store: store)

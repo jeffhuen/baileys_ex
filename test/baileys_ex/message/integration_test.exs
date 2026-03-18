@@ -152,7 +152,7 @@ defmodule BaileysEx.Message.IntegrationTest do
       Enum.find_value(participants, fn
         %BinaryNode{
           tag: "to",
-          attrs: %{"jid" => "15551234567:0@s.whatsapp.net"},
+          attrs: %{"jid" => "15551234567@s.whatsapp.net"},
           content: [%BinaryNode{tag: "enc", content: {:binary, value}}]
         } ->
           value
@@ -267,7 +267,7 @@ defmodule BaileysEx.Message.IntegrationTest do
       Enum.find_value(participants, fn
         %BinaryNode{
           tag: "to",
-          attrs: %{"jid" => "15551234567:0@s.whatsapp.net"},
+          attrs: %{"jid" => "15551234567@s.whatsapp.net"},
           content: [%BinaryNode{tag: "enc", content: {:binary, value}}]
         } ->
           value

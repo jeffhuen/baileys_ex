@@ -411,9 +411,18 @@ defmodule BaileysEx.Connection.EventEmitter do
   defp dispatch(_subscribers, []), do: :ok
 
   defp dispatch(subscribers, deliveries) do
+    require Logger
+
     Enum.each(deliveries, fn delivery ->
-      Enum.each(subscribers, fn {_ref, handler} ->
-        handler.(delivery)
+      Enum.each(subscribers, fn {ref, handler} ->
+        try do
+          handler.(delivery)
+        rescue
+          error ->
+            Logger.error(
+              "[EventEmitter] subscriber #{inspect(ref)} crashed: #{Exception.message(error)}"
+            )
+        end
       end)
     end)
   end

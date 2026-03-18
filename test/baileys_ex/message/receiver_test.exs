@@ -104,6 +104,223 @@ defmodule BaileysEx.Message.ReceiverTest do
     unsubscribe.()
   end
 
+  test "process_node/3 stores PN to LID mappings from lid-addressed direct messages" do
+    assert {:ok, emitter} = EventEmitter.start_link()
+
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    assert :ok = Store.set(store, %{:"device-list" => %{"15551234567" => ["0"]}})
+
+    assert {:ok, repo} =
+             Repository.inject_e2e_session(repo, %{
+               jid: "15551234567:0@s.whatsapp.net",
+               session: session
+             })
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "msg-lid-map-1",
+        "from" => "12345@lid",
+        "sender_pn" => "15551234567@s.whatsapp.net",
+        "addressing_mode" => "lid",
+        "t" => "1710000001"
+      },
+      content: [
+        %BinaryNode{
+          tag: "plaintext",
+          attrs: %{},
+          content: Message.encode(Builder.build(%{text: "hello from lid peer"}))
+        }
+      ]
+    }
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid"
+    }
+
+    assert {:ok, _message, %{signal_repository: updated_repo}} =
+             Receiver.process_node(node, context)
+
+    assert {:ok, ^updated_repo, "12345@lid"} =
+             Repository.get_lid_for_pn(updated_repo, "15551234567@s.whatsapp.net")
+
+    assert {:ok, %{exists: true}} = Repository.validate_session(updated_repo, "12345:0@lid")
+
+    unsubscribe.()
+  end
+
+  test "process_node/3 copies notify into push_name and emits contacts_update for peer messages" do
+    assert {:ok, emitter} = EventEmitter.start_link()
+
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "msg-push-name-peer",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => "15551234567:1@s.whatsapp.net",
+        "notify" => "Peer Push Name",
+        "t" => "1710000002"
+      },
+      content: [
+        %BinaryNode{
+          tag: "plaintext",
+          attrs: %{},
+          content: Message.encode(Builder.build(%{text: "hello from peer"}))
+        }
+      ]
+    }
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid"
+    }
+
+    assert {:ok, %{push_name: "Peer Push Name"}, _context} = Receiver.process_node(node, context)
+
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        messages: [%{push_name: "Peer Push Name"}]
+                      }
+                    }}
+
+    assert_receive {:events,
+                    %{
+                      contacts_update: [
+                        %{id: "15551234567@s.whatsapp.net", notify: "Peer Push Name"}
+                      ]
+                    }}
+
+    unsubscribe.()
+  end
+
+  test "process_node/3 sends peer_msg receipts for peer-category messages" do
+    assert {:ok, emitter} = EventEmitter.start_link()
+
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "msg-peer-receipt-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "category" => "peer",
+        "t" => "1710000004"
+      },
+      content: [
+        %BinaryNode{
+          tag: "plaintext",
+          attrs: %{},
+          content:
+            Message.encode(%Message{
+              protocol_message: %Message.ProtocolMessage{
+                type: :APP_STATE_SYNC_KEY_SHARE,
+                app_state_sync_key_share: %Message.AppStateSyncKeyShare{keys: []}
+              }
+            })
+        }
+      ]
+    }
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid",
+      send_receipt_fun: fn receipt_node ->
+        send(parent, {:receipt, receipt_node})
+        :ok
+      end
+    }
+
+    assert {:ok, %{key: %{id: "msg-peer-receipt-1"}}, _context} =
+             Receiver.process_node(node, context)
+
+    assert_receive {:receipt,
+                    %BinaryNode{
+                      tag: "receipt",
+                      attrs: %{
+                        "id" => "msg-peer-receipt-1",
+                        "to" => "15551234567@s.whatsapp.net",
+                        "type" => "peer_msg"
+                      }
+                    }}
+
+    unsubscribe.()
+  end
+
+  test "process_node/3 emits creds_update when a self message carries a new notify push name" do
+    assert {:ok, emitter} = EventEmitter.start_link()
+
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+    {:ok, runtime_store} = ConnectionStore.start_link(auth_state: %{me: %{name: "Old Name"}})
+    runtime_store_ref = ConnectionStore.wrap(runtime_store)
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "msg-push-name-self",
+        "from" => "15550001111@s.whatsapp.net",
+        "recipient" => "15551234567@s.whatsapp.net",
+        "notify" => "New Name",
+        "t" => "1710000003"
+      },
+      content: [
+        %BinaryNode{
+          tag: "plaintext",
+          attrs: %{},
+          content: Message.encode(Builder.build(%{text: "hello from me"}))
+        }
+      ]
+    }
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid",
+      store_ref: runtime_store_ref
+    }
+
+    assert {:ok, %{push_name: "New Name"}, _context} = Receiver.process_node(node, context)
+
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        messages: [%{push_name: "New Name", key: %{from_me: true}}]
+                      }
+                    }}
+
+    assert_receive {:events, %{creds_update: %{me: %{name: "New Name"}}}}
+
+    refute_receive {:events, %{contacts_update: _contacts}}
+
+    unsubscribe.()
+  end
+
   test "process_node/3 decrypts a group skmsg node" do
     assert {:ok, emitter} = EventEmitter.start_link()
 
@@ -500,6 +717,10 @@ defmodule BaileysEx.Message.ReceiverTest do
       me_id: "15550001111@s.whatsapp.net",
       me_lid: "15550001111@lid",
       store_ref: runtime_store_ref,
+      send_receipt_fun: fn receipt_node ->
+        send(parent, {:receipt, receipt_node})
+        :ok
+      end,
       history_sync_fun: fn notification, received_message, _context ->
         assert notification.sync_type == :INITIAL_BOOTSTRAP
         assert received_message.key.id == "hist-1"
@@ -534,6 +755,25 @@ defmodule BaileysEx.Message.ReceiverTest do
                         progress: 77,
                         sync_type: :INITIAL_BOOTSTRAP,
                         peer_data_request_session_id: "pdo-session-1"
+                      }
+                    }}
+
+    assert_receive {:receipt,
+                    %BinaryNode{
+                      tag: "receipt",
+                      attrs: %{
+                        "id" => "hist-1",
+                        "to" => "15551234567@s.whatsapp.net"
+                      }
+                    }}
+
+    assert_receive {:receipt,
+                    %BinaryNode{
+                      tag: "receipt",
+                      attrs: %{
+                        "id" => "hist-1",
+                        "to" => "15551234567@s.whatsapp.net",
+                        "type" => "hist_sync"
                       }
                     }}
 

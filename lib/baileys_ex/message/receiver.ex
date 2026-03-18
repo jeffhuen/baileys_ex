@@ -69,8 +69,9 @@ defmodule BaileysEx.Message.Receiver do
              type: :notify,
              messages: [received_message]
            }),
+         :ok <- emit_upsert_side_effects(received_message, context),
          :ok <- emit_receive_telemetry(node, envelope),
-         :ok <- send_receipt(node, envelope, context) do
+         :ok <- send_receipt(node, envelope, received_message, context) do
       {:ok, received_message, context}
     end
   end
@@ -190,6 +191,7 @@ defmodule BaileysEx.Message.Receiver do
       message_timestamp: parse_timestamp(attrs["t"]),
       sender_jid: envelope.author_jid,
       participant: envelope.participant,
+      push_name: attrs["notify"],
       verified_biz_name: verified_biz_name(node)
     }
   end
@@ -226,27 +228,54 @@ defmodule BaileysEx.Message.Receiver do
     Logger.warning(
       "[Receiver] message emitted — id=#{received_message[:key][:id]}, " <>
         "from=#{received_message[:key][:remote_jid]}, " <>
+        "from_me=#{inspect(received_message[:key][:from_me])}, " <>
+        "push_name=#{inspect(received_message[:push_name])}, " <>
         "msg_type=#{msg_type}, content_fields=#{inspect(content_fields)}"
     )
 
     :ok
   end
 
-  defp send_receipt(%BinaryNode{attrs: attrs}, envelope, context) do
+  defp send_receipt(%BinaryNode{attrs: attrs}, envelope, received_message, context) do
     case Map.get(context, :send_receipt_fun) do
       fun when is_function(fun, 1) ->
-        Receipt.send_receipt(
-          fun,
-          envelope.remote_jid,
-          envelope.participant,
-          [attrs["id"]],
-          :delivered
-        )
+        with :ok <-
+               Receipt.send_receipt(
+                 fun,
+                 envelope.remote_jid,
+                 envelope.participant,
+                 [attrs["id"]],
+                 receipt_type(attrs["category"])
+               ),
+             :ok <- maybe_send_history_sync_receipt(fun, attrs["id"], envelope, received_message) do
+          :ok
+        end
 
       _other ->
         :ok
     end
   end
+
+  defp receipt_type("peer"), do: :peer_msg
+  defp receipt_type(_category), do: :delivered
+
+  defp maybe_send_history_sync_receipt(
+         fun,
+         message_id,
+         envelope,
+         %{
+           message: %Message{
+             protocol_message: %Message.ProtocolMessage{type: :HISTORY_SYNC_NOTIFICATION}
+           }
+         }
+       ) do
+    case JIDUtil.normalized_user(envelope.remote_jid) do
+      "" -> :ok
+      jid -> Receipt.send_receipt(fun, jid, nil, [message_id], :hist_sync)
+    end
+  end
+
+  defp maybe_send_history_sync_receipt(_fun, _message_id, _envelope, _received_message), do: :ok
 
   defp maybe_persist_lid_mapping(
          %{author_jid: sender, decryption_jid: decryption_jid} = envelope,
@@ -254,22 +283,24 @@ defmodule BaileysEx.Message.Receiver do
        ) do
     sender_alt = envelope[:participant_alt] || envelope[:remote_jid_alt]
 
-    if should_store_lid_mapping?(sender, sender_alt, decryption_jid) do
-      with {:ok, repo} <- Repository.store_lid_pn_mappings(repo, [%{lid: sender_alt, pn: sender}]),
-           {:ok, repo, _result} <- Repository.migrate_session(repo, sender, sender_alt) do
-        {:ok, %{context | signal_repository: repo}}
-      else
-        error ->
-          Logger.warning(
-            "failed to persist LID mapping from message envelope " <>
-              "sender=#{inspect(sender)} sender_alt=#{inspect(sender_alt)} " <>
-              "decryption_jid=#{inspect(decryption_jid)} error=#{inspect(error)}"
-          )
+    case lid_mapping_pair(sender, sender_alt) do
+      %{lid: lid, pn: pn} = pair ->
+        with {:ok, repo} <- Repository.store_lid_pn_mappings(repo, [pair]),
+             {:ok, repo, _result} <- Repository.migrate_session(repo, pn, lid) do
+          {:ok, %{context | signal_repository: repo}}
+        else
+          error ->
+            Logger.warning(
+              "failed to persist LID mapping from message envelope " <>
+                "sender=#{inspect(sender)} sender_alt=#{inspect(sender_alt)} " <>
+                "decryption_jid=#{inspect(decryption_jid)} error=#{inspect(error)}"
+            )
 
-          {:ok, context}
-      end
-    else
-      {:ok, context}
+            {:ok, context}
+        end
+
+      nil ->
+        {:ok, %{context | signal_repository: repo}}
     end
   end
 
@@ -317,6 +348,46 @@ defmodule BaileysEx.Message.Receiver do
       }
     )
   end
+
+  defp emit_upsert_side_effects(
+         %{push_name: push_name, key: %{from_me: true}},
+         %{event_emitter: event_emitter} = context
+       )
+       when is_binary(push_name) and push_name != "" do
+    current_name = current_me_name(context)
+
+    if current_name != push_name do
+      me =
+        current_me(context)
+        |> maybe_put(:name, push_name)
+
+      EventEmitter.emit(event_emitter, :creds_update, %{me: me})
+    else
+      :ok
+    end
+  end
+
+  defp emit_upsert_side_effects(
+         %{push_name: push_name, verified_biz_name: verified_biz_name, key: key},
+         %{event_emitter: event_emitter}
+       )
+       when is_binary(push_name) and push_name != "" do
+    contact_id =
+      key
+      |> Map.get(:participant, Map.get(key, :remote_jid))
+      |> JIDUtil.normalized_user()
+
+    if contact_id != "" do
+      EventEmitter.emit(event_emitter, :contacts_update, [
+        %{id: contact_id, notify: push_name}
+        |> maybe_put(:verified_name, verified_biz_name)
+      ])
+    else
+      :ok
+    end
+  end
+
+  defp emit_upsert_side_effects(_received_message, _context), do: :ok
 
   defp emit_message_side_effects(side_effects, event_emitter) when is_list(side_effects) do
     Enum.reduce_while(side_effects, :ok, fn
@@ -822,12 +893,48 @@ defmodule BaileysEx.Message.Receiver do
     end)
   end
 
-  defp should_store_lid_mapping?(sender, sender_alt, decryption_jid) do
-    is_binary(sender_alt) and
-      (JIDUtil.lid?(sender_alt) or JIDUtil.hosted_lid?(sender_alt)) and
-      (JIDUtil.user?(sender) or JIDUtil.hosted_pn?(sender)) and
-      JIDUtil.same_user?(decryption_jid, sender)
+  defp lid_mapping_pair(sender, sender_alt) do
+    cond do
+      pn_jid?(sender) and lid_jid?(sender_alt) ->
+        %{pn: sender, lid: sender_alt}
+
+      lid_jid?(sender) and pn_jid?(sender_alt) ->
+        %{pn: sender_alt, lid: sender}
+
+      true ->
+        nil
+    end
   end
+
+  defp pn_jid?(jid), do: is_binary(jid) and (JIDUtil.user?(jid) or JIDUtil.hosted_pn?(jid))
+
+  defp lid_jid?(jid), do: is_binary(jid) and (JIDUtil.lid?(jid) or JIDUtil.hosted_lid?(jid))
+
+  defp current_me(%{store_ref: %ConnectionStore.Ref{} = store_ref} = context) do
+    store_ref
+    |> ConnectionStore.get(:creds, %{})
+    |> nested_me()
+    |> maybe_put(:id, context[:me_id])
+    |> maybe_put(:lid, context[:me_lid])
+  end
+
+  defp current_me(context) do
+    %{}
+    |> maybe_put(:id, context[:me_id])
+    |> maybe_put(:lid, context[:me_lid])
+  end
+
+  defp current_me_name(context) do
+    case current_me(context) do
+      %{name: name} when is_binary(name) -> name
+      %{"name" => name} when is_binary(name) -> name
+      _ -> nil
+    end
+  end
+
+  defp nested_me(%{me: me}) when is_map(me), do: me
+  defp nested_me(%{"me" => me}) when is_map(me), do: me
+  defp nested_me(_creds), do: %{}
 
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)

@@ -580,6 +580,51 @@ defmodule BaileysEx.Syncd.CodecTest do
   end
 
   describe "external blob handling" do
+    test "extract_syncd_patches/2 decodes tuple-wrapped patch payloads" do
+      state = Codec.new_lt_hash_state()
+      iv = :binary.copy(<<0x42>>, 16)
+
+      patch_create = %{
+        type: :regular_high,
+        index: ["mute", "user@s.whatsapp.net"],
+        sync_action: %Syncd.SyncActionValue{
+          timestamp: 1_710_000_000,
+          mute_action: %Syncd.MuteAction{muted: true, mute_end_timestamp: 1_710_086_400}
+        },
+        api_version: 2,
+        operation: :set
+      }
+
+      {:ok, %{patch: patch, state: enc_state}} =
+        Codec.encode_syncd_patch(patch_create, @key_id_b64, state, &mock_get_key/1, iv: iv)
+
+      patch = %{patch | version: %Syncd.SyncdVersion{version: enc_state.version}}
+      patch_binary = Syncd.SyncdPatch.encode(patch)
+
+      response = %{
+        tag: "iq",
+        attrs: %{},
+        content: [
+          %{
+            tag: "sync",
+            attrs: %{},
+            content: [
+              %{
+                tag: "collection",
+                attrs: %{"name" => "regular_high", "version" => "1"},
+                content: [
+                  %{tag: "patch", attrs: %{}, content: {:binary, patch_binary}}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      assert {:ok, %{regular_high: %{patches: [%Syncd.SyncdPatch{}]}}} =
+               Codec.extract_syncd_patches(response)
+    end
+
     test "extract_syncd_patches/2 downloads external snapshots" do
       snapshot = %Syncd.SyncdSnapshot{
         version: %Syncd.SyncdVersion{version: 1},
@@ -609,6 +654,54 @@ defmodule BaileysEx.Syncd.CodecTest do
                     tag: "snapshot",
                     attrs: %{},
                     content: Syncd.ExternalBlobReference.encode(snapshot_ref)
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      fetcher = fn blob ->
+        send(self(), {:external_blob, blob})
+        {:ok, Syncd.SyncdSnapshot.encode(snapshot)}
+      end
+
+      assert {:ok, %{regular_high: %{snapshot: ^snapshot}}} =
+               Codec.extract_syncd_patches(response, external_blob_fetcher: fetcher)
+
+      assert_received {:external_blob, ^snapshot_ref}
+    end
+
+    test "extract_syncd_patches/2 downloads tuple-wrapped external snapshots" do
+      snapshot = %Syncd.SyncdSnapshot{
+        version: %Syncd.SyncdVersion{version: 1},
+        records: [],
+        mac: <<0::256>>,
+        key_id: %Syncd.KeyId{id: @key_id_bin}
+      }
+
+      snapshot_ref = %Syncd.ExternalBlobReference{
+        media_key: :binary.copy(<<0x44>>, 32),
+        direct_path: "/mms/md-app-state/snapshot-1"
+      }
+
+      response = %{
+        tag: "iq",
+        attrs: %{},
+        content: [
+          %{
+            tag: "sync",
+            attrs: %{},
+            content: [
+              %{
+                tag: "collection",
+                attrs: %{"name" => "regular_high", "version" => "1"},
+                content: [
+                  %{
+                    tag: "snapshot",
+                    attrs: %{},
+                    content: {:binary, Syncd.ExternalBlobReference.encode(snapshot_ref)}
                   }
                 ]
               }

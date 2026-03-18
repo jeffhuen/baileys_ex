@@ -242,7 +242,7 @@ defmodule BaileysEx do
           :ok | {:error, term()}
   def send_presence_update(connection, type, to_jid \\ nil, opts \\ []) when is_list(opts) do
     with_queryable(connection, fn queryable ->
-      Presence.send_update(queryable, type, to_jid, opts)
+      Presence.send_update(queryable, type, to_jid, maybe_put_presence_identity(opts, connection))
     end)
   end
 
@@ -460,9 +460,20 @@ defmodule BaileysEx do
   defp maybe_emit_callback(_callback, _payload), do: :ok
 
   defp dispatch_public_events(events, handler) do
-    events
-    |> ordered_public_events()
-    |> Enum.each(&handler.(&1))
+    require Logger
+
+    try do
+      events
+      |> ordered_public_events()
+      |> Enum.each(&handler.(&1))
+    rescue
+      error ->
+        Logger.error(
+          "[BaileysEx] dispatch_public_events crashed: #{Exception.message(error)}\n" <>
+            "  events keys: #{inspect(Map.keys(events))}\n" <>
+            "  #{Exception.format_stacktrace(__STACKTRACE__)}"
+        )
+    end
   end
 
   defp ordered_public_events(events) when is_map(events) do
@@ -513,6 +524,30 @@ defmodule BaileysEx do
       {:error, _reason} -> opts
     end
   end
+
+  defp maybe_put_presence_identity(opts, connection) do
+    case auth_state(connection) do
+      {:ok, auth_state} ->
+        opts
+        |> Keyword.put_new(:me_id, nested_id(auth_state))
+        |> Keyword.put_new(:me_lid, nested_lid(auth_state))
+
+      {:error, _reason} ->
+        opts
+    end
+  end
+
+  defp nested_id(%{me: %{id: id}}) when is_binary(id), do: id
+  defp nested_id(%{me: %{"id" => id}}) when is_binary(id), do: id
+  defp nested_id(%{"me" => %{id: id}}) when is_binary(id), do: id
+  defp nested_id(%{"me" => %{"id" => id}}) when is_binary(id), do: id
+  defp nested_id(_auth_state), do: nil
+
+  defp nested_lid(%{me: %{lid: lid}}) when is_binary(lid), do: lid
+  defp nested_lid(%{me: %{"lid" => lid}}) when is_binary(lid), do: lid
+  defp nested_lid(%{"me" => %{lid: lid}}) when is_binary(lid), do: lid
+  defp nested_lid(%{"me" => %{"lid" => lid}}) when is_binary(lid), do: lid
+  defp nested_lid(_auth_state), do: nil
 
   defp normalize_jid(%JID{} = jid), do: {:ok, jid}
 

@@ -82,6 +82,7 @@ Top-level facade:
 - `BaileysEx.request_pairing_code/3`
 - `BaileysEx.download_media/2`
 - `BaileysEx.download_media_to_file/3`
+- `BaileysEx.update_media_message/3`
 
 Major feature wrappers:
 

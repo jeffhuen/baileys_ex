@@ -33,7 +33,10 @@ reference behavior while fitting OTP.
 > `creds_update` until post-auth startup completes, matching the rc.9
 > `success` handler ordering, and the native QR-scan restart path now reaches
 > `connection: :open` after fixing Mint transport frame-order drift on
-> multi-frame post-auth batches. Remaining auth persistence, phone
+> multi-frame post-auth batches. Presence parity now also matches rc.9's
+> push-name flow: `available`/`unavailable` no-op until `me.name` exists, and
+> later push-name `creds_update` events send a bare `<presence name=\"...\"/>`
+> node instead of a second typed availability presence. Remaining auth persistence, phone
 > pairing-code, and pre-key upload work now belongs to Phase 7+ rather than
 > Phase 6.
 

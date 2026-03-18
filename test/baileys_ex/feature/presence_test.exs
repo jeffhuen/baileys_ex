@@ -135,7 +135,9 @@ defmodule BaileysEx.Feature.PresenceTest do
                         "id" => "presence-sub-1",
                         "type" => "subscribe"
                       },
-                      content: [%BinaryNode{tag: "tctoken", attrs: %{}, content: "tc-token"}]
+                      content: [
+                        %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "tc-token"}}
+                      ]
                     }}
   end
 

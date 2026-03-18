@@ -20,10 +20,36 @@ defmodule BaileysEx.Feature.TcTokenTest do
 
     assert [
              %BinaryNode{tag: "picture", attrs: %{"type" => "preview"}},
-             %BinaryNode{tag: "tctoken", attrs: %{}, content: "tc-token"}
+             %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "tc-token"}}
            ] = TcToken.build_content(store, "15551234567@s.whatsapp.net", base_content)
 
-    assert %BinaryNode{tag: "tctoken", attrs: %{}, content: "tc-token"} =
+    assert %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "tc-token"}} =
+             TcToken.build_node(store, "15551234567@s.whatsapp.net")
+  end
+
+  test "build_node/2 only returns tokens stored for the exact destination jid" do
+    {:ok, store} = Store.start_link()
+
+    assert :ok =
+             Store.set(store, %{
+               tctoken: %{"167946206842976@lid" => %{token: "lid-token"}}
+             })
+
+    assert nil == TcToken.build_node(store, "85262028964@s.whatsapp.net")
+    assert %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "lid-token"}} =
+             TcToken.build_node(store, "167946206842976@lid")
+  end
+
+  test "build_node/2 wraps trusted-contact token bytes as binary content" do
+    {:ok, store} = Store.start_link()
+    token = <<251, 143, 27, 54, 184, 204, 66, 64>>
+
+    assert :ok =
+             Store.set(store, %{
+               tctoken: %{"15551234567@s.whatsapp.net" => %{token: token}}
+             })
+
+    assert %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, ^token}} =
              TcToken.build_node(store, "15551234567@s.whatsapp.net")
   end
 

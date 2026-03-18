@@ -858,7 +858,19 @@ defmodule BaileysEx.Syncd.Codec do
 
   defp decode_snapshot_node(nil, _external_blob_fetcher), do: {:ok, nil}
 
-  defp decode_snapshot_node(%{content: content}, external_blob_fetcher) when is_binary(content) do
+  defp decode_snapshot_node(%{content: content}, external_blob_fetcher) do
+    case node_binary_content(content) do
+      nil ->
+        {:ok, nil}
+
+      binary ->
+        decode_snapshot_binary(binary, external_blob_fetcher)
+    end
+  end
+
+  defp decode_snapshot_node(_snapshot_node, _external_blob_fetcher), do: {:ok, nil}
+
+  defp decode_snapshot_binary(content, external_blob_fetcher) when is_binary(content) do
     case Syncd.ExternalBlobReference.decode(content) do
       {:ok, blob_ref} ->
         case external_blob_fetcher.(blob_ref) do
@@ -873,8 +885,6 @@ defmodule BaileysEx.Syncd.Codec do
         end
     end
   end
-
-  defp decode_snapshot_node(_snapshot_node, _external_blob_fetcher), do: {:ok, nil}
 
   defp download_external_blob(%Syncd.ExternalBlobReference{} = blob_ref) do
     Download.download(blob_ref, media_type: :md_app_state)
@@ -991,14 +1001,24 @@ defmodule BaileysEx.Syncd.Codec do
     |> get_children("patch")
   end
 
-  defp decode_collection_patch(%{content: content}, collection_node) when is_binary(content) do
-    case Syncd.SyncdPatch.decode(content) do
-      {:ok, patch} -> [ensure_patch_version(patch, collection_node.attrs["version"])]
-      _ -> []
+  defp decode_collection_patch(%{content: content}, collection_node) do
+    case node_binary_content(content) do
+      binary when is_binary(binary) ->
+        case Syncd.SyncdPatch.decode(binary) do
+          {:ok, patch} -> [ensure_patch_version(patch, collection_node.attrs["version"])]
+          _ -> []
+        end
+
+      _ ->
+        []
     end
   end
 
   defp decode_collection_patch(_node, _collection_node), do: []
+
+  defp node_binary_content({:binary, binary}) when is_binary(binary), do: binary
+  defp node_binary_content(binary) when is_binary(binary), do: binary
+  defp node_binary_content(_content), do: nil
 
   defp ensure_patch_version(%Syncd.SyncdPatch{version: nil} = patch, collection_version) do
     version = String.to_integer(collection_version) + 1

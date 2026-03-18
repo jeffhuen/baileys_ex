@@ -109,6 +109,12 @@ defmodule BaileysEx.PublicApiTest do
           content: nil
         }}, state}
     end
+
+    @impl true
+    def handle_info({:sync_creds_update, creds_update}, state) do
+      send(state.test_pid, {:fake_socket_sync_creds_update, creds_update})
+      {:noreply, state}
+    end
   end
 
   defmodule StartupEmitSignalStore do
@@ -339,7 +345,7 @@ defmodule BaileysEx.PublicApiTest do
 
   test "send_message/4 uses the default production Signal adapter when auth credentials are present" do
     bundles = %{
-      "15551234567:0@s.whatsapp.net" => signal_bundle(200, 201, 202, 2_000, 5, 10),
+      "15551234567@s.whatsapp.net" => signal_bundle(200, 201, 202, 2_000, 5, 10),
       "15550001111:2@s.whatsapp.net" => signal_bundle(300, 301, 302, 3_000, 6, 11)
     }
 
@@ -401,7 +407,7 @@ defmodule BaileysEx.PublicApiTest do
                           content: [
                             %BinaryNode{
                               tag: "user",
-                              attrs: %{"jid" => "15551234567:0@s.whatsapp.net"}
+                              attrs: %{"jid" => "15551234567@s.whatsapp.net"}
                             },
                             %BinaryNode{
                               tag: "user",
@@ -425,7 +431,7 @@ defmodule BaileysEx.PublicApiTest do
     assert Enum.any?(participants, fn
              %BinaryNode{
                tag: "to",
-               attrs: %{"jid" => "15551234567:0@s.whatsapp.net"},
+               attrs: %{"jid" => "15551234567@s.whatsapp.net"},
                content: [%BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg"}}]
              } ->
                true
@@ -433,6 +439,37 @@ defmodule BaileysEx.PublicApiTest do
              _ ->
                false
            end)
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "send_presence_update/4 injects the connection me id for composing chatstate" do
+    assert {:ok, connection} =
+             BaileysEx.connect(
+               signal_auth_state("15550001111:1@s.whatsapp.net"),
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert :ok =
+             BaileysEx.send_presence_update(
+               connection,
+               :composing,
+               "15551234567@s.whatsapp.net"
+             )
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "chatstate",
+                      attrs: %{
+                        "from" => "15550001111:1@s.whatsapp.net",
+                        "to" => "15551234567@s.whatsapp.net"
+                      },
+                      content: [%BinaryNode{tag: "composing", attrs: %{}, content: nil}]
+                    }}
 
     assert :ok = BaileysEx.disconnect(connection)
   end

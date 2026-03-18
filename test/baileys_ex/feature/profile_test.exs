@@ -53,7 +53,7 @@ defmodule BaileysEx.Feature.ProfileTest do
                           attrs: %{"type" => "image", "query" => "url"},
                           content: nil
                         },
-                        %BinaryNode{tag: "tctoken", attrs: %{}, content: "tc-token"}
+                        %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "tc-token"}}
                       ]
                     }, 12_345}
   end

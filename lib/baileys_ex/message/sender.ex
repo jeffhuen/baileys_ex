@@ -101,18 +101,17 @@ defmodule BaileysEx.Message.Sender do
       else
         with {:ok, updated_context, stanza_children} <-
                relay_content(context, jid, proto_message, opts),
-             :ok <-
-               relay(
+             relay_node =
+               build_relay_node(
                  updated_context,
-                 build_relay_node(
-                   updated_context,
-                   jid,
-                   message_id,
-                   proto_message,
-                   stanza_children,
-                   opts
-                 )
+                 jid,
+                 message_id,
+                 proto_message,
+                 stanza_children,
+                 opts
                ),
+             :ok <- log_relay_node(relay_node),
+             :ok <- relay(updated_context, relay_node),
              :ok <-
                maybe_cache_recent_message(updated_context, jid, message_id, proto_message, opts) do
           {:ok,
@@ -233,6 +232,7 @@ defmodule BaileysEx.Message.Sender do
   defp relay_direct_message(%{me_id: me_id} = context, jid, message, opts) do
     recipient_jid = JIDUtil.to_string(jid)
     me_user_jid = base_user_jid(me_id)
+    me_lid = context[:me_lid]
 
     with {:ok, context, recipient_devices} <- discover_devices(context, [recipient_jid], opts),
          {:ok, context, own_devices} <- discover_devices(context, [me_user_jid], opts) do
@@ -242,16 +242,19 @@ defmodule BaileysEx.Message.Sender do
         |> Enum.uniq()
 
       own_devices =
-        Enum.reject(own_devices, &skip_own_device?(&1, me_id, recipient_jid, recipient_devices))
+        Enum.reject(
+          own_devices,
+          &skip_own_device?(&1, me_id, me_lid, recipient_jid, recipient_devices)
+        )
         |> Enum.uniq()
 
       with {:ok, context} <- maybe_assert_sessions(context, recipient_devices ++ own_devices),
-           phash = Wire.generate_participant_hash(recipient_devices ++ own_devices),
            dsm = wrap_device_sent_message(message, recipient_jid),
+           recipient_message = if(same_user?(recipient_jid, me_id), do: dsm, else: message),
            {:ok, repo, me_nodes, me_include_identity?} <-
-             create_participant_nodes(context.signal_repository, own_devices, dsm, phash),
+             create_participant_nodes(context.signal_repository, own_devices, dsm),
            {:ok, repo, other_nodes, other_include_identity?} <-
-             create_participant_nodes(repo, recipient_devices, message, phash) do
+             create_participant_nodes(repo, recipient_devices, recipient_message) do
         children =
           []
           |> maybe_append_participants(me_nodes ++ other_nodes)
@@ -297,16 +300,13 @@ defmodule BaileysEx.Message.Sender do
         }
       }
 
-      phash = Wire.generate_participant_hash(participant_devices)
-
       with {:ok, context} <-
              maybe_assert_sessions(%{context | signal_repository: repo}, new_devices),
            {:ok, repo, participant_nodes, include_device_identity?} <-
              create_participant_nodes(
                context.signal_repository,
                new_devices,
-               sender_key_message,
-               phash
+               sender_key_message
              ) do
         :ok =
           Store.set(store, %{
@@ -337,7 +337,12 @@ defmodule BaileysEx.Message.Sender do
     end
   end
 
-  defp create_participant_nodes(%Repository{} = repo, device_jids, %Message{} = message, phash) do
+  defp create_participant_nodes(
+         %Repository{} = repo,
+         device_jids,
+         %Message{} = message,
+         enc_attrs \\ %{}
+       ) do
     bytes = Wire.encode(message)
 
     Enum.reduce_while(device_jids, {:ok, repo, [], false}, fn device_jid,
@@ -351,7 +356,9 @@ defmodule BaileysEx.Message.Sender do
             content: [
               %BinaryNode{
                 tag: "enc",
-                attrs: %{"type" => Atom.to_string(type), "v" => "2", "phash" => phash},
+                attrs:
+                  %{"type" => Atom.to_string(type), "v" => "2"}
+                  |> Map.merge(stringify_attrs(enc_attrs)),
                 content: {:binary, ciphertext}
               }
             ]
@@ -392,6 +399,80 @@ defmodule BaileysEx.Message.Sender do
       {:error, _reason} = error -> error
     end
   end
+
+  defp log_relay_node(%BinaryNode{} = node) do
+    require Logger
+
+    children_summary =
+      case node.content do
+        list when is_list(list) ->
+          Enum.map(list, fn
+            %BinaryNode{tag: "participants", content: participants} ->
+              %{
+                tag: "participants",
+                participants:
+                  Enum.map(participants, fn
+                    %BinaryNode{tag: "to", attrs: attrs, content: enc_nodes} ->
+                      %{
+                        jid: attrs["jid"],
+                        enc:
+                          Enum.map(List.wrap(enc_nodes), fn
+                            %BinaryNode{tag: "enc", attrs: enc_attrs} ->
+                              %{
+                                type: enc_attrs["type"],
+                                v: enc_attrs["v"],
+                                phash: summarize_phash(enc_attrs["phash"])
+                              }
+
+                            other ->
+                              inspect(other, limit: 50)
+                          end)
+                      }
+
+                    other ->
+                      inspect(other, limit: 100)
+                  end)
+              }
+
+            %BinaryNode{tag: tag, attrs: attrs, content: kids} ->
+              kid_tags =
+                case kids do
+                  l when is_list(l) ->
+                    Enum.map(l, fn
+                      %BinaryNode{tag: t, attrs: a} ->
+                        "#{t}(#{inspect(Map.take(a, ["type", "v", "e"]))})"
+
+                      other ->
+                        inspect(other, limit: 50)
+                    end)
+
+                  _ ->
+                    ["<binary>"]
+                end
+
+              "#{tag}(#{inspect(Map.take(attrs, ["jid"]))})[#{Enum.join(kid_tags, ", ")}]"
+
+            other ->
+              inspect(other, limit: 100)
+          end)
+
+        _ ->
+          ["<non-list content>"]
+      end
+
+    Logger.warning(
+      "[Sender] relay_node: tag=#{node.tag} attrs=#{inspect(node.attrs)} " <>
+        "children=#{inspect(children_summary)}"
+    )
+
+    :ok
+  end
+
+  defp summarize_phash(phash) when is_binary(phash) and byte_size(phash) > 12 do
+    binary_part(phash, 0, 12) <> "..."
+  end
+
+  defp summarize_phash(phash), do: phash
 
   defp relay(%{send_node_fun: fun}, %BinaryNode{} = node) when is_function(fun, 1), do: fun.(node)
 
@@ -542,8 +623,9 @@ defmodule BaileysEx.Message.Sender do
     end
   end
 
-  defp skip_own_device?(device_jid, me_id, recipient_jid, recipient_devices) do
+  defp skip_own_device?(device_jid, me_id, me_lid, recipient_jid, recipient_devices) do
     device_jid == me_id ||
+      device_jid == me_lid ||
       (same_user?(device_jid, recipient_jid) && device_jid == recipient_jid) ||
       device_jid in recipient_devices
   end

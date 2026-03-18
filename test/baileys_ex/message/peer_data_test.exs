@@ -73,16 +73,22 @@ defmodule BaileysEx.Message.PeerDataTest do
     assert Enum.any?(history, fn
              {:encrypted, payload} ->
                match?(
-                 %Message{
-                   protocol_message: %Message.ProtocolMessage{
-                     type: :PEER_DATA_OPERATION_REQUEST_MESSAGE,
-                     peer_data_operation_request_message:
-                       %Message.PeerDataOperationRequestMessage{
-                         peer_data_operation_request_type: :PLACEHOLDER_MESSAGE_RESEND
-                       }
-                   }
-                 },
-                 Wire.decode(payload) |> elem(1)
+                 {:ok,
+                  %Message{
+                    device_sent_message: %Message.DeviceSentMessage{
+                      destination_jid: "15550001111@s.whatsapp.net",
+                      message: %Message{
+                        protocol_message: %Message.ProtocolMessage{
+                          type: :PEER_DATA_OPERATION_REQUEST_MESSAGE,
+                          peer_data_operation_request_message:
+                            %Message.PeerDataOperationRequestMessage{
+                              peer_data_operation_request_type: :PLACEHOLDER_MESSAGE_RESEND
+                            }
+                        }
+                      }
+                    }
+                  }},
+                 Wire.decode(payload)
                )
 
              _ ->
@@ -122,26 +128,30 @@ defmodule BaileysEx.Message.PeerDataTest do
 
     assert Enum.any?(history, fn
              {:encrypted, payload} ->
-               {:ok, message} = Wire.decode(payload)
-
                match?(
-                 %Message{
-                   protocol_message: %Message.ProtocolMessage{
-                     peer_data_operation_request_message:
-                       %Message.PeerDataOperationRequestMessage{
-                         peer_data_operation_request_type: :HISTORY_SYNC_ON_DEMAND,
-                         history_sync_on_demand_request:
-                           %Message.PeerDataOperationRequestMessage.HistorySyncOnDemandRequest{
-                             chat_jid: "15551234567@s.whatsapp.net",
-                             oldest_msg_id: "oldest-1",
-                             oldest_msg_from_me: false,
-                             on_demand_msg_count: 25,
-                             oldest_msg_timestamp_ms: 1_710_000_700_000
-                           }
-                       }
-                   }
-                 },
-                 message
+                 {:ok,
+                  %Message{
+                    device_sent_message: %Message.DeviceSentMessage{
+                      destination_jid: "15550001111@s.whatsapp.net",
+                      message: %Message{
+                        protocol_message: %Message.ProtocolMessage{
+                          peer_data_operation_request_message:
+                            %Message.PeerDataOperationRequestMessage{
+                              peer_data_operation_request_type: :HISTORY_SYNC_ON_DEMAND,
+                              history_sync_on_demand_request:
+                                %Message.PeerDataOperationRequestMessage.HistorySyncOnDemandRequest{
+                                  chat_jid: "15551234567@s.whatsapp.net",
+                                  oldest_msg_id: "oldest-1",
+                                  oldest_msg_from_me: false,
+                                  on_demand_msg_count: 25,
+                                  oldest_msg_timestamp_ms: 1_710_000_700_000
+                                }
+                            }
+                        }
+                      }
+                    }
+                  }},
+                 Wire.decode(payload)
                )
 
              _ ->

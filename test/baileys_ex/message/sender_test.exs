@@ -6,14 +6,17 @@ defmodule BaileysEx.Message.SenderTest do
   alias BaileysEx.JID
   alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Sender
+  alias BaileysEx.Message.Wire
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Signal.Address
+  alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
   alias BaileysEx.TestHelpers.FakeThumbnail
   alias BaileysEx.TestHelpers.MessageSignalHelpers
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
-  test "send/4 performs direct-device fanout with DSM, phash, device identity, and trusted-contact token" do
+  test "send/4 performs direct-device fanout with DSM, device identity, and trusted-contact token" do
     jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
     parent = self()
 
@@ -22,19 +25,26 @@ defmodule BaileysEx.Message.SenderTest do
 
     repo =
       repo
-      |> inject_session!("15551234567:0@s.whatsapp.net", session)
-      |> inject_session!("15551234567:2@s.whatsapp.net", session)
+      |> inject_session!("15550001111@s.whatsapp.net", session)
+      |> inject_session!("12345@lid", session)
+      |> inject_session!("12345:2@lid", session)
       |> inject_session!("15550001111:2@s.whatsapp.net", session)
 
     assert :ok =
              Store.set(store, %{
-               :"device-list" => %{"15551234567" => ["0", "2"], "15550001111" => ["1", "2"]}
+               :"device-list" => %{
+                 "15551234567" => ["0", "2"],
+                 "15550001111" => ["0", "1", "2"]
+               }
              })
 
     assert :ok =
-             Store.set(store, %{
-               tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}
-             })
+             LIDMappingStore.store_lid_pn_mappings(store, [
+               %{pn: "15551234567@s.whatsapp.net", lid: "12345@lid"}
+             ])
+
+    assert :ok =
+             Store.set(store, %{tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}})
 
     context = %{
       signal_repository: repo,
@@ -61,7 +71,10 @@ defmodule BaileysEx.Message.SenderTest do
                timestamp_fun: fn -> 1_710_000_000_000 end
              )
 
-    assert %{"15551234567.0" => %{history: history}} = updated_repo.adapter_state
+    {:ok, recipient_zero_address} = Address.from_jid("12345@lid")
+    recipient_zero_key = Repository.Adapter.session_key(recipient_zero_address)
+
+    assert %{^recipient_zero_key => %{history: history}} = updated_repo.adapter_state
     assert Enum.any?(history, fn {action, _payload} -> action == :encrypted end)
 
     assert_receive {:relay_node,
@@ -78,27 +91,193 @@ defmodule BaileysEx.Message.SenderTest do
     assert %BinaryNode{tag: "participants", content: participants} =
              Enum.find(content, &match?(%BinaryNode{tag: "participants"}, &1))
 
-    assert 3 == length(participants)
+    assert 4 == length(participants)
 
     assert Enum.any?(
              content,
              &match?(%BinaryNode{tag: "device-identity", content: {:binary, <<1, 2, 3>>}}, &1)
            )
 
-    assert Enum.any?(content, &match?(%BinaryNode{tag: "tctoken", content: "tc-token"}, &1))
+    assert Enum.any?(
+             content,
+             &match?(%BinaryNode{tag: "tctoken", content: {:binary, "tc-token"}}, &1)
+           )
 
     assert Enum.any?(participants, fn
              %BinaryNode{
                tag: "to",
-               attrs: %{"jid" => "15550001111:2@s.whatsapp.net"},
-               content: [%BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg", "phash" => phash}}]
+               attrs: %{"jid" => "15550001111@s.whatsapp.net"},
+               content: [%BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg", "v" => "2"} = attrs}]
              }
-             when is_binary(phash) ->
+             when not is_map_key(attrs, "phash") ->
                true
 
              _ ->
                false
            end)
+
+    assert Enum.any?(participants, fn
+             %BinaryNode{
+               tag: "to",
+               attrs: %{"jid" => "15550001111:2@s.whatsapp.net"},
+               content: [%BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg", "v" => "2"} = attrs}]
+             }
+             when not is_map_key(attrs, "phash") ->
+               true
+
+             _ ->
+               false
+           end)
+
+    assert Enum.any?(participants, fn
+             %BinaryNode{
+               tag: "to",
+               attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+               content: [%BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg", "v" => "2"} = attrs}]
+             }
+             when not is_map_key(attrs, "phash") ->
+               true
+
+             _ ->
+               false
+           end)
+
+    assert Enum.any?(participants, fn
+             %BinaryNode{
+               tag: "to",
+               attrs: %{"jid" => "15551234567:2@s.whatsapp.net"},
+               content: [%BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg", "v" => "2"} = attrs}]
+             }
+             when not is_map_key(attrs, "phash") ->
+               true
+
+             _ ->
+               false
+           end)
+  end
+
+  test "send/4 skips the exact sender lid device when direct fanout returns lid-addressed own devices" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    repo =
+      repo
+      |> inject_session!("15551234567@s.whatsapp.net", session)
+      |> inject_session!("99999:2@lid", session)
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111:1@s.whatsapp.net",
+      me_lid: "99999:1@lid",
+      device_lookup_fun: fn lookup_context, jids, _opts ->
+        case jids do
+          ["15551234567@s.whatsapp.net"] ->
+            {:ok, lookup_context, ["15551234567@s.whatsapp.net"]}
+
+          ["15550001111@s.whatsapp.net"] ->
+            {:ok, lookup_context, ["99999:1@lid", "99999:2@lid"]}
+        end
+      end,
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    assert {:ok, %{id: "3EB0SKIPLID"}, _updated_context} =
+             Sender.send(context, jid, %{text: "hello"},
+               message_id_fun: fn _me_id -> "3EB0SKIPLID" end
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{"id" => "3EB0SKIPLID"},
+                      content: content
+                    }}
+
+    assert %BinaryNode{tag: "participants", content: participants} =
+             Enum.find(content, &match?(%BinaryNode{tag: "participants"}, &1))
+
+    participant_jids = Enum.map(participants, & &1.attrs["jid"])
+
+    refute "99999:1@lid" in participant_jids
+    assert "99999:2@lid" in participant_jids
+    assert "15551234567@s.whatsapp.net" in participant_jids
+  end
+
+  test "send/4 wraps same-account recipient devices in device sent messages" do
+    jid = %JID{user: "15550001111", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    repo =
+      repo
+      |> inject_session!("15550001111:0@s.whatsapp.net", session)
+      |> inject_session!("15550001111:2@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{
+               :"device-list" => %{"15550001111" => ["0", "1", "2"]}
+             })
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111:1@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    assert {:ok, %{id: "3EB0SELFCHAT"}, %{signal_repository: updated_repo}} =
+             Sender.send(context, jid, %{text: "self hello"},
+               message_id_fun: fn _me_id -> "3EB0SELFCHAT" end
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{"to" => "15550001111@s.whatsapp.net", "id" => "3EB0SELFCHAT"},
+                      content: content
+                    }}
+
+    assert %BinaryNode{tag: "participants", content: participants} =
+             Enum.find(content, &match?(%BinaryNode{tag: "participants"}, &1))
+
+    assert Enum.map(participants, & &1.attrs["jid"]) |> Enum.sort() == [
+             "15550001111:2@s.whatsapp.net",
+             "15550001111@s.whatsapp.net"
+           ]
+
+    assert %{
+             "15550001111.0" => %{history: [{:encrypted, device_zero_bytes} | _]},
+             "15550001111.2" => %{history: [{:encrypted, device_two_bytes} | _]}
+           } = updated_repo.adapter_state
+
+    assert {:ok,
+            %Message{
+              device_sent_message: %Message.DeviceSentMessage{
+                destination_jid: "15550001111@s.whatsapp.net",
+                message: %Message{
+                  extended_text_message: %Message.ExtendedTextMessage{text: "self hello"}
+                }
+              }
+            }} = Wire.decode(device_zero_bytes)
+
+    assert {:ok,
+            %Message{
+              device_sent_message: %Message.DeviceSentMessage{
+                destination_jid: "15550001111@s.whatsapp.net"
+              }
+            }} = Wire.decode(device_two_bytes)
   end
 
   @tag :tmp_dir
@@ -259,8 +438,8 @@ defmodule BaileysEx.Message.SenderTest do
     assert %{"120363001234567890@g.us" => sender_key_memory} =
              Store.get(store, :"sender-key-memory", ["120363001234567890@g.us"])
 
-    assert Map.has_key?(sender_key_memory, "15551234567:0@s.whatsapp.net")
-    assert Map.has_key?(sender_key_memory, "15557654321:0@s.whatsapp.net")
+    assert Map.has_key?(sender_key_memory, "15551234567@s.whatsapp.net")
+    assert Map.has_key?(sender_key_memory, "15557654321@s.whatsapp.net")
     assert %{"15551234567" => ["0"]} = Store.get(store, :"device-list", ["15551234567"])
     assert %{"15557654321" => ["0"]} = Store.get(store, :"device-list", ["15557654321"])
     assert %{signal_repository: %Repository{}} = updated_context

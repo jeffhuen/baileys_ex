@@ -72,7 +72,11 @@ defmodule BaileysEx.Feature.AppState do
     transaction_key = app_state_transaction_key(store, opts)
     codec_opts = Keyword.take(opts, [:external_blob_fetcher])
 
+    Logger.warning("[AppStateDiag] resync_app_state entering transaction key=#{inspect(transaction_key)}")
+
     with_app_state_transaction(state_store, transaction_key, fn ->
+      Logger.warning("[AppStateDiag] transaction acquired, starting resync loop collections=#{inspect(collections)}")
+
       context = %{
         queryable: queryable,
         state_store: state_store,
@@ -90,6 +94,14 @@ defmodule BaileysEx.Feature.AppState do
            }) do
         {:ok,
          %{global_mutation_map: final_mutations, global_mutation_order: final_mutation_order}} ->
+          Logger.warning(
+            "[AppStateDiag] resync complete " <>
+              "initial_sync=#{is_initial_sync} " <>
+              "mutation_count=#{length(final_mutation_order)} " <>
+              "push_name_mutation=#{push_name_mutation?(final_mutation_order)} " <>
+              "mutation_heads=#{inspect(diagnostic_mutation_heads(final_mutation_order))}"
+          )
+
           emit_mutation_map(
             event_emitter,
             final_mutations,
@@ -100,7 +112,12 @@ defmodule BaileysEx.Feature.AppState do
           )
 
         {:error, _} = err ->
+          Logger.warning("[AppStateDiag] resync loop returned error: #{inspect(err)}")
           err
+
+        other ->
+          Logger.warning("[AppStateDiag] resync loop unexpected return: #{inspect(other)}")
+          {:error, {:unexpected_return, other}}
       end
     end)
   end
@@ -590,6 +607,8 @@ defmodule BaileysEx.Feature.AppState do
   defp do_resync_loop(_context, [], loop_state), do: {:ok, loop_state}
 
   defp do_resync_loop(context, collections_to_handle, loop_state) do
+    Logger.warning("[AppStateDiag] resync_loop pass collections=#{inspect(collections_to_handle)}")
+
     {iq_node, states, initial_version_map} =
       build_resync_request(
         context.state_store,
@@ -599,8 +618,13 @@ defmodule BaileysEx.Feature.AppState do
 
     loop_state = %{loop_state | initial_version_map: initial_version_map}
 
+    Logger.warning("[AppStateDiag] sending sync query")
+
     with {:ok, response} <- query(context.queryable, iq_node),
+         _ = Logger.warning("[AppStateDiag] sync query response received, extracting patches"),
          {:ok, decoded} <- Codec.extract_syncd_patches(response, context.codec_opts) do
+      Logger.warning("[AppStateDiag] patches decoded, collections=#{inspect(Map.keys(decoded))}")
+
       loop_state =
         process_collections(
           decoded,
@@ -610,7 +634,14 @@ defmodule BaileysEx.Feature.AppState do
           context
         )
 
-      do_resync_loop(context, loop_state.remaining, Map.delete(loop_state, :remaining))
+      remaining = loop_state.remaining
+      Logger.warning("[AppStateDiag] collections processed, remaining=#{inspect(remaining)}")
+
+      do_resync_loop(context, remaining, Map.delete(loop_state, :remaining))
+    else
+      error ->
+        Logger.warning("[AppStateDiag] resync_loop with failed: #{inspect(error)}")
+        error
     end
   end
 
@@ -900,6 +931,8 @@ defmodule BaileysEx.Feature.AppState do
   defp emit_one_mutation(event_emitter, mutation, me, opts) do
     events = ActionMapper.process_sync_action(mutation, me, opts)
 
+    maybe_log_mutation_diagnostics(mutation, events)
+
     Enum.each(events, fn {event, data} -> :ok = EventEmitter.emit(event_emitter, event, data) end)
 
     update_mutation_opts(opts, events)
@@ -909,6 +942,58 @@ defmodule BaileysEx.Feature.AppState do
 
   defp mutation_order(mutation_map, _mutation_order),
     do: Enum.map(mutation_map, fn {_key, mutation} -> mutation end)
+
+  defp maybe_log_mutation_diagnostics(mutation, events) do
+    cond do
+      push_name_mutation?(mutation) ->
+        Logger.warning(
+          "[AppStateDiag] push-name mutation " <>
+            "index=#{inspect(mutation_index(mutation))} " <>
+            "event_names=#{inspect(Enum.map(events, &elem(&1, 0)))} " <>
+            "emitted_name=#{inspect(push_name_from_events(events))}"
+        )
+
+      is_binary(push_name_from_events(events)) ->
+        Logger.warning(
+          "[AppStateDiag] creds_update emitted push name " <>
+            "from index=#{inspect(mutation_index(mutation))} " <>
+            "name=#{inspect(push_name_from_events(events))}"
+        )
+
+      true ->
+        :ok
+    end
+  end
+
+  defp push_name_mutation?(mutations) when is_list(mutations),
+    do: Enum.any?(mutations, &push_name_mutation?/1)
+
+  defp push_name_mutation?(%{index: ["setting_pushName" | _rest]}), do: true
+  defp push_name_mutation?(%{"index" => ["setting_pushName" | _rest]}), do: true
+  defp push_name_mutation?(_mutation), do: false
+
+  defp mutation_index(%{index: index}) when is_list(index), do: index
+  defp mutation_index(%{"index" => index}) when is_list(index), do: index
+  defp mutation_index(_mutation), do: []
+
+  defp diagnostic_mutation_heads(mutations) when is_list(mutations) do
+    mutations
+    |> Enum.map(&mutation_index/1)
+    |> Enum.map(fn
+      [head | _rest] -> head
+      [] -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp push_name_from_events(events) when is_list(events) do
+    Enum.find_value(events, fn
+      {:creds_update, %{me: %{name: name}}} when is_binary(name) and name != "" -> name
+      {:creds_update, %{me: %{"name" => name}}} when is_binary(name) and name != "" -> name
+      _other -> nil
+    end)
+  end
 
   defp update_mutation_opts(opts, events) do
     Enum.reduce(events, opts, fn

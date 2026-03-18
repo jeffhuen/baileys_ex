@@ -71,6 +71,7 @@ defmodule BaileysEx.Connection.Socket do
           qr_refs: [binary()],
           next_qr_timeout_ms: pos_integer(),
           pending_queries: %{optional(binary()) => {pid(), reference(), reference()}},
+          pending_phone_pairing_notification: {binary(), BinaryNode.t(), map()} | nil,
           server_time_offset_ms: integer(),
           clock_ms_fun: (-> integer()),
           date_time_fun: (-> DateTime.t()),
@@ -100,6 +101,7 @@ defmodule BaileysEx.Connection.Socket do
     qr_refs: [],
     next_qr_timeout_ms: 20_000,
     pending_queries: %{},
+    pending_phone_pairing_notification: nil,
     server_time_offset_ms: 0,
     clock_ms_fun: nil,
     date_time_fun: nil,
@@ -196,12 +198,48 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   @doc """
+  Starts an IQ query cycle without waiting for the response.
+
+  The caller will later receive `{__MODULE__, ref, result}`.
+  """
+  @spec start_query(GenServer.server(), BinaryNode.t(), timeout()) ::
+          {:ok, reference()} | {:error, :not_connected | :timeout | term()}
+  def start_query(server, %BinaryNode{} = node, timeout \\ 60_000)
+      when is_integer(timeout) and timeout > 0 do
+    start_query(server, self(), node, timeout)
+  end
+
+  @doc """
+  Starts an IQ query cycle without waiting for the response and routes the eventual
+  `{__MODULE__, ref, result}` message to `reply_to`.
+  """
+  @spec start_query(GenServer.server(), pid(), BinaryNode.t(), timeout()) ::
+          {:ok, reference()} | {:error, :not_connected | :timeout | term()}
+  def start_query(server, reply_to, %BinaryNode{} = node, timeout)
+      when is_pid(reply_to) and is_integer(timeout) and timeout > 0 do
+    ref = make_ref()
+
+    case :gen_statem.call(server, {:query, node, {reply_to, ref}, timeout}, timeout + 1_000) do
+      :ok -> {:ok, ref}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Pushes a presence update to the network.
   """
   @spec send_presence_update(GenServer.server(), presence_type()) ::
           :ok | {:error, :not_connected | term()}
   def send_presence_update(server, type) when type in [:available, :unavailable] do
     :gen_statem.call(server, {:send_presence_update, type})
+  end
+
+  @doc """
+  Sends the post-open unified session telemetry node.
+  """
+  @spec send_unified_session(GenServer.server()) :: :ok | {:error, :not_connected | term()}
+  def send_unified_session(server) do
+    :gen_statem.call(server, :send_unified_session)
   end
 
   @doc "Send a WAM analytics buffer through the `w:stats` IQ path."
@@ -323,6 +361,9 @@ defmodule BaileysEx.Connection.Socket do
   def authenticating(:info, {:internal_creds_update, creds_update}, data),
     do: {:keep_state, apply_internal_creds_update(data, creds_update)}
 
+  def authenticating(:info, {:sync_creds_update, creds_update}, data),
+    do: {:keep_state, apply_sync_creds_update(data, creds_update)}
+
   def authenticating(:info, {:phone_pairing_finish_result, result, creds_update}, data),
     do: handle_phone_pairing_finish_result(result, creds_update, data)
 
@@ -345,6 +386,9 @@ defmodule BaileysEx.Connection.Socket do
 
   def connected(:info, {:internal_creds_update, creds_update}, data),
     do: {:keep_state, apply_internal_creds_update(data, creds_update)}
+
+  def connected(:info, {:sync_creds_update, creds_update}, data),
+    do: {:keep_state, apply_sync_creds_update(data, creds_update)}
 
   def connected(:info, {:query_timeout, query_id}, data),
     do: {:keep_state, expire_query(data, query_id)}
@@ -442,6 +486,17 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
+  defp handle_call(current_state, from, :send_unified_session, data)
+       when current_state in [:authenticating, :connected] do
+    case send_unified_session_node(data) do
+      {:ok, data} ->
+        {:keep_state, data, [{:reply, from, :ok}]}
+
+      {:error, reason, data} ->
+        {:keep_state, data, [{:reply, from, {:error, reason}}]}
+    end
+  end
+
   defp handle_call(:connected, from, {:send_wam_buffer, wam_buffer, reply_to, timeout}, data)
        when is_binary(wam_buffer) and is_integer(timeout) and timeout > 0 do
     {node, query_id} = ensure_query_id(wam_buffer_node(wam_buffer, data), data)
@@ -487,6 +542,10 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp handle_call(_current_state, from, {:send_presence_update, _type}, data) do
+    {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
+  end
+
+  defp handle_call(_current_state, from, :send_unified_session, data) do
     {:keep_state, data, [{:reply, from, {:error, :not_connected}}]}
   end
 
@@ -710,6 +769,9 @@ defmodule BaileysEx.Connection.Socket do
       BinaryNodeUtil.child(node, "pair-success") ->
         handle_pair_success(node, data)
 
+      pending_phone_pairing_finish_response?(data, node) ->
+        handle_phone_pairing_finish_response(node, data)
+
       true ->
         {:ok, :authenticating, maybe_resolve_query(data, node)}
     end
@@ -887,23 +949,19 @@ defmodule BaileysEx.Connection.Socket do
     emit_event(data, :connection_update, %{is_new_login: true, qr: nil})
 
     with {:ok, data} <- send_node_internal(data, reply) do
-      send_unified_session(data)
+      send_unified_session_node(data)
     end
   end
 
   defp handle_phone_pairing_notification(%BinaryNode{} = node, %__MODULE__{} = data) do
-    socket_pid = self()
-
     with {:ok, %{creds_update: creds_update, node: finish_node}} <-
            Phone.complete_pairing(node, data.auth_state),
-         :ok <-
-           start_socket_task(data, fn ->
-             result = query(socket_pid, finish_node, data.config.default_query_timeout_ms)
-
-             Kernel.send(socket_pid, {:phone_pairing_finish_result, result, creds_update})
-           end) do
-      {:ok, :authenticating, data}
+         {finish_node, query_id} <- ensure_query_id(finish_node, data),
+         {:ok, data} <- send_node_internal(data, finish_node) do
+      {:defer_notification_ack, :authenticating,
+       %{data | pending_phone_pairing_notification: {query_id, node, creds_update}}}
     else
+      {:error, reason, data} -> {:error, reason, data}
       {:error, reason} -> {:error, reason, data}
     end
   end
@@ -1008,7 +1066,7 @@ defmodule BaileysEx.Connection.Socket do
     send_node_internal(data, keep_alive_node(data))
   end
 
-  defp send_unified_session(data) do
+  defp send_unified_session_node(data) do
     send_node_internal(data, unified_session_node(data))
   end
 
@@ -1019,7 +1077,7 @@ defmodule BaileysEx.Connection.Socket do
   defp send_presence_update_node(%__MODULE__{} = data, type)
        when type in [:available, :unavailable] do
     me = AuthState.get(data.auth_state, :me, %{}) || %{}
-    name = me[:name] || me["name"] || browser_fallback_name(data.config)
+    name = me[:name] || me["name"]
 
     if is_binary(name) and name != "" do
       emit_event(data, :connection_update, %{is_online: type == :available})
@@ -1031,17 +1089,10 @@ defmodule BaileysEx.Connection.Socket do
     end
   end
 
-  defp browser_fallback_name(%{browser: {name, _, _}}) when is_binary(name), do: name
-  defp browser_fallback_name(_config), do: nil
-
-  defp maybe_send_presence_unified_session(data, :available), do: send_unified_session(data)
+  defp maybe_send_presence_unified_session(data, :available), do: send_unified_session_node(data)
   defp maybe_send_presence_unified_session(data, :unavailable), do: {:ok, data}
 
   defp apply_notification_node(current_state, %BinaryNode{} = node, %__MODULE__{} = data) do
-    # Ack every notification — Baileys sends ack for all notification nodes.
-    # Without this, the server waits ~60s before confirming the companion device.
-    data = send_notification_ack(data, node)
-
     result =
       cond do
         BinaryNodeUtil.child(node, "link_code_companion_reg") ->
@@ -1055,7 +1106,7 @@ defmodule BaileysEx.Connection.Socket do
           {:ok, current_state, data}
       end
 
-    maybe_emit_socket_node(result, node)
+    maybe_emit_socket_notification(result, node)
   end
 
   defp send_notification_ack(data, %BinaryNode{attrs: attrs}) do
@@ -1092,11 +1143,7 @@ defmodule BaileysEx.Connection.Socket do
   defp handle_post_auth_result(:ok, %__MODULE__{} = data) do
     data = maybe_emit_pending_lid_creds_update(data)
     emit_event(data, :connection_update, %{connection: :open})
-
-    case send_unified_session(data) do
-      {:ok, data} -> {:next_state, :connected, data}
-      {:error, reason, data} -> connection_failure(data, reason)
-    end
+    {:next_state, :connected, data}
   end
 
   defp handle_post_auth_result({:error, reason}, %__MODULE__{} = data) do
@@ -1108,6 +1155,25 @@ defmodule BaileysEx.Connection.Socket do
     data = %{data | auth_state: AuthState.merge_updates(data.auth_state, creds_update)}
     :ok = emit_event(data, :creds_update, creds_update)
     data
+  end
+
+  # Applies a creds update from the coordinator without re-emitting.
+  # This keeps the socket's auth_state in sync with external updates
+  # (e.g. app-state sync pushNameSetting) while avoiding infinite loops.
+  defp apply_sync_creds_update(%__MODULE__{} = data, creds_update)
+       when is_map(creds_update) do
+    previous_name = nested_auth_name(data.auth_state)
+    updated_auth_state = AuthState.merge_updates(data.auth_state, creds_update)
+    next_name = nested_auth_name(updated_auth_state)
+
+    if previous_name != next_name do
+      Logger.warning(
+        "[SocketDiag] synced external creds_update into live auth_state " <>
+          "previous_name=#{inspect(previous_name)} next_name=#{inspect(next_name)}"
+      )
+    end
+
+    %{data | auth_state: updated_auth_state}
   end
 
   defp start_post_auth_sequence(%__MODULE__{} = data) do
@@ -1349,12 +1415,47 @@ defmodule BaileysEx.Connection.Socket do
     :exit, _reason -> :ok
   end
 
-  defp maybe_emit_socket_node({:ok, current_state, %__MODULE__{} = data}, %BinaryNode{} = node) do
+  defp maybe_emit_socket_notification(
+         {:defer_notification_ack, current_state, %__MODULE__{} = data},
+         %BinaryNode{} = node
+       ) do
     emit_event(data, :socket_node, %{node: node, state: current_state})
     {:ok, current_state, data}
   end
 
-  defp maybe_emit_socket_node(result, _node), do: result
+  defp maybe_emit_socket_notification(
+         {:ok, current_state, %__MODULE__{} = data},
+         %BinaryNode{} = node
+       ) do
+    emit_event(data, :socket_node, %{node: node, state: current_state})
+    {:ok, current_state, data}
+  end
+
+  defp maybe_emit_socket_notification(result, _node), do: result
+
+  defp pending_phone_pairing_finish_response?(
+         %__MODULE__{pending_phone_pairing_notification: {query_id, _node, _creds_update}},
+         %BinaryNode{attrs: %{"id" => query_id}}
+       ),
+       do: true
+
+  defp pending_phone_pairing_finish_response?(%__MODULE__{}, %BinaryNode{}), do: false
+
+  defp handle_phone_pairing_finish_response(
+         %BinaryNode{} = _response_node,
+         %__MODULE__{
+           pending_phone_pairing_notification: {_query_id, notification_node, creds_update}
+         } = data
+       ) do
+    data =
+      data
+      |> Map.put(:pending_phone_pairing_notification, nil)
+      |> Map.put(:auth_state, AuthState.merge_updates(data.auth_state, creds_update))
+      |> send_notification_ack(notification_node)
+
+    :ok = emit_event(data, :creds_update, creds_update)
+    {:ok, :authenticating, data}
+  end
 
   defp maybe_store_pending_lid(data, nil), do: data
 
@@ -1641,6 +1742,12 @@ defmodule BaileysEx.Connection.Socket do
       content: nil
     }
   end
+
+  defp nested_auth_name(%{me: %{name: name}}) when is_binary(name), do: name
+  defp nested_auth_name(%{me: %{"name" => name}}) when is_binary(name), do: name
+  defp nested_auth_name(%{"me" => %{name: name}}) when is_binary(name), do: name
+  defp nested_auth_name(%{"me" => %{"name" => name}}) when is_binary(name), do: name
+  defp nested_auth_name(_auth_state), do: nil
 
   defp generate_message_tag(data), do: data.message_tag_fun.()
   defp clock_ms(data), do: data.clock_ms_fun.()

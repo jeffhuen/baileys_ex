@@ -363,7 +363,7 @@ defmodule BaileysEx.Connection.SocketTest do
     assert_receive {:processed_events, %{connection_update: %{connection: :connecting}}}
   end
 
-  test "a success node advances the socket into connected, emits open, and sends unified_session" do
+  test "a success node advances the socket into connected and emits open" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
 
@@ -403,23 +403,14 @@ defmodule BaileysEx.Connection.SocketTest do
       content: nil
     }
 
-    {server_transport, passive_result_frame} =
+    {_server_transport, passive_result_frame} =
       server_transport_frame(server_transport, passive_result)
 
     Kernel.send(pid, {:scripted_transport, {:binary, passive_result_frame}})
 
     assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
     assert_eventually(fn -> Socket.state(pid) == :connected end)
-
-    assert_receive {:transport_sent, unified_session_frame}
-
-    {_, unified_session_node} =
-      decode_client_transport_frame(server_transport, unified_session_frame)
-
-    assert %BinaryNode{tag: "ib"} = unified_session_node
-
-    assert %BinaryNode{tag: "unified_session"} =
-             BinaryNodeUtil.child(unified_session_node, "unified_session")
+    refute_receive {:transport_sent, _unified_session_frame}
   end
 
   test "success defers the me.lid creds_update until post-auth startup completes" do
@@ -456,22 +447,17 @@ defmodule BaileysEx.Connection.SocketTest do
       content: nil
     }
 
-    {server_transport, passive_result_frame} =
+    {_server_transport, passive_result_frame} =
       server_transport_frame(server_transport, passive_result)
 
     Kernel.send(pid, {:scripted_transport, {:binary, passive_result_frame}})
 
     assert_receive {:processed_events, %{creds_update: %{me: %{lid: "12345678901234@lid"}}}}
     assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
-    assert_receive {:transport_sent, unified_session_frame}
-
-    {_, unified_session_node} =
-      decode_client_transport_frame(server_transport, unified_session_frame)
-
-    assert %BinaryNode{tag: "ib"} = unified_session_node
+    refute_receive {:transport_sent, _unified_session_frame}
   end
 
-  test "socket clock and message tag injection make passive iq and unified session deterministic" do
+  test "socket clock and message tag injection make passive iq deterministic" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
 
@@ -508,19 +494,13 @@ defmodule BaileysEx.Connection.SocketTest do
       content: nil
     }
 
-    {server_transport, passive_result_frame} =
+    {_server_transport, passive_result_frame} =
       server_transport_frame(server_transport, passive_result)
 
     Kernel.send(pid, {:scripted_transport, {:binary, passive_result_frame}})
 
     assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
-    assert_receive {:transport_sent, unified_session_frame}
-
-    {_, unified_session_node} =
-      decode_client_transport_frame(server_transport, unified_session_frame)
-
-    assert %BinaryNode{attrs: %{"id" => "489600000"}} =
-             BinaryNodeUtil.child(unified_session_node, "unified_session")
+    refute_receive {:transport_sent, _unified_session_frame}
   end
 
   test "connected sockets send keep alive pings on the configured interval" do
@@ -888,6 +868,79 @@ defmodule BaileysEx.Connection.SocketTest do
            } = presence_node
 
     refute_received {:transport_sent, _unified_session_frame}
+  end
+
+  test "send_presence_update available is ignored when me.name is missing" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, _server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        auth_state: %{
+          creds: %{
+            me: %{id: "15551234567@s.whatsapp.net"}
+          }
+        }
+      )
+
+    assert :ok = Socket.send_presence_update(pid, :available)
+    refute_receive {:processed_events, %{connection_update: %{is_online: true}}}
+    refute_receive {:transport_sent, _frame}
+  end
+
+  test "sync_creds_update updates socket auth_state without re-emitting creds_update" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000),
+        auth_state: %{
+          creds: %{
+            me: %{id: "15551234567@s.whatsapp.net", name: "OldName"}
+          }
+        }
+      )
+
+    # Drain connection-setup events from the mailbox
+    Process.sleep(50)
+    flush_messages()
+
+    # Simulate coordinator forwarding an external creds_update (e.g. from app-state sync pushNameSetting)
+    Kernel.send(pid, {:sync_creds_update, %{me: %{name: "NewName"}}})
+
+    # send_presence_update is a synchronous gen_statem call —
+    # guaranteed to run after the sync_creds_update message is processed
+    assert :ok = Socket.send_presence_update(pid, :available)
+
+    assert_receive {:processed_events, %{connection_update: %{is_online: true}}}
+
+    # Drain the unified_session frame (presence :available resends it)
+    assert_receive {:transport_sent, unified_session_frame}
+
+    {server_transport, _} =
+      decode_client_transport_frame(server_transport, unified_session_frame)
+
+    # The presence node must use the UPDATED name from sync_creds_update
+    assert_receive {:transport_sent, presence_frame}
+    {_, presence_node} = decode_client_transport_frame(server_transport, presence_frame)
+
+    assert %BinaryNode{
+             tag: "presence",
+             attrs: %{"name" => "NewName", "type" => "available"}
+           } = presence_node
+
+    # The sync path must NOT re-emit creds_update — only internal updates emit
+    refute_received {:processed_events, %{creds_update: %{me: %{name: "NewName"}}}}
   end
 
   test "query/3 sends an iq and resolves with the matching response node" do
@@ -1305,11 +1358,6 @@ defmodule BaileysEx.Connection.SocketTest do
 
     Kernel.send(pid, {:scripted_transport, {:binary, notification_frame}})
 
-    # Skip the notification ack
-    assert_receive {:transport_sent, ack_frame}
-    {server_transport, ack_node} = decode_client_transport_frame(server_transport, ack_frame)
-    assert %BinaryNode{tag: "ack", attrs: %{"class" => "notification"}} = ack_node
-
     assert_receive {:transport_sent, finish_frame}
 
     {server_transport, finish_node} =
@@ -1323,6 +1371,7 @@ defmodule BaileysEx.Connection.SocketTest do
     assert %BinaryNode{tag: "link_code_companion_reg", attrs: %{"stage" => "companion_finish"}} =
              BinaryNodeUtil.child(finish_node, "link_code_companion_reg")
 
+    refute_receive {:transport_sent, _ack_frame}, 50
     refute_receive {:processed_events, %{creds_update: %{registered: true}}}, 50
 
     result_node = %BinaryNode{
@@ -1333,6 +1382,10 @@ defmodule BaileysEx.Connection.SocketTest do
 
     {_server_transport, result_frame} = server_transport_frame(server_transport, result_node)
     Kernel.send(pid, {:scripted_transport, {:binary, result_frame}})
+
+    assert_receive {:transport_sent, ack_frame}
+    {_server_transport, ack_node} = decode_client_transport_frame(server_transport, ack_frame)
+    assert %BinaryNode{tag: "ack", attrs: %{"class" => "notification"}} = ack_node
 
     assert_receive {:processed_events,
                     %{creds_update: %{registered: true, adv_secret_key: adv_secret_key}}}
@@ -1470,12 +1523,7 @@ defmodule BaileysEx.Connection.SocketTest do
     Kernel.send(pid, {:scripted_transport, {:binary, digest_result_frame}})
 
     assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
-    assert_receive {:transport_sent, unified_session_frame}
-
-    {_server_transport, unified_session_node} =
-      decode_client_transport_frame(server_transport, unified_session_frame)
-
-    assert %BinaryNode{tag: "ib"} = unified_session_node
+    refute_receive {:transport_sent, _unified_session_frame}
   end
 
   test "success continues to passive iq when pre-key validation fails" do
@@ -1560,7 +1608,7 @@ defmodule BaileysEx.Connection.SocketTest do
     Kernel.send(pid, {:scripted_transport, {:binary, digest_result_frame}})
 
     assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
-    assert_receive {:transport_sent, _unified_session_frame}
+    refute_receive {:transport_sent, _unified_session_frame}
   end
 
   test "success still opens when digest validation fails" do
@@ -1693,7 +1741,7 @@ defmodule BaileysEx.Connection.SocketTest do
     Kernel.send(pid, {:scripted_transport, {:binary, retry_upload_result_frame}})
 
     assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
-    assert_receive {:transport_sent, _unified_session_frame}
+    refute_receive {:transport_sent, _unified_session_frame}
   end
 
   test "stream error closes with the mapped disconnect reason" do
@@ -1829,11 +1877,6 @@ defmodule BaileysEx.Connection.SocketTest do
     Kernel.send(pid, {:scripted_transport, {:binary, passive_result_frame}})
 
     assert_eventually(fn -> Socket.state(pid) == :connected end)
-
-    assert_receive {:transport_sent, unified_session_frame}
-
-    {server_transport, _unified_session_node} =
-      decode_client_transport_frame(server_transport, unified_session_frame)
 
     {:ok, pid, server_transport}
   end
@@ -2102,6 +2145,14 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition was not met in time")
+
+  defp flush_messages do
+    receive do
+      _ -> flush_messages()
+    after
+      0 -> :ok
+    end
+  end
 
   defp merge_maps(left, right) when is_map(left) and is_map(right) do
     Map.merge(left, right, fn _key, left_value, right_value ->

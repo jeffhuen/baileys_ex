@@ -21,7 +21,6 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Feature.Community
   alias BaileysEx.Feature.Group
   alias BaileysEx.Feature.Presence
-  alias BaileysEx.Feature.Privacy
   alias BaileysEx.Message.IdentityChangeHandler
   alias BaileysEx.Message.NotificationHandler
   alias BaileysEx.Message.Receipt
@@ -30,6 +29,7 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Message.Sender
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
+  alias BaileysEx.Protocol.USync
   alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Adapter.Signal, as: DefaultSignalAdapter
   alias BaileysEx.Signal.Repository
@@ -82,6 +82,7 @@ defmodule BaileysEx.Connection.Coordinator do
       :reconnect_timer,
       :initial_sync_timer,
       :app_state_sync_ref,
+      init_query_handlers: %{},
       event_buffer_seed: %{},
       identity_change_cache: %{},
       sync_state: :connecting,
@@ -157,7 +158,10 @@ defmodule BaileysEx.Connection.Coordinator do
           Keyword.get(opts, :signal_repository_adapter),
           Keyword.get(opts, :signal_repository_adapter_state, %{}),
           wrapped_signal_store,
-          store_ref
+          store_ref,
+          state.supervisor,
+          state.socket_module,
+          state.config.default_query_timeout_ms
         )
       )
       |> Map.put(:reconnect_timer, nil)
@@ -176,7 +180,19 @@ defmodule BaileysEx.Connection.Coordinator do
         _from,
         %State{signal_repository: %Repository{} = repository} = state
       ) do
-    case Sender.send(sender_context(state, repository), jid, content, opts) do
+    require Logger
+    ctx = sender_context(state, repository)
+
+    socket_result = fetch_socket_pid(state)
+
+    Logger.warning(
+      "[Coordinator] send_message: jid=#{inspect(jid)} has_query_fun=#{is_function(ctx[:query_fun], 1)} " <>
+        "has_send_node_fun=#{is_function(ctx[:send_node_fun], 1)} " <>
+        "socket_lookup=#{inspect(socket_result)} " <>
+        "supervisor_alive=#{Process.alive?(state.supervisor)}"
+    )
+
+    case Sender.send(ctx, jid, content, opts) do
       {:ok, result, %{signal_repository: %Repository{} = updated_repository}} ->
         {:reply, {:ok, result}, %{state | signal_repository: updated_repository}}
 
@@ -221,6 +237,7 @@ defmodule BaileysEx.Connection.Coordinator do
       |> persist_lid_mapping_update(events)
       |> maybe_seed_event_buffer(events)
       |> maybe_send_push_name_presence_update(previous_creds, events)
+      |> sync_creds_update_to_socket(events)
       |> handle_connection_update(events)
       |> handle_sync_event(events)
       |> maybe_start_initial_app_state_sync(events)
@@ -239,6 +256,7 @@ defmodule BaileysEx.Connection.Coordinator do
       |> persist_lid_mapping_update(events)
       |> maybe_seed_event_buffer(events)
       |> maybe_send_push_name_presence_update(previous_creds, events)
+      |> sync_creds_update_to_socket(events)
       |> handle_connection_update(events)
       |> handle_sync_event(events)
       |> maybe_start_initial_app_state_sync(events)
@@ -252,6 +270,7 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def handle_info(:initial_sync_timeout, %State{sync_state: :awaiting_initial_sync} = state) do
+    Logger.warning("[SyncDiag] initial sync timeout fired, forcing :online")
     _ = EventEmitter.flush(state.event_emitter)
     {:noreply, %{state | initial_sync_timer: nil, sync_state: :online}}
   end
@@ -261,6 +280,7 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def handle_info(:complete_initial_sync, %State{sync_state: :syncing} = state) do
+    Logger.warning("[SyncDiag] completing initial sync, transitioning to :online")
     _ = EventEmitter.flush(state.event_emitter)
     {:noreply, %{state | sync_state: :online}}
   end
@@ -275,6 +295,47 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def handle_info(
+        {socket_module, ref, {:ok, %BinaryNode{} = response}},
+        %State{socket_module: socket_module, init_query_handlers: handlers} = state
+      )
+      when is_reference(ref) do
+    case Map.pop(handlers, ref) do
+      {handle_response, remaining_handlers} when is_function(handle_response, 1) ->
+        handle_response.(response)
+        {:noreply, %{state | init_query_handlers: remaining_handlers}}
+
+      {nil, _remaining_handlers} ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info(
+        {socket_module, ref, {:error, :timeout}},
+        %State{socket_module: socket_module, init_query_handlers: handlers} = state
+      )
+      when is_reference(ref) do
+    if Map.has_key?(handlers, ref) do
+      Logger.warning("[Coordinator] init query timed out")
+      {:noreply, %{state | init_query_handlers: Map.delete(handlers, ref)}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(
+        {socket_module, ref, {:error, reason}},
+        %State{socket_module: socket_module, init_query_handlers: handlers} = state
+      )
+      when is_reference(ref) do
+    if Map.has_key?(handlers, ref) do
+      Logger.warning("[Coordinator] init query failed: #{inspect(reason)}")
+      {:noreply, %{state | init_query_handlers: Map.delete(handlers, ref)}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(
         {:app_state_sync_complete, ref, result},
         %State{app_state_sync_ref: ref} = state
       ) do
@@ -282,6 +343,11 @@ defmodule BaileysEx.Connection.Coordinator do
 
     case result do
       :ok ->
+        Logger.warning(
+          "[AppStateDiag] initial app state sync complete " <>
+            "store_name=#{inspect(nested_name(%{me: current_me(state)}))}"
+        )
+
         increment_account_sync_counter(state)
 
       {:error, reason} ->
@@ -369,7 +435,7 @@ defmodule BaileysEx.Connection.Coordinator do
        }) do
     state = maybe_handle_retry_receipt(state, node)
     :ok = Receipt.process_receipt(node, state.event_emitter)
-    state
+    send_transport_ack(state, node)
   end
 
   defp handle_socket_node(%State{} = state, %{
@@ -389,7 +455,7 @@ defmodule BaileysEx.Connection.Coordinator do
        ) do
     state = maybe_handle_identity_change(state, node)
     :ok = NotificationHandler.process_node(node, notification_context(state))
-    state
+    send_notification_ack(state, node)
   end
 
   defp handle_socket_node(
@@ -406,7 +472,7 @@ defmodule BaileysEx.Connection.Coordinator do
          %{socket_node: %{node: %BinaryNode{tag: "notification"} = node}}
        ) do
     :ok = NotificationHandler.process_node(node, notification_context(state))
-    state
+    send_notification_ack(state, node)
   end
 
   defp handle_socket_node(%State{} = state, events) do
@@ -433,6 +499,21 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp persist_creds_update(%State{} = state, _events), do: state
 
+  # Forwards creds_update to the socket so its in-memory auth_state stays
+  # in sync with external updates (e.g. app-state sync pushNameSetting).
+  # Uses :sync_creds_update so the socket merges without re-emitting.
+  defp sync_creds_update_to_socket(%State{} = state, %{creds_update: creds_update})
+       when is_map(creds_update) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} -> Kernel.send(socket_pid, {:sync_creds_update, creds_update})
+      :error -> :ok
+    end
+
+    state
+  end
+
+  defp sync_creds_update_to_socket(%State{} = state, _events), do: state
+
   defp persist_lid_mapping_update(
          %State{signal_store: %SignalStore{} = signal_store} = state,
          %{lid_mapping_update: %{lid: lid, pn: pn}}
@@ -450,6 +531,7 @@ defmodule BaileysEx.Connection.Coordinator do
     |> Map.put(:reconnect_attempts, 0)
     |> maybe_execute_init_queries()
     |> maybe_send_presence_update()
+    |> maybe_send_open_unified_session()
     |> maybe_register_own_lid_session()
   end
 
@@ -471,8 +553,14 @@ defmodule BaileysEx.Connection.Coordinator do
          %{connection_update: %{received_pending_notifications: true}}
        ) do
     :ok = EventEmitter.buffer(state.event_emitter)
+    will_sync_history = should_sync_history_message?(state.config, %{sync_type: :RECENT})
 
-    if should_sync_history_message?(state.config, %{sync_type: :RECENT}) do
+    Logger.warning(
+      "[SyncDiag] received_pending_notifications=true sync_state=:connecting " <>
+        "will_sync_history=#{inspect(will_sync_history)}"
+    )
+
+    if will_sync_history do
       timer =
         Process.send_after(self(), :initial_sync_timeout, state.config.initial_sync_timeout_ms)
 
@@ -499,6 +587,7 @@ defmodule BaileysEx.Connection.Coordinator do
          %State{sync_state: :awaiting_initial_sync} = state,
          %{messaging_history_set: _history}
        ) do
+    Logger.warning("[SyncDiag] messaging_history_set received, transitioning to :syncing")
     _ = Process.send_after(self(), :complete_initial_sync, 25)
 
     state
@@ -615,34 +704,38 @@ defmodule BaileysEx.Connection.Coordinator do
     !!fun.(history_message)
   end
 
-  # Default: don't buffer events waiting for history sync unless the consumer
-  # explicitly opts in via the should_sync_history_message config callback.
-  # Buffering with no callback blocks all subscriber event delivery for
-  # initial_sync_timeout_ms (20s default) with no way to complete the sync.
-  defp should_sync_history_message?(_config, _history_message), do: false
+  defp should_sync_history_message?(_config, history_message),
+    do: BaileysEx.Connection.Config.default_should_sync_history_message(history_message)
 
   defp maybe_execute_init_queries(%State{config: %{fire_init_queries: false}} = state), do: state
 
   defp maybe_execute_init_queries(%State{} = state) do
-    _ =
-      Task.Supervisor.start_child(state.task_supervisor, fn ->
-        state
-        |> init_query_work()
-        |> Task.async_stream(fn fun -> fun.() end,
-          ordered: false,
-          max_concurrency: 3,
-          timeout: state.config.default_query_timeout_ms,
-          on_timeout: :kill_task
-        )
-        |> Stream.each(fn
-          {:ok, _} -> :ok
-          {:exit, :timeout} -> Logger.warning("[Coordinator] init query timed out")
-          {:exit, reason} -> Logger.warning("[Coordinator] init query failed: #{inspect(reason)}")
-        end)
-        |> Stream.run()
-      end)
+    with {:ok, socket_pid} <- fetch_socket_pid(state) do
+      Enum.reduce(init_query_work(state), state, fn spec, acc ->
+        case acc.socket_module.start_query(
+               socket_pid,
+               self(),
+               spec.node,
+               acc.config.default_query_timeout_ms
+             ) do
+          {:ok, ref} ->
+            %{
+              acc
+              | init_query_handlers: Map.put(acc.init_query_handlers, ref, spec.handle_response)
+            }
 
-    state
+          {:error, :timeout} ->
+            Logger.warning("[Coordinator] init query timed out")
+            acc
+
+          {:error, reason} ->
+            Logger.warning("[Coordinator] init query failed: #{inspect(reason)}")
+            acc
+        end
+      end)
+    else
+      :error -> state
+    end
   end
 
   defp maybe_send_presence_update(%State{config: %{mark_online_on_connect: mark_online}} = state) do
@@ -697,8 +790,16 @@ defmodule BaileysEx.Connection.Coordinator do
       {user, device} = parse_own_device(pn)
 
       if user do
+        existing_devices =
+          case SignalStore.get(state.signal_store, :"device-list", [user]) do
+            %{^user => ids} when is_list(ids) -> ids
+            _ -> []
+          end
+
         SignalStore.set(state.signal_store, %{
-          :"device-list" => %{user => [device]}
+          :"device-list" => %{
+            user => merge_own_device_ids(existing_devices, device)
+          }
         })
       end
 
@@ -735,21 +836,34 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
+  defp merge_own_device_ids(existing_devices, current_device) when is_list(existing_devices) do
+    ["0", current_device | existing_devices]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.uniq()
+  end
+
   defp init_query_work(%State{} = state) do
     [
-      fn -> fetch_props(state) end,
-      fn -> fetch_blocklist(state) end,
-      fn -> fetch_privacy_settings(state) end
+      %{node: props_query_node(state), handle_response: &handle_props_response(state, &1)},
+      %{node: blocklist_query_node(), handle_response: &handle_blocklist_response(state, &1)},
+      %{
+        node: privacy_settings_query_node(),
+        handle_response: &handle_privacy_settings_response(state, &1)
+      }
     ]
   end
 
-  defp fetch_props(%State{} = state) do
+  defp props_query_node(%State{} = state) do
     props_hash =
       state.store_ref
       |> Store.get(:creds, %{})
       |> Map.get(:last_prop_hash, "")
+      |> normalize_props_hash()
 
-    node = %BinaryNode{
+    Logger.warning("[PropsDiag] fetch_props sending hash=#{inspect(props_hash)}")
+
+    %BinaryNode{
       tag: "iq",
       attrs: %{"to" => @s_whatsapp_net, "xmlns" => "w", "type" => "get"},
       content: [
@@ -760,57 +874,69 @@ defmodule BaileysEx.Connection.Coordinator do
         }
       ]
     }
-
-    with {:ok, socket_pid} <- fetch_socket_pid(state),
-         {:ok, response} <-
-           state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms) do
-      props_node = BinaryNodeUtil.child(response, "props")
-      props = reduce_children_to_dictionary(props_node, "prop")
-
-      :ok = Store.put(state.store, :props, props)
-
-      case props_node && props_node.attrs["hash"] do
-        hash when is_binary(hash) and hash != "" ->
-          :ok = Store.merge_creds(state.store, %{last_prop_hash: hash})
-          :ok = EventEmitter.emit(state.event_emitter, :creds_update, %{last_prop_hash: hash})
-
-        _ ->
-          :ok
-      end
-
-      :ok = EventEmitter.emit(state.event_emitter, :settings_update, %{props: props})
-      :ok
-    else
-      _ -> :ok
-    end
   end
 
-  defp fetch_blocklist(%State{} = state) do
-    with {:ok, socket_pid} <- fetch_socket_pid(state),
-         {:ok, blocklist} <-
-           Privacy.fetch_blocklist({state.socket_module, socket_pid},
-             store: state.store,
-             query_timeout: state.config.default_query_timeout_ms
-           ) do
-      :ok = EventEmitter.emit(state.event_emitter, :blocklist_set, %{blocklist: blocklist})
-      :ok
-    else
-      _ -> :ok
+  defp handle_props_response(%State{} = state, %BinaryNode{} = response) do
+    props_node = BinaryNodeUtil.child(response, "props")
+    props = reduce_children_to_dictionary(props_node, "prop")
+    response_hash = props_node && props_node.attrs["hash"]
+
+    Logger.warning(
+      "[PropsDiag] fetch_props received props_count=#{map_size(props)} " <>
+        "hash=#{inspect(response_hash)}"
+    )
+
+    :ok = Store.put(state.store, :props, props)
+
+    case response_hash do
+      hash when is_binary(hash) and hash != "" ->
+        :ok = Store.merge_creds(state.store, %{last_prop_hash: hash})
+        :ok = EventEmitter.emit(state.event_emitter, :creds_update, %{last_prop_hash: hash})
+
+      _ ->
+        :ok
     end
+
+    :ok = EventEmitter.emit(state.event_emitter, :settings_update, %{props: props})
+    :ok
   end
 
-  defp fetch_privacy_settings(%State{} = state) do
-    with {:ok, socket_pid} <- fetch_socket_pid(state),
-         {:ok, privacy_settings} <-
-           Privacy.fetch_settings({state.socket_module, socket_pid}, true,
-             store: state.store,
-             query_timeout: state.config.default_query_timeout_ms
-           ) do
-      :ok = EventEmitter.emit(state.event_emitter, :settings_update, %{privacy: privacy_settings})
-      :ok
-    else
-      _ -> :ok
-    end
+  defp blocklist_query_node do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"xmlns" => "blocklist", "to" => @s_whatsapp_net, "type" => "get"},
+      content: nil
+    }
+  end
+
+  defp handle_blocklist_response(%State{} = state, %BinaryNode{} = response) do
+    blocklist =
+      response
+      |> BinaryNodeUtil.child("list")
+      |> BinaryNodeUtil.children("item")
+      |> Enum.map(& &1.attrs["jid"])
+      |> Enum.reject(&is_nil/1)
+
+    :ok = Store.put(state.store, :blocklist, blocklist)
+    :ok = EventEmitter.emit(state.event_emitter, :blocklist_set, %{blocklist: blocklist})
+  end
+
+  defp privacy_settings_query_node do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"xmlns" => "privacy", "to" => @s_whatsapp_net, "type" => "get"},
+      content: [%BinaryNode{tag: "privacy", attrs: %{}, content: nil}]
+    }
+  end
+
+  defp handle_privacy_settings_response(%State{} = state, %BinaryNode{} = response) do
+    privacy_settings =
+      response
+      |> BinaryNodeUtil.child("privacy")
+      |> reduce_children_to_dictionary("category")
+
+    :ok = Store.put(state.store, :privacy_settings, privacy_settings)
+    :ok = EventEmitter.emit(state.event_emitter, :settings_update, %{privacy: privacy_settings})
   end
 
   defp reduce_children_to_dictionary(node, child_tag) do
@@ -824,6 +950,9 @@ defmodule BaileysEx.Connection.Coordinator do
     end)
   end
 
+  defp normalize_props_hash(hash) when is_binary(hash), do: hash
+  defp normalize_props_hash(_hash), do: ""
+
   defp maybe_send_push_name_presence_update(
          %State{} = state,
          previous_creds,
@@ -835,14 +964,22 @@ defmodule BaileysEx.Connection.Coordinator do
 
     if is_binary(next_name) and next_name != "" and next_name != previous_name do
       Logger.warning(
-        "[Coordinator] push name changed: #{inspect(previous_name)} → #{inspect(next_name)}, sending presence available"
+        "[PushNameDiag] creds_update changed push name " <>
+          "previous=#{inspect(previous_name)} next=#{inspect(next_name)}"
       )
+
+      node = %BinaryNode{tag: "presence", attrs: %{"name" => next_name}, content: nil}
 
       case fetch_socket_pid(state) do
         {:ok, socket_pid} ->
-          _ = state.socket_module.send_presence_update(socket_pid, :available)
+          Logger.warning("[PushNameDiag] sending bare presence name=#{inspect(next_name)}")
+          _ = state.socket_module.send_node(socket_pid, node)
 
         :error ->
+          Logger.warning(
+            "[PushNameDiag] skipped bare presence send because socket pid is unavailable"
+          )
+
           :ok
       end
     end
@@ -851,6 +988,17 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp maybe_send_push_name_presence_update(%State{} = state, _previous_creds, _events), do: state
+
+  defp maybe_send_open_unified_session(%State{} = state) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        _ = state.socket_module.send_unified_session(socket_pid)
+        state
+
+      :error ->
+        state
+    end
+  end
 
   defp send_clean_dirty_bits(%State{} = state, type, from_timestamp \\ nil)
        when is_binary(type) do
@@ -867,6 +1015,70 @@ defmodule BaileysEx.Connection.Coordinator do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} -> _ = state.socket_module.send_node(socket_pid, node)
       :error -> :ok
+    end
+  end
+
+  defp send_transport_ack(%State{} = state, %BinaryNode{} = node) do
+    ack = build_transport_ack(state, node)
+
+    case {ack, fetch_socket_pid(state)} do
+      {%BinaryNode{} = ack, {:ok, socket_pid}} ->
+        _ = state.socket_module.send_node(socket_pid, ack)
+        state
+
+      _ ->
+        state
+    end
+  end
+
+  defp build_transport_ack(%State{} = state, %BinaryNode{tag: tag, attrs: attrs} = node)
+       when tag in ["message", "receipt"] do
+    attrs =
+      %{"id" => attrs["id"], "to" => attrs["from"], "class" => tag}
+      |> maybe_put_transport_ack_attr("participant", attrs["participant"])
+      |> maybe_put_transport_ack_attr("recipient", attrs["recipient"])
+      |> maybe_put_transport_ack_attr("type", transport_ack_type(node))
+      |> maybe_put_transport_ack_from(node, state)
+
+    %BinaryNode{tag: "ack", attrs: attrs, content: nil}
+  end
+
+  defp build_transport_ack(%State{}, %BinaryNode{}), do: nil
+
+  defp maybe_put_transport_ack_attr(attrs, _key, nil), do: attrs
+
+  defp maybe_put_transport_ack_attr(attrs, key, value) when is_binary(value),
+    do: Map.put(attrs, key, value)
+
+  defp maybe_put_transport_ack_attr(attrs, _key, _value), do: attrs
+
+  defp transport_ack_type(%BinaryNode{tag: "message"} = node) do
+    if BinaryNodeUtil.child(node, "unavailable"), do: node.attrs["type"], else: nil
+  end
+
+  defp transport_ack_type(%BinaryNode{attrs: attrs}), do: attrs["type"]
+
+  defp maybe_put_transport_ack_from(attrs, %BinaryNode{tag: "message"} = node, %State{} = state) do
+    if BinaryNodeUtil.child(node, "unavailable") do
+      case current_me_id(state) do
+        jid when is_binary(jid) -> Map.put(attrs, "from", jid)
+        _ -> attrs
+      end
+    else
+      attrs
+    end
+  end
+
+  defp maybe_put_transport_ack_from(attrs, _node, _state), do: attrs
+
+  defp current_me_id(%State{} = state) do
+    state.store_ref
+    |> Store.get(:auth_state, %{})
+    |> AuthState.get(:me, %{})
+    |> case do
+      %{id: jid} when is_binary(jid) -> jid
+      %{"id" => jid} when is_binary(jid) -> jid
+      _ -> nil
     end
   end
 
@@ -926,7 +1138,10 @@ defmodule BaileysEx.Connection.Coordinator do
          _adapter,
          _adapter_state,
          _signal_store,
-         _store_ref
+         _store_ref,
+         _supervisor,
+         _socket_module,
+         _query_timeout_ms
        ),
        do: repository
 
@@ -935,14 +1150,17 @@ defmodule BaileysEx.Connection.Coordinator do
          adapter,
          adapter_state,
          %SignalStore{} = signal_store,
-         _store_ref
+         _store_ref,
+         supervisor,
+         socket_module,
+         query_timeout_ms
        )
        when is_atom(adapter) and not is_nil(adapter) do
     Repository.new(
       adapter: adapter,
       adapter_state: adapter_state,
       store: signal_store,
-      pn_to_lid_lookup: lid_lookup_fun(signal_store)
+      pn_to_lid_lookup: pn_to_lid_lookup_fun(supervisor, socket_module, query_timeout_ms)
     )
   end
 
@@ -951,7 +1169,10 @@ defmodule BaileysEx.Connection.Coordinator do
          nil,
          _adapter_state,
          %SignalStore{} = signal_store,
-         %Store.Ref{} = store_ref
+         %Store.Ref{} = store_ref,
+         supervisor,
+         socket_module,
+         query_timeout_ms
        ) do
     case build_default_signal_adapter_state(store_ref, signal_store) do
       {:ok, adapter_state} ->
@@ -959,7 +1180,7 @@ defmodule BaileysEx.Connection.Coordinator do
           adapter: DefaultSignalAdapter,
           adapter_state: adapter_state,
           store: signal_store,
-          pn_to_lid_lookup: lid_lookup_fun(signal_store)
+          pn_to_lid_lookup: pn_to_lid_lookup_fun(supervisor, socket_module, query_timeout_ms)
         )
 
       :error ->
@@ -967,8 +1188,17 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp build_signal_repository(repository, _adapter, _adapter_state, _signal_store, _store_ref),
-    do: repository
+  defp build_signal_repository(
+         repository,
+         _adapter,
+         _adapter_state,
+         _signal_store,
+         _store_ref,
+         _supervisor,
+         _socket_module,
+         _query_timeout_ms
+       ),
+       do: repository
 
   defp build_default_signal_adapter_state(%Store.Ref{} = store_ref, %SignalStore{} = signal_store) do
     auth_state = Store.get(store_ref, :auth_state, %{})
@@ -1139,6 +1369,27 @@ defmodule BaileysEx.Connection.Coordinator do
     |> maybe_put_callback(:resync_app_state_fun, resync_app_state_fun)
   end
 
+  defp send_notification_ack(%State{} = state, %BinaryNode{attrs: attrs} = _node) do
+    ack = %BinaryNode{
+      tag: "ack",
+      attrs:
+        %{"id" => attrs["id"], "class" => "notification"}
+        |> maybe_put("type", attrs["type"])
+        |> maybe_put("to", attrs["from"] || "s.whatsapp.net")
+        |> maybe_put("participant", attrs["participant"]),
+      content: nil
+    }
+
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        _ = state.socket_module.send_node(socket_pid, ack)
+        state
+
+      :error ->
+        state
+    end
+  end
+
   defp receipt_sender_fun(%State{} = state) do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} -> fn node -> state.socket_module.send_node(socket_pid, node) end
@@ -1220,12 +1471,42 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp privacy_token_store_fun(_signal_store), do: nil
 
-  defp lid_lookup_fun(%SignalStore{} = signal_store) do
-    fn pn ->
-      case SignalStore.get(signal_store, :"lid-mapping", [pn]) do
-        %{^pn => lid} when is_binary(lid) -> lid
-        _ -> nil
+  defp pn_to_lid_lookup_fun(supervisor, socket_module, query_timeout_ms)
+       when is_pid(supervisor) and is_atom(socket_module) and is_integer(query_timeout_ms) do
+    fn pns ->
+      case socket_pid(supervisor, socket_module) do
+        pid when is_pid(pid) ->
+          fetch_lid_mappings_via_usync(socket_module, pid, query_timeout_ms, pns)
+
+        nil ->
+          nil
       end
+    end
+  end
+
+  defp pn_to_lid_lookup_fun(_supervisor, _socket_module, _query_timeout_ms), do: nil
+
+  defp fetch_lid_mappings_via_usync(socket_module, socket_pid, query_timeout_ms, pns)
+       when is_list(pns) do
+    query =
+      pns
+      |> Enum.uniq()
+      |> Enum.reduce(USync.new(context: :background), fn pn, acc ->
+        USync.with_user(acc, %{id: pn})
+      end)
+      |> USync.with_protocol(:lid)
+
+    with {:ok, node} <- USync.to_node(query, "background-lid-query"),
+         {:ok, response} <- socket_module.query(socket_pid, node, query_timeout_ms),
+         {:ok, %{list: results}} <- USync.parse_result(query, response) do
+      Enum.flat_map(results, fn
+        %{id: pn, lid: lid} when is_binary(pn) and is_binary(lid) -> [%{pn: pn, lid: lid}]
+        _ -> []
+      end)
+    else
+      {:error, reason} ->
+        Logger.warning("[LIDDiag] background pn->lid usync failed: #{inspect(reason)}")
+        nil
     end
   end
 
@@ -1307,22 +1588,6 @@ defmodule BaileysEx.Connection.Coordinator do
     maybe_launch_initial_app_state_sync(state)
   end
 
-  # Trigger app state sync when AppStateSyncKeyShare arrives, regardless of
-  # sync_state. On fresh pairing, the sync state machine may skip :syncing
-  # (when should_sync_history_message? returns false), but the critical app
-  # state sync still needs to run to pull push name and other settings.
-  defp maybe_start_initial_app_state_sync(
-         %State{app_state_sync_ref: nil} = state,
-         %{creds_update: %{my_app_state_key_id: key_id}}
-       )
-       when is_binary(key_id) and key_id != "" do
-    Logger.warning(
-      "[Coordinator] AppStateSyncKeyShare received, triggering initial app state sync"
-    )
-
-    maybe_launch_initial_app_state_sync(state)
-  end
-
   defp maybe_start_initial_app_state_sync(%State{} = state, _events), do: state
 
   defp maybe_launch_initial_app_state_sync(%State{} = state) do
@@ -1345,6 +1610,8 @@ defmodule BaileysEx.Connection.Coordinator do
 
         {:ok, _pid} =
           Task.Supervisor.start_child(state.task_supervisor, fn ->
+            Logger.warning("[AppStateDiag] sync Task started pid=#{inspect(self())}")
+
             result =
               try do
                 run_app_state_resync(
@@ -1356,11 +1623,20 @@ defmodule BaileysEx.Connection.Coordinator do
                 )
               rescue
                 exception ->
+                  Logger.warning(
+                    "[AppStateDiag] sync Task rescued: #{Exception.message(exception)}"
+                  )
+
                   {:error, exception}
               catch
                 kind, reason ->
+                  Logger.warning("[AppStateDiag] sync Task caught #{kind}: #{inspect(reason)}")
                   {:error, {kind, reason}}
               end
+
+            Logger.warning(
+              "[AppStateDiag] sync Task sending completion result=#{inspect(result)}"
+            )
 
             Kernel.send(
               coordinator_pid,

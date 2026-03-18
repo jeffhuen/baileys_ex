@@ -150,7 +150,7 @@ defmodule BaileysEx.Signal.Repository do
   @doc "Checks the store bounds asserting whether an active encrypted session currently exists."
   @spec validate_session(t(), String.t()) :: {:ok, session_status()} | {:error, adapter_error()}
   def validate_session(%__MODULE__{} = repository, jid) do
-    with {:ok, address} <- Address.from_jid(jid),
+    with {:ok, address} <- resolve_identity_address(repository, jid),
          {:ok, validation} <-
            repository.adapter.validate_session(repository.adapter_state, address) do
       {:ok, normalize_validation(validation)}
@@ -161,7 +161,7 @@ defmodule BaileysEx.Signal.Repository do
   @spec encrypt_message(t(), %{jid: String.t(), data: binary()}) ::
           {:ok, t(), %{type: :pkmsg | :msg, ciphertext: binary()}} | {:error, adapter_error()}
   def encrypt_message(%__MODULE__{} = repository, %{jid: jid, data: data}) when is_binary(data) do
-    with {:ok, address} <- Address.from_jid(jid),
+    with {:ok, address} <- resolve_identity_address(repository, jid),
          {:ok, adapter_state, encrypted} <-
            repository.adapter.encrypt_message(repository.adapter_state, address, data) do
       Telemetry.execute(
@@ -181,7 +181,7 @@ defmodule BaileysEx.Signal.Repository do
           {:ok, t(), binary()} | {:error, adapter_error()}
   def decrypt_message(%__MODULE__{} = repository, %{jid: jid, type: type, ciphertext: ciphertext})
       when type in [:pkmsg, :msg] and is_binary(ciphertext) do
-    with {:ok, address} <- Address.from_jid(jid),
+    with {:ok, address} <- resolve_identity_address(repository, jid),
          {:ok, adapter_state, plaintext} <-
            repository.adapter.decrypt_message(repository.adapter_state, address, type, ciphertext) do
       Telemetry.execute(

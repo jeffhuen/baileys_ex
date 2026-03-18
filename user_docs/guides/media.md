@@ -69,11 +69,25 @@ These keys are the ones you will use most often:
 
 The file-based download path keeps memory use lower for larger payloads.
 
+### Refresh stale media URLs before download
+
+If a media message has an expired `url` or `direct_path`, ask the paired device to
+refresh it first:
+
+```elixir
+{:ok, refreshed} = BaileysEx.update_media_message(connection, incoming)
+{:ok, binary} = BaileysEx.download_media(refreshed.message.image_message)
+```
+
+On success, BaileysEx also emits a `messages_update` event with the refreshed
+message payload, matching Baileys' observable behavior.
+
 ## Limitations
 
 - Media sending requires a live connection because BaileysEx uploads encrypted blobs before it relays the message.
 - Media sending also requires the default Signal credentials in auth state, or an explicit `:signal_repository` / `:signal_repository_adapter` override.
 - `download_media/2` and `download_media_to_file/3` need a valid media message with `url` or `direct_path` and a `media_key`.
+- `update_media_message/3` requires the original `WebMessageInfo` for the media message, not only the nested media struct.
 - Thumbnail generation depends on the available thumbnail helpers for the selected media type.
 
 ---

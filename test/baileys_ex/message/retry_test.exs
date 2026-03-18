@@ -128,9 +128,9 @@ defmodule BaileysEx.Message.RetryTest do
         )
       end)
 
-    Process.sleep(2)
+    wait_for(fn -> Retry.get_placeholder_resend(ref, "placeholder-2") != nil end)
     assert :ok = Retry.resolve_placeholder_resend(ref, "placeholder-2")
-    assert {:ok, "RESOLVED"} = Task.await(task, 100)
+    assert {:ok, "RESOLVED"} = Task.await(task, 500)
   end
 
   test "put_placeholder_resend/4 stores an injected inserted_at timestamp" do
@@ -261,5 +261,26 @@ defmodule BaileysEx.Message.RetryTest do
                send_node_fun: fn _receipt -> :ok end,
                request_placeholder_resend_fun: fn _message_key, _msg_data -> :ok end
              )
+  end
+
+  defp wait_for(fun, timeout_ms \\ 100)
+
+  defp wait_for(fun, timeout_ms) when is_function(fun, 0) and is_integer(timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for(fun, deadline)
+  end
+
+  defp do_wait_for(fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("condition not met before timeout")
+
+      true ->
+        Process.sleep(1)
+        do_wait_for(fun, deadline)
+    end
   end
 end

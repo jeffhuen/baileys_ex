@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-16
+> Last updated: 2026-03-17
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -25,6 +25,7 @@
 | 11 | Advanced Features | 5 | COMPLETE | 10 | 12 |
 | 12 | Polish | 7 | COMPLETE | All | 13 |
 | 13 | Internal Parity Validation | 6 | NOT STARTED | 12 | — |
+| 14 | Verified Behavior Parity Gaps | 4 | COMPLETE | 12 | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -286,6 +287,9 @@
 > `me.lid` `creds_update` until post-auth startup completes, matching rc.9,
 > and the native QR-scan restart path now reaches `connection: :open` after
 > fixing Mint transport frame-order drift on multi-frame post-auth batches.
+> Presence now follows rc.9's push-name semantics too: typed
+> `available`/`unavailable` presence is skipped until `me.name` exists, and a
+> later push-name `creds_update` emits a bare `<presence name=\"...\"/>` node.
 > Remaining auth persistence / pre-key upload work now belongs to Phase 7+, not
 > Phase 6.
 
@@ -911,13 +915,62 @@ set.
 
 ---
 
+## Phase 14: Verified Behavior Parity Gaps
+
+**Status:** COMPLETE · **Depends on:** Phase 12 · **Blocks:** —
+
+This phase closed four source-verified Baileys 7.00rc9 behavior gaps. Group stub
+notifications now emit the higher-level side effects Baileys produces, group sends
+can resolve recipients through cached metadata before falling back to live group
+queries, `limit_sharing` is supported in the builder and proto surface, and
+`BaileysEx.update_media_message/3` now performs the full retry/wait/apply flow and
+emits `messages_update` on success. Review follow-up fixes also aligned the cache
+callback contract, threaded `me_id` into notification handling, and restored
+`chats_update` output for subject and description stubs.
+
+### Tasks
+
+- [x] 14.1 Port group stub side effects from `process-message.ts`
+- [x] 14.2 Add `cached_group_metadata` parity for group fanout
+- [x] 14.3 Restore `limitSharing` parity in proto + builder
+- [x] 14.4 Add composed `update_media_message` helper
+
+### Acceptance Criteria
+
+- [x] Group stub notifications emit Baileys-style higher-level side effects including `group_participants_update`, `groups_update`, `group_join_request`, and `chats_update`
+- [x] Group fanout resolves participants from explicit opts, cached metadata, or live metadata in Baileys order
+- [x] `limit_sharing` is supported with the correct proto shape and deterministic timestamp injection
+- [x] `BaileysEx.update_media_message/3` performs the full retry round trip and emits `messages_update` on success
+- [x] Review follow-up fixes are applied for the Baileys-style plain-map cache contract, `notification_context/1` `me_id` threading, and subject/description chat updates
+
+### Files
+
+| File | Status |
+|------|--------|
+| `dev/implementation_plan/14-parity-gaps.md` | ✅ |
+| `lib/baileys_ex/message/stub_side_effects.ex` | ✅ |
+| `lib/baileys_ex/message/notification_handler.ex` | ✅ |
+| `lib/baileys_ex/message/sender.ex` | ✅ |
+| `lib/baileys_ex/connection/config.ex` | ✅ |
+| `lib/baileys_ex/connection/coordinator.ex` | ✅ |
+| `lib/baileys_ex/message/builder.ex` | ✅ |
+| `lib/baileys_ex/protocol/proto/message_messages.ex` | ✅ |
+| `lib/baileys_ex/media/retry.ex` | ✅ |
+| `test/baileys_ex/message/stub_side_effects_test.exs` | ✅ |
+| `test/baileys_ex/message/notification_handler_test.exs` | ✅ |
+| `test/baileys_ex/message/sender_test.exs` | ✅ |
+| `test/baileys_ex/message/builder_test.exs` | ✅ |
+| `test/baileys_ex/media/retry_test.exs` | ✅ |
+
+---
+
 ## Totals
 
 | Metric | Count |
 |--------|-------|
-| Phases | 13 |
-| Tasks | 107 |
-| Acceptance Criteria | 159 |
-| Source Files | ~90 |
-| Test Files | ~35 |
+| Phases | 14 |
+| Tasks | 111 |
+| Acceptance Criteria | 164 |
+| Source Files | ~100 |
+| Test Files | ~40 |
 | GAP items resolved | 48/48 |

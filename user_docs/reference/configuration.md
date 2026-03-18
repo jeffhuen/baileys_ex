@@ -404,6 +404,28 @@ BaileysEx.Connection.Config.new(enable_recent_message_cache: false)
 
 Controls the recent-message cache used by the runtime.
 
+### `cached_group_metadata`
+
+- **Type:** `(String.t() -> map() | {:ok, map()} | nil)`
+- **Default:** `nil`
+- **Example:**
+
+```elixir
+BaileysEx.Connection.Config.new(
+  cached_group_metadata: fn group_jid ->
+    case MyGroupCache.fetch(group_jid) do
+      {:ok, metadata} -> metadata
+      :miss -> nil
+    end
+  end
+)
+```
+
+Provides cached group metadata for outbound group sends. BaileysEx accepts either
+a Baileys-style bare metadata map or `{:ok, metadata}`. When this callback returns
+`nil`, the runtime falls back to a live group-metadata query before building
+sender-key fanout.
+
 ### `browser`
 
 - **Type:** `{String.t(), String.t(), String.t()}`

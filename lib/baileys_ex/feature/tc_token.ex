@@ -37,7 +37,7 @@ defmodule BaileysEx.Feature.TcToken do
   @spec build_node(Store.t() | nil, String.t()) :: BinaryNode.t() | nil
   def build_node(%Store{} = store, jid) when is_binary(jid) do
     case safe_get_token(store, jid) do
-      {:ok, token} -> %BinaryNode{tag: "tctoken", attrs: %{}, content: token}
+      {:ok, token} -> %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, token}}
       :error -> nil
     end
   end
@@ -149,6 +149,11 @@ defmodule BaileysEx.Feature.TcToken do
   defp binary_content(_content), do: nil
 
   defp safe_get_token(%Store{} = store, jid) do
+    jid = normalized_jid(jid)
+    direct_get_token(store, jid)
+  end
+
+  defp direct_get_token(%Store{} = store, jid) do
     try do
       case Store.get(store, :tctoken, [jid]) do
         %{^jid => %{token: token}} when is_binary(token) -> {:ok, token}

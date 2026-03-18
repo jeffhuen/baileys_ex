@@ -208,6 +208,20 @@ Updates disappearing-message settings for the chat.
 
 Pins or unpins a message for the chat.
 
+### `%{limit_sharing: boolean()}`
+
+- **Type:** `map()`
+- **Default:** optional
+- **Example:**
+
+```elixir
+%{limit_sharing: true}
+```
+
+Sends the Baileys-compatible `LIMIT_SHARING` protocol message for the chat.
+BaileysEx fills the matching trigger, timestamp, and `initiated_by_me` fields
+automatically.
+
 ## Contacts, location, events, and replies
 
 ### `%{contacts: %{display_name: binary(), contacts: [contact]}}`

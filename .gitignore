@@ -39,3 +39,12 @@ baileys_ex-*.tar
 
 # Local git worktrees
 .worktrees/
+
+# Local Claude worktree mirrors
+/.claude/worktrees/
+
+# Local trace/debug outputs
+/trace_auth_info*/
+/trace-wire*.log
+/trace-qr*.txt
+/trace-qr*.html

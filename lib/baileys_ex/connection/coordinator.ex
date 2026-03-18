@@ -1128,8 +1128,11 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp notification_context(%State{} = state) do
     resync_app_state_fun = state.resync_app_state_fun || built_in_resync_app_state_fun(state)
+    me = current_me(state)
+    me_id = me[:id] || me["id"]
 
     %{event_emitter: state.event_emitter}
+    |> maybe_put_callback(:me_id, me_id)
     |> maybe_put_callback(:store_privacy_token_fun, privacy_token_store_fun(state.signal_store))
     |> maybe_put_callback(:handle_encrypt_notification_fun, state.handle_encrypt_notification_fun)
     |> maybe_put_callback(:device_notification_fun, state.device_notification_fun)

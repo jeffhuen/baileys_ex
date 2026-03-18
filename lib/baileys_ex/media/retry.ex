@@ -167,7 +167,15 @@ defmodule BaileysEx.Media.Retry do
         :ok ->
           result = await_media_update(ref, wa_message, media_key, timeout)
           unsubscribe.()
-          result
+
+          case result do
+            {:ok, updated_msg} ->
+              emit_messages_update(event_emitter, updated_msg)
+              {:ok, updated_msg}
+
+            error ->
+              error
+          end
 
         {:error, _} = err ->
           unsubscribe.()
@@ -428,4 +436,12 @@ defmodule BaileysEx.Media.Retry do
   defp value_for_result_key(:SUCCESS), do: 1
   defp value_for_result_key(:NOT_FOUND), do: 2
   defp value_for_result_key(:DECRYPTION_ERROR), do: 3
+
+  # Emit messages_update event after successful media refresh, matching Baileys behavior
+  defp emit_messages_update(event_emitter, %WebMessageInfo{key: key} = msg) do
+    update = %{key: key, update: %{message: msg.message}}
+    EventEmitter.emit(event_emitter, :messages_update, [update])
+  rescue
+    _ -> :ok
+  end
 end

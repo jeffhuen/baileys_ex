@@ -11,7 +11,7 @@ defmodule BaileysEx.Connection.Config do
   @type reconnect_policy :: :disabled | :restart_required | :all_non_logged_out
   @type version :: [non_neg_integer()]
   @type should_sync_history_message_fun :: (map() -> boolean())
-  @type cached_group_metadata_fun :: (String.t() -> {:ok, map()} | nil)
+  @type cached_group_metadata_fun :: (String.t() -> map() | {:ok, map()} | nil)
   @type platform ::
           :CHROME
           | :FIREFOX

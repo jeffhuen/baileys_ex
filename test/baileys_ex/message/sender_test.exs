@@ -945,6 +945,80 @@ defmodule BaileysEx.Message.SenderTest do
                       }}
     end
 
+    test "accepts plain map from cache (Baileys contract: GroupMetadata | undefined)" do
+      parent = self()
+      group_jid = %JID{user: "120363001234567890", server: "g.us"}
+
+      {repo, store} = MessageSignalHelpers.new_repo()
+      session = MessageSignalHelpers.session_fixture()
+
+      repo =
+        repo
+        |> inject_session!("15551234567:0@s.whatsapp.net", session)
+
+      context = %{
+        signal_repository: repo,
+        signal_store: store,
+        me_id: "15550001111@s.whatsapp.net",
+        device_identity: <<9, 9, 9>>,
+        send_node_fun: fn node ->
+          send(parent, {:relay_node, node})
+          :ok
+        end,
+        # Returns plain map (Baileys style), NOT {:ok, map}
+        cached_group_metadata: fn _jid ->
+          %{participants: [%{id: "15551234567@s.whatsapp.net"}]}
+        end,
+        query_fun: fn _node ->
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "usync",
+                 attrs: %{},
+                 content: [
+                   %BinaryNode{
+                     tag: "list",
+                     attrs: %{},
+                     content: [
+                       %BinaryNode{
+                         tag: "user",
+                         attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                         content: [
+                           %BinaryNode{
+                             tag: "devices",
+                             attrs: %{},
+                             content: [
+                               %BinaryNode{
+                                 tag: "device-list",
+                                 attrs: %{},
+                                 content: [%BinaryNode{tag: "device", attrs: %{"id" => "0"}}]
+                               }
+                             ]
+                           }
+                         ]
+                       }
+                     ]
+                   }
+                 ]
+               }
+             ]
+           }}
+        end
+      }
+
+      assert {:ok, _sent, _context} =
+               Sender.send(context, group_jid, %{text: "plain map cache"},
+                 message_id_fun: fn _me_id -> "3EB0PLAINMAP" end,
+                 timestamp_fun: fn -> 1_710_000_000_000 end
+               )
+
+      assert_receive {:relay_node,
+                      %BinaryNode{tag: "message", attrs: %{"to" => "120363001234567890@g.us"}}}
+    end
+
     test "returns error when no cache, no live fallback, and no explicit participants" do
       group_jid = %JID{user: "120363001234567890", server: "g.us"}
 

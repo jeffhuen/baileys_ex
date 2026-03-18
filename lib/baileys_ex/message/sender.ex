@@ -191,7 +191,7 @@ defmodule BaileysEx.Message.Sender do
         nil
       end
 
-    case cached_result do
+    case normalize_metadata_result(cached_result) do
       {:ok, %{participants: participants}} = result when is_list(participants) ->
         result
 
@@ -202,6 +202,11 @@ defmodule BaileysEx.Message.Sender do
 
   defp try_cached_metadata(nil, _jid), do: nil
   defp try_cached_metadata(fun, jid) when is_function(fun, 1), do: fun.(jid)
+
+  # Accept both Baileys-style plain maps and {:ok, map} tuples
+  defp normalize_metadata_result({:ok, _} = result), do: result
+  defp normalize_metadata_result(%{participants: _} = map), do: {:ok, map}
+  defp normalize_metadata_result(_), do: nil
 
   defp try_live_metadata(nil, _jid), do: nil
   defp try_live_metadata(fun, jid) when is_function(fun, 1), do: fun.(jid)

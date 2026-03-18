@@ -231,11 +231,12 @@ defmodule BaileysEx.Message.StubSideEffectsTest do
                     author: @author,
                     author_pn: @author_pn
                   }
-                ]}
+                ]},
+               {:chats_update, [%{id: @group_jid, name: "New Group Name"}]}
              ] = effects
     end
 
-    test "GROUP_CHANGE_DESCRIPTION emits groups_update with desc" do
+    test "GROUP_CHANGE_DESCRIPTION emits groups_update with desc and chats_update" do
       effects =
         StubSideEffects.derive(%{
           stub_type: :GROUP_CHANGE_DESCRIPTION,
@@ -255,7 +256,8 @@ defmodule BaileysEx.Message.StubSideEffectsTest do
                     author: @author,
                     author_pn: @author_pn
                   }
-                ]}
+                ]},
+               {:chats_update, [%{id: @group_jid, description: "A new description"}]}
              ] = effects
     end
 

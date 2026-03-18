@@ -112,16 +112,20 @@ defmodule BaileysEx.Message.StubSideEffects do
     group_update_effects(input, %{restrict: value in ["true", "on"]})
   end
 
-  # Group change subject
+  # Group change subject — emits both groups_update and chats_update (Baileys: chat.name)
   def derive(%{stub_type: :GROUP_CHANGE_SUBJECT} = input) do
     name = first_param(input)
-    group_update_effects(input, %{subject: name})
+
+    group_update_effects(input, %{subject: name}) ++
+      [{:chats_update, [%{id: input.group_jid, name: name}]}]
   end
 
-  # Group change description
+  # Group change description — emits both groups_update and chats_update (Baileys: chat.description)
   def derive(%{stub_type: :GROUP_CHANGE_DESCRIPTION} = input) do
     description = first_param(input)
-    group_update_effects(input, %{desc: description})
+
+    group_update_effects(input, %{desc: description}) ++
+      [{:chats_update, [%{id: input.group_jid, description: description}]}]
   end
 
   # Group change invite link

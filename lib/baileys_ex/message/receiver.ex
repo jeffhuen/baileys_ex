@@ -48,9 +48,15 @@ defmodule BaileysEx.Message.Receiver do
          {:ok, encrypted_content} <- extract_encrypted_content(node),
          {:ok, decrypted_repo, plaintext} <-
            decrypt_content(context.signal_repository, envelope, encrypted_content),
-         {:ok, context} <-
-           maybe_persist_lid_mapping(envelope, %{context | signal_repository: decrypted_repo}),
          {:ok, proto_message} <- Wire.decode(plaintext),
+         {:ok, signal_repository} <-
+           maybe_process_sender_key_distribution_message(
+             decrypted_repo,
+             envelope,
+             proto_message
+           ),
+         {:ok, context} <-
+           maybe_persist_lid_mapping(envelope, %{context | signal_repository: signal_repository}),
          :ok <-
            maybe_cache_recent_message(
              context,
@@ -160,9 +166,11 @@ defmodule BaileysEx.Message.Receiver do
   end
 
   defp decrypt_content(%Repository{} = repo, envelope, %{type: "skmsg", ciphertext: ciphertext}) do
+    # Group Signal state is keyed by the decoded crypto sender identity, not the
+    # user-facing author stored on the normalized received message.
     Repository.decrypt_group_message(repo, %{
       group: envelope.remote_jid,
-      author_jid: envelope.author_jid,
+      author_jid: envelope.signal_author_jid,
       msg: ciphertext
     })
   end
@@ -328,6 +336,24 @@ defmodule BaileysEx.Message.Receiver do
   end
 
   defp emit_protocol_side_effects(_received_message, context), do: {:ok, context}
+
+  defp maybe_process_sender_key_distribution_message(
+         %Repository{} = repo,
+         %{signal_author_jid: signal_author_jid},
+         %Message{
+           sender_key_distribution_message: %Message.SenderKeyDistributionMessage{} = item
+         }
+       ) do
+    # Sender key distribution payloads must be persisted under the same sender identity
+    # later `skmsg` decrypts will use.
+    Repository.process_sender_key_distribution_message(repo, %{
+      author_jid: signal_author_jid,
+      item: item
+    })
+  end
+
+  defp maybe_process_sender_key_distribution_message(%Repository{} = repo, _envelope, %Message{}),
+    do: {:ok, repo}
 
   defp normalize_received_message(received_message, context) do
     Normalizer.normalize(received_message,

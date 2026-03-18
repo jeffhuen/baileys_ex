@@ -401,6 +401,105 @@ defmodule BaileysEx.Message.ReceiverTest do
     unsubscribe.()
   end
 
+  test "process_node/3 ingests sender key distribution messages for subsequent group skmsg nodes" do
+    assert {:ok, emitter} = EventEmitter.start_link()
+
+    {sender_repo, _sender_store} = MessageSignalHelpers.new_repo()
+    {recipient_repo, _recipient_store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    sender_device_jid = "15551234567:1@s.whatsapp.net"
+    group_jid = "120363001234567890@g.us"
+
+    assert {:ok, recipient_repo} =
+             Repository.inject_e2e_session(recipient_repo, %{
+               jid: sender_device_jid,
+               session: session
+             })
+
+    plaintext = Builder.build(%{text: "hello after distribution"}) |> Message.encode()
+
+    assert {:ok, _sender_repo,
+            %{ciphertext: group_ciphertext, sender_key_distribution_message: distribution}} =
+             Repository.encrypt_group_message(sender_repo, %{
+               group: group_jid,
+               me_id: sender_device_jid,
+               data: plaintext
+             })
+
+    distribution_plaintext =
+      %Message{
+        sender_key_distribution_message: %Message.SenderKeyDistributionMessage{
+          group_id: group_jid,
+          axolotl_sender_key_distribution_message: distribution
+        }
+      }
+      |> Message.encode()
+
+    assert {:ok, recipient_repo, %{ciphertext: distribution_ciphertext}} =
+             Repository.encrypt_message(recipient_repo, %{
+               jid: sender_device_jid,
+               data: distribution_plaintext
+             })
+
+    distribution_node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "dist-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => sender_device_jid,
+        "t" => "1710000001"
+      },
+      content: [
+        %BinaryNode{
+          tag: "enc",
+          attrs: %{"type" => "pkmsg"},
+          content: {:binary, distribution_ciphertext}
+        }
+      ]
+    }
+
+    context = %{
+      signal_repository: recipient_repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid"
+    }
+
+    assert {:ok,
+            %{
+              message: %Message{
+                sender_key_distribution_message: %Message.SenderKeyDistributionMessage{
+                  group_id: ^group_jid
+                }
+              }
+            }, %{signal_repository: recipient_repo}} =
+             Receiver.process_node(distribution_node, context)
+
+    group_node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "group-msg-2",
+        "from" => group_jid,
+        "participant" => sender_device_jid,
+        "t" => "1710000002"
+      },
+      content: [
+        %BinaryNode{tag: "enc", attrs: %{"type" => "skmsg"}, content: {:binary, group_ciphertext}}
+      ]
+    }
+
+    assert {:ok,
+            %{
+              message: %Message{
+                extended_text_message: %Message.ExtendedTextMessage{
+                  text: "hello after distribution"
+                }
+              }
+            }, %{signal_repository: %Repository{}}} =
+             Receiver.process_node(group_node, %{context | signal_repository: recipient_repo})
+  end
+
   test "process_node/3 caches recently received messages when runtime retry cache is enabled" do
     assert {:ok, emitter} = EventEmitter.start_link()
 

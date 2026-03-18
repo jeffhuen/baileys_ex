@@ -1,6 +1,16 @@
 defmodule BaileysEx.Message.Decode do
   @moduledoc """
   Envelope decode helpers aligned with Baileys' message addressing rules.
+
+  The decoded envelope intentionally keeps two sender identities:
+
+  * `author_jid` is the message author for higher-level message semantics and logs
+  * `signal_author_jid` is the sender identity Signal group crypto should key on
+
+  Those values are usually the same, but direct device-addressed payloads can carry a
+  bare chat author in `from` and the device-qualified sender in `participant`. Group
+  sender-key distribution and `skmsg` decrypts must use the device-qualified identity,
+  while normalized received messages should continue to expose the stable author JID.
   """
 
   alias BaileysEx.BinaryNode
@@ -22,12 +32,16 @@ defmodule BaileysEx.Message.Decode do
           optional(:server_id) => String.t(),
           required(:from_me) => boolean(),
           required(:author_jid) => String.t(),
+          required(:signal_author_jid) => String.t(),
           required(:decryption_jid) => String.t(),
           required(:addressing_mode) => :pn | :lid
         }
 
   @doc """
   Decodes a protocol envelope from the given binary node, analyzing addressing.
+
+  The returned envelope separates message semantics from crypto semantics so later
+  pipeline stages do not need to rediscover which sender identity Signal should use.
   """
   @spec decode_envelope(BinaryNode.t(), context()) ::
           {:ok, envelope(), context()} | {:error, term()}
@@ -172,6 +186,7 @@ defmodule BaileysEx.Message.Decode do
       participant: participant,
       from_me: from_me,
       author_jid: from,
+      signal_author_jid: direct_signal_author_jid(from, participant, from_me),
       decryption_jid: decryption_jid,
       addressing_mode: addressing_mode
     }
@@ -193,6 +208,7 @@ defmodule BaileysEx.Message.Decode do
          participant_alt: sender_alt,
          from_me: same_user?(participant, me_id, me_lid),
          author_jid: participant,
+         signal_author_jid: participant,
          decryption_jid: decryption_jid,
          addressing_mode: addressing_mode
        }}
@@ -213,11 +229,20 @@ defmodule BaileysEx.Message.Decode do
       remote_jid: from,
       from_me: same_user?(from, me_id, me_lid),
       author_jid: from,
+      signal_author_jid: from,
       decryption_jid: decryption_jid,
       addressing_mode: addressing_mode,
       server_id: server_id
     }
   end
+
+  defp direct_signal_author_jid(_from, participant, false)
+       when is_binary(participant) and participant != "",
+       do: participant
+
+  # For ordinary direct messages and self-sent messages, the chat author identity is
+  # already the correct Signal sender identity.
+  defp direct_signal_author_jid(from, _participant, _from_me), do: from
 
   defp infer_addressing_mode(sender) do
     if JIDUtil.lid?(sender) or JIDUtil.hosted_lid?(sender), do: :lid, else: :pn

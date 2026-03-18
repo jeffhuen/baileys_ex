@@ -96,4 +96,30 @@ defmodule BaileysEx.Message.DecodeTest do
     assert envelope.remote_jid_alt == "15551234567@s.whatsapp.net"
     assert envelope.decryption_jid == "12345@lid"
   end
+
+  test "decode_envelope/2 keeps author_jid stable while exposing signal_author_jid for direct device senders" do
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "direct-device-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => "15551234567:1@s.whatsapp.net",
+        "t" => "1710000202"
+      },
+      content: []
+    }
+
+    context = %{
+      signal_repository: repo,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid"
+    }
+
+    assert {:ok, envelope, %{signal_repository: ^repo}} = Decode.decode_envelope(node, context)
+    assert envelope.author_jid == "15551234567@s.whatsapp.net"
+    assert envelope.signal_author_jid == "15551234567:1@s.whatsapp.net"
+    assert envelope.decryption_jid == "15551234567:1@s.whatsapp.net"
+  end
 end

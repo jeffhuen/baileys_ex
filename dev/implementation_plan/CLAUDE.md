@@ -115,9 +115,15 @@ Every task must pass these gates before committing.
 
 **Gate 1 — Formatting:** `mix format --check-formatted`
 
-**Gate 2 — Compilation:** `mix compile --warnings-as-errors`
+**Gate 2 — Static analysis:** `mix compile --warnings-as-errors && mix credo --strict`
+- If the task touches `native/baileys_nif`, also run `cargo fmt --check` and `cargo check` in `native/baileys_nif`.
+- Boundary mistakes, dead code, compile warnings, and Credo violations are not optional cleanup. Fix them in the same task.
 
-**Gate 3 — Tests:** `mix test`
+**Gate 3 — Type checking:** `mix dialyzer`
+- Zero warnings.
+- All public functions must have `@spec`.
+
+**Gate 4 — Tests:** `mix test`
 - All tests pass. Assertions must test actual values, not just shapes (`{:ok, _}` is not acceptable when the value is knowable).
 - **Deterministic tests with pinned vectors:** All sources of non-determinism (random
   bytes, timestamps, UUIDs) must be injectable via function options. Tests must inject
@@ -129,39 +135,56 @@ Every task must pass these gates before committing.
 - **Property tests complement vectors:** Use StreamData properties to prove invariants
   (roundtrip, idempotency, bit-flip detection). Use pinned vectors to prove correctness
   against an external reference.
+- If the task changes wire behavior, binary encoding/decoding, auth/session flows,
+  Signal/Noise behavior, public socket surface, or parity fixtures, also run:
+  `bash dev/scripts/run_parity_suite.sh`
 
-**Gate 4 — Static analysis:** `mix credo --all`
-- Code and architecture must not violate the rules documented in `ANTIPATTERNS.md` and `elixir-antipatterns.md`.
-
-**Gate 5 — Type checking:** `mix dialyzer`
-
-**Gate 6 — Docs build:** `mix docs`
+**Gate 5 — Documentation (manual review required):** `mix docs`
 - Docs must build without warnings.
+- Follow [`documentation-system.md`](./documentation-system.md).
+- No internal references in Layer 1 docs: `@moduledoc`, `@doc`, and code comments must not reference phase numbers, task numbers, gate numbers, or `dev/implementation_plan/*`.
+- Glossary terms must match [`user_docs/glossary.md`](../../user_docs/glossary.md).
+- Any task adding or changing a public configuration option must update [`user_docs/reference/configuration.md`](../../user_docs/reference/configuration.md) in the same commit.
+- If the task changes a user-facing workflow, setup step, or failure mode, update the relevant page under `user_docs/getting-started/`, `user_docs/guides/`, or `user_docs/troubleshooting/` in the same commit.
 
-**Gate 7 — Documentation quality:** Follow [`documentation-system.md`](./documentation-system.md).
-- No internal references (phase numbers, GAP IDs, task numbers) in `@moduledoc`/`@doc`
-- `@spec` on all public functions
-- Guides updated if a user-facing API changes (Phase 12+)
+**Gate 6 — DRY / existing-surface check (manual review required):**
+- Verify the diff does not duplicate functionality that already exists in `Connection.*`, `Feature.*`, `Message.*`, `Media.*`, `Signal.*`, or `Protocol.*`.
+- Re-read [`ANTIPATTERNS.md`](./ANTIPATTERNS.md) and [`elixir-antipatterns.md`](./elixir-antipatterns.md) for the failure modes relevant to the touched area.
+- If the task adds a public helper, confirm the behavior is not already available under another module boundary before creating a second surface.
 
-**Gate 8 — Baileys behaviour parity:**
-- Cross-check against `dev/reference/Baileys-master/` (7.00rc9) for the touched behaviour.
-  Our implementation must produce the same wire behaviour as Baileys for the same inputs.
-- Update the active phase file / PROGRESS tracker if the implemented scope or status changed.
+**Gate 7 — Native-first compliance (when applicable):**
+- Use Erlang/Elixir/OTP primitives first. Rust NIF work is allowed only when the root `CLAUDE.md` native-first policy justifies it.
+- If a task introduces or expands native code, the Elixir/Rust boundary must remain narrow, justified, and documented in the touched phase/task notes.
+- Never move behavior into Rust just for familiarity or micro-optimization.
 
-**Gate 9 — Task completion housekeeping:**
-1. Update the task checkbox `[x]` in PROGRESS.md.
-2. Update the corresponding acceptance criteria checkboxes.
-3. Update the file status table (⬜ → ✅).
+**Gate 8 — Baileys source parity (manual review required):**
+- Cross-check the touched behavior against `dev/reference/Baileys-master/` at the relevant callsites, not just one obvious export.
+- The implementation must match Baileys 7.00rc9 observable behavior for the same inputs: wire nodes, event output, helper return shape, config semantics, and error behavior.
+- Do not invent new protocol behavior. If Baileys does not do it, we do not add it under the name of parity.
+- If the parity understanding changes, update the active phase file, `PROGRESS.md`, and `dev/parity/` artifacts in the same task.
 
-**Gate 10 — Full verification bundle:**
+**Gate 9 — Full gate check (one-liner):**
 ```bash
 mix format --check-formatted && \
 mix compile --warnings-as-errors && \
-mix test && \
-mix credo --all && \
+mix credo --strict && \
 mix dialyzer && \
+mix test && \
 mix docs
 ```
+- This runs the standard Elixir commands for Gates 1–5. It does **not** cover the manual review parts of Gates 5–8.
+- If native code was touched, also run the native commands from Gate 2.
+- If parity-sensitive code was touched, also run `bash dev/scripts/run_parity_suite.sh`.
+
+**Gate 10 — Task completion protocol (plan housekeeping — always required):**
+1. Update the active phase file so the task/substep checkboxes reflect the actual completed state.
+2. Update `dev/implementation_plan/PROGRESS.md`:
+   - mark the task `[x]`
+   - update the corresponding acceptance criteria checkboxes
+   - update the file status table
+3. Record every meaningful deviation from the plan in the active phase file. If the deviation affects later work, add a note in the downstream phase/task file too.
+4. If the task changed parity understanding, update `dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md` or the relevant parity artifact in the same commit.
+5. If a scratch file exists for the task, delete it only after all gates are passing and the task is truly complete.
 
 **Gate 11 — Commit** (only after Gates 1–10 pass).
 

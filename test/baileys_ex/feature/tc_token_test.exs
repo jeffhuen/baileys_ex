@@ -36,6 +36,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
              })
 
     assert nil == TcToken.build_node(store, "85262028964@s.whatsapp.net")
+
     assert %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "lid-token"}} =
              TcToken.build_node(store, "167946206842976@lid")
   end

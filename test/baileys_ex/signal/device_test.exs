@@ -84,7 +84,9 @@ defmodule BaileysEx.Signal.DeviceTest do
              Device.get_devices(context, ["15551234567@s.whatsapp.net"])
 
     assert %{"15551234567" => ["0", "2"]} = Store.get(store, :"device-list", ["15551234567"])
-    assert {:ok, "12345@lid"} = LIDMappingStore.get_lid_for_pn(store, "15551234567@s.whatsapp.net")
+
+    assert {:ok, "12345@lid"} =
+             LIDMappingStore.get_lid_for_pn(store, "15551234567@s.whatsapp.net")
   end
 
   test "get_devices/3 keeps pn-addressed device jids for cached pn device lists" do
@@ -100,7 +102,9 @@ defmodule BaileysEx.Signal.DeviceTest do
     context = %{
       signal_store: store,
       me_id: "15550001111:1@s.whatsapp.net",
-      query_fun: fn _node -> flunk("cached lookups with a stored mapping should not issue USync") end
+      query_fun: fn _node ->
+        flunk("cached lookups with a stored mapping should not issue USync")
+      end
     }
 
     assert {:ok, _context, ["15551234567@s.whatsapp.net", "15551234567:2@s.whatsapp.net"]} =
@@ -157,7 +161,11 @@ defmodule BaileysEx.Signal.DeviceTest do
                                  %BinaryNode{tag: "device", attrs: %{"id" => "0"}},
                                  %BinaryNode{
                                    tag: "device",
-                                   attrs: %{"id" => "99", "key-index" => "7", "is_hosted" => "true"}
+                                   attrs: %{
+                                     "id" => "99",
+                                     "key-index" => "7",
+                                     "is_hosted" => "true"
+                                   }
                                  }
                                ]
                              }

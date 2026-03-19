@@ -844,6 +844,9 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert :ok =
              EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "AQIDBA=="})
 
+    # Drain the sync_creds_update forwarded to the fake socket before the query
+    assert_receive {:fake_socket_sync_creds_update, _}, 200
+
     assert_receive {:fake_socket_query,
                     %BinaryNode{
                       attrs: %{"xmlns" => "w:sync:app:state"},

@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "reference": "dev/reference/Baileys-master",
+    "version": "7.00rc9"
+  },
+  "fixtures": {
+    "signal": {
+      "path": "test/fixtures/parity/signal/baileys_rc9.json",
+      "source": "test/fixtures/signal/baileys_v7.json",
+      "regenerate_with": "dev/tools/generate_signal_fixtures.mts"
+    },
+    "media": {
+      "path": "test/fixtures/parity/media/baileys_rc9.json",
+      "source": "test/fixtures/media/baileys_v7.json",
+      "regenerate_with": "existing media fixture source"
+    },
+    "syncd": {
+      "path": "test/fixtures/parity/syncd/baileys_rc9.json",
+      "source": "dev/scripts/generate_syncd_vectors.mjs",
+      "regenerate_with": "dev/scripts/generate_syncd_vectors.mjs"
+    },
+    "wam": {
+      "path": "test/fixtures/parity/wam/baileys_rc9.json",
+      "source": "priv/wam/definitions.json",
+      "regenerate_with": "dev/scripts/generate_wam_definitions.mjs"
+    }
+  }
+}

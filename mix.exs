@@ -8,6 +8,7 @@ defmodule BaileysEx.MixProject do
       description: description(),
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
+      test_ignore_filters: [~r|^test/support/|],
       deps: deps(),
       homepage_url: "https://github.com/jeffhuen/baileys_ex",
       source_url: "https://github.com/jeffhuen/baileys_ex",

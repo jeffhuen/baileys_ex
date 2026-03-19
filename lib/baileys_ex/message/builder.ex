@@ -18,7 +18,13 @@ defmodule BaileysEx.Message.Builder do
   @spec build(map(), keyword()) :: struct()
   def build(content, opts \\ [])
 
-  def build(%{edit: key} = content, opts) do
+  def build(content, opts) when is_map(content) and is_list(opts) do
+    content
+    |> do_build(opts)
+    |> maybe_add_reporting_secret(opts)
+  end
+
+  defp do_build(%{edit: key} = content, opts) do
     inner =
       content
       |> Map.delete(:edit)
@@ -34,7 +40,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{view_once: true} = content, opts) do
+  defp do_build(%{view_once: true} = content, opts) do
     inner =
       content
       |> Map.delete(:view_once)
@@ -43,7 +49,7 @@ defmodule BaileysEx.Message.Builder do
     %Message{view_once_message: %Message.FutureProofMessage{message: inner}}
   end
 
-  def build(%{text: text} = content, opts) when is_binary(text) do
+  defp do_build(%{text: text} = content, opts) when is_binary(text) do
     preview = link_preview_for(content, opts)
 
     %Message{
@@ -60,7 +66,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{image: _image} = content, _opts) do
+  defp do_build(%{image: _image} = content, _opts) do
     upload = content[:media_upload] || %{}
 
     %Message{
@@ -82,7 +88,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{video: _video} = content, _opts) do
+  defp do_build(%{video: _video} = content, _opts) do
     upload = content[:media_upload] || %{}
 
     video_message = %Message.VideoMessage{
@@ -110,7 +116,7 @@ defmodule BaileysEx.Message.Builder do
     end
   end
 
-  def build(%{audio: _audio} = content, _opts) do
+  defp do_build(%{audio: _audio} = content, _opts) do
     upload = content[:media_upload] || %{}
 
     %Message{
@@ -131,7 +137,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{document: _document} = content, _opts) do
+  defp do_build(%{document: _document} = content, _opts) do
     upload = content[:media_upload] || %{}
 
     %Message{
@@ -155,7 +161,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{sticker: _sticker} = content, _opts) do
+  defp do_build(%{sticker: _sticker} = content, _opts) do
     upload = content[:media_upload] || %{}
 
     %Message{
@@ -177,7 +183,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{react: %{key: key, text: emoji} = react}, opts) do
+  defp do_build(%{react: %{key: key, text: emoji} = react}, opts) do
     %Message{
       reaction_message: %Message.ReactionMessage{
         key: build_message_key(key),
@@ -187,7 +193,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{poll: %{name: name, values: values} = poll}, _opts) do
+  defp do_build(%{poll: %{name: name, values: values} = poll}, _opts) do
     poll_message = %Message.PollCreationMessage{
       enc_key: Map.get(poll, :enc_key),
       name: name,
@@ -213,8 +219,8 @@ defmodule BaileysEx.Message.Builder do
     end
   end
 
-  def build(%{contacts: %{display_name: display_name, contacts: [single]}}, _opts)
-      when is_map(single) do
+  defp do_build(%{contacts: %{display_name: display_name, contacts: [single]}}, _opts)
+       when is_map(single) do
     %Message{
       contact_message: %Message.ContactMessage{
         display_name: single[:display_name] || display_name,
@@ -223,8 +229,8 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{contacts: %{display_name: display_name, contacts: contacts}}, _opts)
-      when is_list(contacts) do
+  defp do_build(%{contacts: %{display_name: display_name, contacts: contacts}}, _opts)
+       when is_list(contacts) do
     %Message{
       contacts_array_message: %Message.ContactsArrayMessage{
         display_name: display_name,
@@ -239,7 +245,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{location: location}, _opts) when is_map(location) do
+  defp do_build(%{location: location}, _opts) when is_map(location) do
     %Message{
       location_message: %Message.LocationMessage{
         degrees_latitude: location.latitude,
@@ -253,7 +259,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{live_location: location}, _opts) when is_map(location) do
+  defp do_build(%{live_location: location}, _opts) when is_map(location) do
     %Message{
       live_location_message: %Message.LiveLocationMessage{
         degrees_latitude: location.latitude,
@@ -267,7 +273,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{delete: key}, _opts) do
+  defp do_build(%{delete: key}, _opts) do
     %Message{
       protocol_message: %Message.ProtocolMessage{
         key: build_message_key(key),
@@ -276,12 +282,12 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{forward: original} = content, _opts) do
+  defp do_build(%{forward: original} = content, _opts) do
     force_forward? = Map.get(content, :force, false)
     forward_message(original, force_forward?)
   end
 
-  def build(%{disappearing_messages_in_chat: expiration}, _opts) do
+  defp do_build(%{disappearing_messages_in_chat: expiration}, _opts) do
     ephemeral_expiration =
       case expiration do
         true -> 86_400
@@ -297,7 +303,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{pin: %{key: key, type: type, time: duration} = pin}, opts) do
+  defp do_build(%{pin: %{key: key, type: type, time: duration} = pin}, opts) do
     %Message{
       pin_in_chat_message: %Message.PinInChatMessage{
         key: build_message_key(key),
@@ -310,7 +316,10 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{group_invite: %{group_jid: group_jid, invite_code: invite_code} = invite}, _opts) do
+  defp do_build(
+         %{group_invite: %{group_jid: group_jid, invite_code: invite_code} = invite},
+         _opts
+       ) do
     %Message{
       group_invite_message: %Message.GroupInviteMessage{
         group_jid: jid_to_string(group_jid),
@@ -323,7 +332,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{product: %{title: _title} = product}, _opts) do
+  defp do_build(%{product: %{title: _title} = product}, _opts) do
     %Message{
       product_message: %Message.ProductMessage{
         product: %Message.ProductMessage.ProductSnapshot{
@@ -342,7 +351,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{button_reply: %{display_text: text, id: id, type: :template}}, _opts) do
+  defp do_build(%{button_reply: %{display_text: text, id: id, type: :template}}, _opts) do
     %Message{
       template_button_reply_message: %Message.TemplateButtonReplyMessage{
         selected_display_text: text,
@@ -351,7 +360,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{button_reply: %{display_text: text, id: id}}, _opts) do
+  defp do_build(%{button_reply: %{display_text: text, id: id}}, _opts) do
     %Message{
       buttons_response_message: %Message.ButtonsResponseMessage{
         selected_display_text: text,
@@ -361,7 +370,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{list_reply: %{title: title, row_id: row_id}}, _opts) do
+  defp do_build(%{list_reply: %{title: title, row_id: row_id}}, _opts) do
     %Message{
       list_response_message: %Message.ListResponseMessage{
         title: title,
@@ -373,7 +382,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{share_phone_number: true}, _opts) do
+  defp do_build(%{share_phone_number: true}, _opts) do
     %Message{
       protocol_message: %Message.ProtocolMessage{
         type: :SHARE_PHONE_NUMBER
@@ -381,14 +390,14 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{request_phone_number: true}, _opts) do
+  defp do_build(%{request_phone_number: true}, _opts) do
     %Message{
       request_phone_number_message: %Message.RequestPhoneNumberMessage{}
     }
   end
 
-  def build(%{limit_sharing: sharing_limited} = _content, opts)
-      when is_boolean(sharing_limited) do
+  defp do_build(%{limit_sharing: sharing_limited} = _content, opts)
+       when is_boolean(sharing_limited) do
     %Message{
       protocol_message: %Message.ProtocolMessage{
         type: :LIMIT_SHARING,
@@ -402,7 +411,7 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
-  def build(%{event: %{name: name} = event}, _opts) do
+  defp do_build(%{event: %{name: name} = event}, _opts) do
     %Message{
       event_message: %Message.EventMessage{
         name: name,
@@ -505,26 +514,100 @@ defmodule BaileysEx.Message.Builder do
         remote_jid: jid_to_string(get_in(content, [:quoted, :key, :remote_jid])),
         mentioned_jid: Enum.map(content[:mentions] || [], &jid_to_string/1),
         expiration: content[:ephemeral_expiration],
-        is_forwarded: content[:is_forwarded] || false,
+        is_forwarded: content[:is_forwarded],
         forwarding_score: content[:forwarding_score]
       }
 
-    case content[:context_info] do
-      %Message.ContextInfo{} = extra -> Map.merge(base, extra)
-      extra when is_map(extra) -> struct(base, Map.new(extra))
-      _ -> base
+    context_info =
+      case content[:context_info] do
+        %Message.ContextInfo{} = extra -> Map.merge(base, extra)
+        extra when is_map(extra) -> struct(base, Map.new(extra))
+        _ -> base
+      end
+
+    if context_info == %Message.ContextInfo{} do
+      nil
+    else
+      context_info
     end
   end
 
   defp build_message_key(%MessageKey{} = key), do: key
 
   defp build_message_key(%{} = key) do
+    from_me =
+      cond do
+        Map.has_key?(key, :from_me) -> key[:from_me]
+        Map.has_key?(key, "from_me") -> key["from_me"]
+        true -> nil
+      end
+
     %MessageKey{
       id: key[:id] || key["id"],
       remote_jid: jid_to_string(key[:remote_jid] || key["remote_jid"]),
-      from_me: key[:from_me] || key["from_me"] || false,
+      from_me: from_me,
       participant: jid_to_string(key[:participant] || key["participant"])
     }
+  end
+
+  defp maybe_add_reporting_secret(%Message{} = message, opts) do
+    if reportable_message_without_secret?(message) do
+      %MessageContextInfo{} = context_info = existing_message_context_info(message)
+
+      %Message{
+        message
+        | message_context_info: %MessageContextInfo{
+            context_info
+            | message_secret: reporting_message_secret(opts)
+          }
+      }
+    else
+      message
+    end
+  end
+
+  defp existing_message_context_info(%Message{
+         message_context_info: %MessageContextInfo{} = context_info
+       }),
+       do: context_info
+
+  defp existing_message_context_info(%Message{}), do: %MessageContextInfo{}
+
+  defp reportable_message_without_secret?(%Message{
+         message_context_info: %MessageContextInfo{message_secret: secret}
+       })
+       when is_binary(secret),
+       do: false
+
+  defp reportable_message_without_secret?(%Message{} = message) do
+    is_nil(message.message_context_info && message.message_context_info.message_secret) and
+      is_nil(message.reaction_message) and
+      is_nil(message.enc_reaction_message) and
+      is_nil(message.enc_event_response_message) and
+      is_nil(message.poll_update_message)
+  end
+
+  defp reporting_message_secret(opts) do
+    case opts[:message_secret] do
+      <<_::binary-size(32)>> = secret ->
+        secret
+
+      fun when is_function(fun, 0) ->
+        case fun.() do
+          <<_::binary-size(32)>> = secret ->
+            secret
+
+          value ->
+            raise ArgumentError,
+                  "message_secret callback must return 32 bytes, got: #{inspect(value)}"
+        end
+
+      value when is_binary(value) ->
+        raise ArgumentError, "message_secret must be 32 bytes, got #{byte_size(value)}"
+
+      _ ->
+        :crypto.strong_rand_bytes(32)
+    end
   end
 
   defp jid_to_string(nil), do: nil

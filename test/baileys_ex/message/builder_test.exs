@@ -156,6 +156,21 @@ defmodule BaileysEx.Message.BuilderTest do
              })
   end
 
+  test "reaction keys omit from_me when the caller did not set it" do
+    assert %Message{
+             reaction_message: %ReactionMessage{
+               key: %MessageKey{from_me: nil}
+             }
+           } =
+             Builder.build(%{
+               react: %{
+                 key: %{id: "msg-1", remote_jid: "15551234567@s.whatsapp.net"},
+                 text: "🔥",
+                 sender_timestamp_ms: 1_710_000_123_456
+               }
+             })
+  end
+
   test "explicit reaction and pin timestamps bypass the injected clock" do
     timestamp_ms = 1_710_000_123_456
 
@@ -204,6 +219,22 @@ defmodule BaileysEx.Message.BuilderTest do
              Builder.build(%{
                poll: %{name: "Pick one", values: ["A", "B"], selectable_count: 1}
              })
+  end
+
+  test "reportable messages inject a deterministic message secret when requested" do
+    secret = <<33::256>>
+
+    assert %Message{
+             extended_text_message: %Message.ExtendedTextMessage{text: "hello"},
+             message_context_info: %MessageContextInfo{message_secret: ^secret}
+           } =
+             Builder.build(%{text: "hello"}, message_secret: secret)
+  end
+
+  test "plain text omits an empty context_info wrapper" do
+    assert %Message{
+             extended_text_message: %Message.ExtendedTextMessage{context_info: nil}
+           } = Builder.build(%{text: "hello"})
   end
 
   test "build/2 respects injected timestamps and explicit poll/event secrets" do

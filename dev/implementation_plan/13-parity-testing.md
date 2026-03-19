@@ -6,7 +6,7 @@ WhatsApp test accounts.
 
 **Depends on:** Phase 12 (Polish)
 **Blocks:** —
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
 **Internal-only note:** Nothing in this phase is part of the public library
 surface, Hex package, or `user_docs/`. Keep all implementation under `dev/`,
@@ -18,6 +18,19 @@ surface, Hex package, or `user_docs/`. Keep all implementation under `dev/`,
 - `dev/reference/Baileys-master/src/Signal/**/*.ts`
 - `dev/reference/Baileys-master/src/Socket/**/*.ts`
 - `dev/reference/Baileys-master/WAProto/index.js`
+
+**Progress note (2026-03-18):** Phase 13 is complete. The internal parity
+runner now covers protocol, auth, message, feature, syncd, and WAM surfaces
+through `dev/tools/run_baileys_reference.mts`, `test/support/parity/*`, and the
+dedicated `test/baileys_ex/parity/` suites. The fixture pipeline now writes a
+single internal dataset under `test/fixtures/parity/` via
+`dev/scripts/regenerate_parity_fixtures.sh` and `dev/tools/generate_parity_vectors.mts`.
+An opt-in internal workflow exists at `.github/workflows/parity-internal.yml`,
+and the manual live-validation skeleton now lives under `dev/parity/live/` with
+`dev/scripts/run_live_validation.exs`. During parity completion, the runtime was
+also brought closer to Baileys by fixing default `from_me` emission in reaction
+keys and by ensuring reportable built messages receive deterministic
+`message_secret` handling plus empty-context omission.
 
 ---
 
@@ -171,17 +184,17 @@ The harness should be env-driven, explicitly manual, and cover:
 
 ## Acceptance Criteria
 
-- [ ] All Phase 13 tooling lives only under `dev/`, `test/`, `test/support/`, and optional internal CI files
-- [ ] Offline parity runner executes the pinned Baileys reference and returns normalized outputs to ExUnit
-- [ ] Existing Baileys-generated media, Signal, syncd, and WAM vectors are folded into a single internal parity program
-- [ ] Dedicated `:parity` test suites cover representative protocol, auth, messaging, feature, syncd, and WAM surfaces
-- [ ] For the covered surfaces, the parity harness asserts the same observable behavior Baileys produces for the same inputs: outputs, parsed values, emitted events, deterministic side effects, and error semantics
-- [ ] Offline parity assertions derive expectations from Baileys or committed Baileys-generated fixtures, not duplicated Elixir logic
-- [ ] Offline parity tests are contributor-only and not required for end users or Hex consumers
-- [ ] Internal CI can run the offline parity suite on demand without changing the public delivery gates
-- [ ] A manual live-validation harness exists for dedicated test accounts, with env-driven setup and a written checklist
-- [ ] Phase completion does not require live-account access, but the live harness is ready when accounts exist
-- [ ] `PROGRESS.md`, `00-overview.md`, and internal parity docs clearly mark this phase as non-shipping internal tooling
+- [x] All Phase 13 tooling lives only under `dev/`, `test/`, `test/support/`, and optional internal CI files
+- [x] Offline parity runner executes the pinned Baileys reference and returns normalized outputs to ExUnit
+- [x] Existing Baileys-generated media, Signal, syncd, and WAM vectors are folded into a single internal parity program
+- [x] Dedicated `:parity` test suites cover representative protocol, auth, messaging, feature, syncd, and WAM surfaces
+- [x] For the covered surfaces, the parity harness asserts the same observable behavior Baileys produces for the same inputs: outputs, parsed values, emitted events, deterministic side effects, and error semantics
+- [x] Offline parity assertions derive expectations from Baileys or committed Baileys-generated fixtures, not duplicated Elixir logic
+- [x] Offline parity tests are contributor-only and not required for end users or Hex consumers
+- [x] Internal CI can run the offline parity suite on demand without changing the public delivery gates
+- [x] A manual live-validation harness exists for dedicated test accounts, with env-driven setup and a written checklist
+- [x] Phase completion does not require live-account access, but the live harness is ready when accounts exist
+- [x] `PROGRESS.md`, `00-overview.md`, and internal parity docs clearly mark this phase as non-shipping internal tooling
 
 ## Files Created/Modified
 
@@ -190,10 +203,14 @@ The harness should be env-driven, explicitly manual, and cover:
 - `dev/parity/live/README.md`
 - `dev/parity/live/checklist.md`
 - `dev/tools/run_baileys_reference.mts`
+- `dev/tools/generate_signal_fixtures.mts`
 - `dev/tools/generate_parity_vectors.mts`
 - `dev/scripts/run_parity_suite.sh`
+- `dev/scripts/generate_syncd_vectors.mjs`
+- `dev/scripts/generate_wam_definitions.mjs`
 - `dev/scripts/regenerate_parity_fixtures.sh`
 - `dev/scripts/run_live_validation.exs`
+- `test/test_helper.exs`
 - `test/support/parity/node_bridge.ex`
 - `test/support/parity/case.ex`
 - `test/baileys_ex/parity/**/*_test.exs`

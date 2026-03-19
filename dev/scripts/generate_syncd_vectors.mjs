@@ -5,6 +5,7 @@
 
 import { createHmac, hkdf as nodeHkdf } from 'node:crypto'
 import { createHash } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
 
 // ============================================================================
 // 1. HKDF Key Expansion vectors
@@ -230,7 +231,7 @@ async function generateProtoVectors() {
 // Main
 // ============================================================================
 
-async function main() {
+export async function generateSyncdVectors() {
   const hkdf = await generateHkdfVectors()
   const mac = generateMacVectors(hkdf)
   const ltHash = generateLtHashVectors()
@@ -242,14 +243,19 @@ async function main() {
     console.error('Proto vector generation failed (WAProto not loadable):', e.message)
   }
 
-  const vectors = {
+  return {
     hkdf,
     mac,
     lt_hash: ltHash,
     proto: protoVectors,
   }
+}
 
+async function main() {
+  const vectors = await generateSyncdVectors()
   console.log(JSON.stringify(vectors, null, 2))
 }
 
-main().catch(console.error)
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(console.error)
+}

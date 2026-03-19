@@ -274,6 +274,8 @@ Phase 12: Polish ─────────────────────
 Phase 13: Internal Parity Validation ────────────────────────────
   Dev-only Baileys parity tooling: offline Node-vs-Elixir checks plus a
   manual live-validation harness for dedicated test accounts
+  Non-shipping internal contributor tooling only
+  Current state: complete
   Depends on: Phase 12 (Polish)
 ```
 

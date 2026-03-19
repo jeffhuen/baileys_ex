@@ -189,12 +189,12 @@ lib/baileys_ex/
 
 ## Acceptance Criteria
 
-- [ ] `mix deps.get` succeeds
-- [ ] `mix compile` succeeds (NIF stubs load with nif_error)
-- [ ] `mix test` passes (basic smoke test)
-- [ ] Rust crate compiles: `cd native/baileys_nif && cargo check`
-- [ ] Application starts: `iex -S mix` launches supervision tree
-- [ ] `Registry`, `DynamicSupervisor`, `TaskSupervisor` visible in observer
+- [x] `mix deps.get` succeeds
+- [x] `mix compile` succeeds (NIF stubs load with nif_error)
+- [x] `mix test` passes (basic smoke test)
+- [x] Rust crate compiles: `cd native/baileys_nif && cargo check`
+- [x] Application starts: `iex -S mix` launches supervision tree
+- [x] `Registry`, `DynamicSupervisor`, `TaskSupervisor` visible in observer
 
 ## Files Created/Modified
 

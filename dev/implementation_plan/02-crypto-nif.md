@@ -212,13 +212,13 @@ end
 
 ## Acceptance Criteria
 
-- [ ] All crypto functions work with Erlang `:crypto` (no NIF dependency)
-- [ ] NIST/RFC test vectors pass for every algorithm
-- [ ] HKDF implementation matches RFC 5869 test vectors
-- [ ] Property-based roundtrip tests pass
-- [ ] Typespecs on all public functions
-- [ ] `mix test test/baileys_ex/crypto_test.exs` passes
-- [ ] Media key expansion matches Baileys output for same input
+- [x] All crypto functions work with Erlang `:crypto` (no NIF dependency)
+- [x] NIST/RFC test vectors pass for every algorithm
+- [x] HKDF implementation matches RFC 5869 test vectors
+- [x] Property-based roundtrip tests pass
+- [x] Typespecs on all public functions
+- [x] `mix test test/baileys_ex/crypto_test.exs` passes
+- [x] Media key expansion matches Baileys output for same input
 
 ## Files Created/Modified
 

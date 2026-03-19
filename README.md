@@ -1,16 +1,103 @@
 # BaileysEx
 
-Behavior-accurate Elixir port of [Baileys 7.00rc9](https://github.com/WhiskeySockets/Baileys), the WhatsApp Web API library.
+[![Hex.pm](https://img.shields.io/hexpm/v/baileys_ex.svg)](https://hex.pm/packages/baileys_ex)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/baileys_ex)
+[![License](https://img.shields.io/hexpm/l/baileys_ex.svg)](https://github.com/jeffhuen/baileys_ex/blob/main/LICENSE)
 
-BaileysEx follows the Baileys wire protocol and feature surface closely while exposing an Elixir-first runtime: supervisors, ETS-backed stores, explicit transports, and typed public modules.
+**WhatsApp Web API client for Elixir** — a behaviour-accurate port of
+[Baileys](https://github.com/WhiskeySockets/Baileys) that brings the full
+WhatsApp multi-device protocol to the BEAM.
 
-## Installation
+BaileysEx connects directly to WhatsApp's WebSocket-based protocol. No browser
+automation, no headless Chrome, no external Node.js sidecar. Just a supervised
+Elixir process tree that handles the Noise handshake, Signal Protocol encryption,
+binary XMPP framing, and the complete WhatsApp feature surface — natively.
 
-Prerequisites:
+> **Note:** This library communicates with WhatsApp's servers using a reverse-engineered
+> protocol. It is not affiliated with, authorized by, or endorsed by WhatsApp or Meta.
+> Use responsibly and in accordance with WhatsApp's Terms of Service.
 
-- Elixir 1.19+
-- OTP 28
-- Rust toolchain available on the machine that runs `mix compile`
+## Features
+
+### Authentication
+
+- **QR code pairing** — scan from WhatsApp mobile to link a new device
+- **Phone number pairing** — enter a numeric code instead of scanning
+- **Persistent sessions** — save credentials to disk and reconnect without re-pairing
+- **Multi-device protocol** — operates as a linked companion device
+
+### Messaging
+
+- **End-to-end encryption** via the Signal Protocol (pure Elixir implementation)
+- **27+ message types** — text, images, video, audio, documents, stickers, contacts, location, polls, reactions, forwards, edits, deletes, and more
+- **Quoted replies and mentions** — reply to and reference specific messages
+- **Delivery tracking** — delivery receipts, read receipts, played receipts
+- **Link previews** — attach URL preview metadata to outbound messages
+
+### Media
+
+- **Upload and download** — images, video, documents, audio, stickers, GIFs, voice notes
+- **Streaming architecture** — encrypted media with AES-256-CBC + HMAC, never loads entire files into memory
+- **Automatic key management** — HKDF-derived media keys with type-specific info strings
+- **Stale URL refresh** — re-request expired media download URLs from paired devices
+
+### Groups and Communities
+
+- **Full group lifecycle** — create, update subject/description, leave, delete
+- **Participant management** — add, remove, promote, demote
+- **Invite flows** — v3/v4 invite codes, join-by-link, join approval
+- **Community support** — create communities, link/unlink subgroups, manage metadata
+- **Group settings** — ephemeral messages, announcement mode, membership approval
+
+### Presence and Status
+
+- **Online/offline/typing indicators** — send and subscribe to presence updates
+- **Profile management** — get/set profile pictures, push names, status text
+- **Contact validation** — check which phone numbers are registered on WhatsApp
+- **Business profiles** — fetch and manage business profile data, catalogs, collections
+
+### Newsletters
+
+- **Subscribe/unsubscribe** — follow and unfollow WhatsApp channels
+- **Create and manage** — create, update, and delete newsletters
+- **Interact** — mute, react, and fetch newsletter content
+
+### App State Sync
+
+- **Cross-device sync** — archive, mute, pin, star, and read state synced across linked devices
+- **LTHash integrity** — rolling hash verification detects drift or tampering before applying patches
+- **Full Syncd codec** — encode and decode WhatsApp's versioned app state patch format
+
+### Analytics
+
+- **WAM encoding** — build and send WhatsApp Analytics and Metrics buffers for Baileys wire parity
+
+## Why Elixir?
+
+BaileysEx isn't just a translation — it's a reimagining of Baileys for a runtime
+built for exactly this kind of work:
+
+| Baileys (Node.js) | BaileysEx (Elixir/OTP) |
+|----|-----|
+| Callbacks and Promises | Supervised process trees with `:rest_for_one` restart strategy |
+| `async-mutex` library | BEAM processes — concurrency is the runtime, not a library |
+| Manual reconnect logic | `:gen_statem` state machine with automatic reconnection |
+| `node-cache` / `lru-cache` | ETS tables — concurrent, lock-free, built into the VM |
+| `pino` logging | `Logger` with structured metadata and configurable backends |
+| Single-threaded event loop | Preemptive scheduling across all available cores |
+| Process crash = app crash | Supervisor restarts failed children — let it crash |
+
+**Crypto is native too.** All cryptographic primitives (AES, HMAC, SHA, PBKDF2,
+Curve25519, Ed25519) use Erlang's built-in `:crypto` module — no external C/Rust
+for standard operations. Rust NIFs are used only for the Noise Protocol framework
+(`snow`) and XEdDSA signing (`curve25519-dalek`), where no Erlang/Elixir
+equivalent exists.
+
+## Quick Start
+
+### Installation
+
+Add `baileys_ex` to your `mix.exs` dependencies:
 
 ```elixir
 def deps do
@@ -20,140 +107,125 @@ def deps do
 end
 ```
 
-This package is currently published as an alpha prerelease, so the prerelease
-version must be requested explicitly.
+**Requirements:** Elixir 1.19+, OTP 28, Rust toolchain (for NIF compilation).
 
-## Quick Start
+### Connect and pair
 
 ```elixir
 alias BaileysEx.Auth.FilePersistence
 alias BaileysEx.Connection.Transport.MintWebSocket
 
-auth_path = "tmp/baileys_auth"
+# Load or create auth state
+{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state("tmp/baileys_auth")
+
 parent = self()
 
-{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state(auth_path)
-
+# Start the connection
 {:ok, connection} =
   BaileysEx.connect(
     persisted_auth.state,
     Keyword.merge(persisted_auth.connect_opts, [
       transport: {MintWebSocket, []},
       on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
-      on_connection: fn update ->
-        IO.inspect(update, label: "connection")
-        send(parent, {:connection_update, update})
-      end
+      on_connection: fn update -> send(parent, {:connection_update, update}) end
     ])
   )
 
-_unsubscribe =
-  BaileysEx.subscribe_raw(connection, fn events ->
-    if Map.has_key?(events, :creds_update) do
-      {:ok, latest_auth_state} = BaileysEx.auth_state(connection)
-      :ok = persisted_auth.save_creds.(latest_auth_state)
-    end
-  end)
+# Persist credentials on update
+BaileysEx.subscribe_raw(connection, fn events ->
+  if Map.has_key?(events, :creds_update) do
+    {:ok, latest} = BaileysEx.auth_state(connection)
+    :ok = persisted_auth.save_creds.(latest)
+  end
+end)
 
+# Wait for the connection to open
 receive do
-  {:connection_update, %{connection: :open}} -> :ok
+  {:connection_update, %{connection: :open}} -> :connected!
 after
-  30_000 -> raise "connection did not open"
+  30_000 -> raise "timed out waiting for connection"
 end
-
-unsubscribe =
-  BaileysEx.subscribe(connection, fn
-    {:message, message} -> IO.inspect(message, label: "incoming")
-    {:connection, update} -> IO.inspect(update, label: "connection")
-    _other -> :ok
-  end)
-
-unsubscribe.()
-:ok = BaileysEx.disconnect(connection)
 ```
 
-Outbound `send_message/4` and `send_status/3` use the built-in production Signal
-adapter by default when the auth state includes `signed_identity_key`,
-`signed_pre_key`, and `registration_id`. Use `:signal_repository` or
-`:signal_repository_adapter` only when you need to override that default.
+### Send a message
 
-## Public API
+```elixir
+{:ok, _sent} =
+  BaileysEx.send_message(connection, "15551234567@s.whatsapp.net", %{
+    text: "Hello from BaileysEx!"
+  })
+```
 
-Top-level facade:
+### Listen for incoming messages
 
-- `BaileysEx.connect/2`
-- `BaileysEx.disconnect/1`
-- `BaileysEx.subscribe/2`
-- `BaileysEx.subscribe_raw/2`
-- `BaileysEx.send_message/4`
-- `BaileysEx.send_status/3`
-- `BaileysEx.send_wam_buffer/2`
-- `BaileysEx.request_pairing_code/3`
-- `BaileysEx.download_media/2`
-- `BaileysEx.download_media_to_file/3`
-- `BaileysEx.update_media_message/3`
+```elixir
+BaileysEx.subscribe(connection, fn
+  {:message, msg} -> IO.inspect(msg, label: "incoming")
+  {:connection, update} -> IO.inspect(update, label: "connection")
+  _other -> :ok
+end)
+```
 
-Major feature wrappers:
+### Send media
 
-- Chat/App State: archive, mute, pin, star, read, clear, delete, delete-for-me, and link-preview privacy wrappers
-- Groups: create, metadata, leave, participant/admin updates, invite flows, join approval, and settings wrappers
-- Communities: create, metadata, subgroup/link management, invite flows, join approval, and settings wrappers
-- Presence: `send_presence_update/4`, `presence_subscribe/3`
-- Profile & Queries: picture/status helpers plus `on_whatsapp/3`, `fetch_status/3`, `business_profile/3`, and profile mutation wrappers
-- Privacy: privacy settings, blocklist, and the current privacy mutation/query surface
-- Calls: `reject_call/4`, `create_call_link/4`
-- Business: business profile, catalog, cover photo, collections, product, and order wrappers
-- Newsletters: metadata, follow/unfollow, create/update/delete, mute/react, fetch, and owner-management wrappers
+```elixir
+{:ok, _sent} =
+  BaileysEx.send_message(connection, "15551234567@s.whatsapp.net", %{
+    image: {:file, "photo.jpg"},
+    caption: "Sent from Elixir"
+  })
+```
 
-Advanced callers can use:
+## Documentation
 
-- `BaileysEx.queryable/1` to obtain the `{socket_module, socket_pid}` transport tuple expected by lower-level feature modules
-- `BaileysEx.event_emitter/1` to access the raw emitter
-- `BaileysEx.signal_store/1` and `BaileysEx.auth_state/1` for persistence and runtime inspection
-- `BaileysEx.WAM` to build ordered WAM analytics buffers before sending them
+Full guides and API reference are available on [HexDocs](https://hexdocs.pm/baileys_ex).
 
-## Telemetry
+| Section | What you'll learn |
+|---------|-------------------|
+| [Installation](https://hexdocs.pm/baileys_ex/installation.html) | Prerequisites, dependency setup, compilation |
+| [First Connection](https://hexdocs.pm/baileys_ex/first-connection.html) | QR pairing, phone pairing, credential persistence |
+| [Send Messages](https://hexdocs.pm/baileys_ex/messages.html) | Text, replies, reactions, polls, forwards, edits |
+| [Media](https://hexdocs.pm/baileys_ex/media.html) | Upload images/video/docs, download, stale URL refresh |
+| [Groups](https://hexdocs.pm/baileys_ex/groups.html) | Create, manage participants, invite flows, communities |
+| [Events](https://hexdocs.pm/baileys_ex/events-and-subscriptions.html) | Subscribe to connection, message, and presence events |
+| [Authentication](https://hexdocs.pm/baileys_ex/authentication-and-persistence.html) | Custom credential storage, Signal key management |
+| [Configuration](https://hexdocs.pm/baileys_ex/configuration.html) | All connection and runtime options |
+| [Event Catalog](https://hexdocs.pm/baileys_ex/event-catalog.html) | Every event type with payload shapes |
+| [Message Types](https://hexdocs.pm/baileys_ex/message-types.html) | Complete message payload reference |
 
-BaileysEx emits telemetry under the `[:baileys_ex]` prefix.
+## Example
 
-Implemented event families:
-
-- `[:baileys_ex, :connection, :start, :start | :stop | :exception]`
-- `[:baileys_ex, :connection, :stop, :start | :stop | :exception]`
-- `[:baileys_ex, :connection, :reconnect]`
-- `[:baileys_ex, :message, :send, :start | :stop | :exception]`
-- `[:baileys_ex, :message, :receive]`
-- `[:baileys_ex, :media, :upload, :start | :stop | :exception]`
-- `[:baileys_ex, :media, :download, :start | :stop | :exception]`
-- `[:baileys_ex, :nif, :signal, :encrypt | :decrypt]`
-- `[:baileys_ex, :nif, :noise, :encrypt | :decrypt]`
-
-## Guides
-
-- [Installation](user_docs/getting-started/installation.md)
-- [First Connection](user_docs/getting-started/first-connection.md)
-- [Send Your First Message](user_docs/getting-started/sending-your-first-message.md)
-- [Messages](user_docs/guides/messages.md)
-- [Media](user_docs/guides/media.md)
-- [Groups and Communities](user_docs/guides/groups.md)
-- [Presence](user_docs/guides/presence.md)
-- [Events and Subscriptions](user_docs/guides/events-and-subscriptions.md)
-- [Authentication and Persistence](user_docs/guides/authentication-and-persistence.md)
-- [Advanced Features](user_docs/guides/advanced-features.md)
-- [Manage App State Sync](user_docs/guides/manage-app-state-sync.md)
-
-## Example App
-
-An end-to-end echo bot example is included at [`examples/echo_bot.exs`](examples/echo_bot.exs) with a companion docs page at [`examples/echo-bot.md`](examples/echo-bot.md).
-
-Show usage:
+A complete echo bot is included at [`examples/echo_bot.exs`](examples/echo_bot.exs):
 
 ```bash
 mix run examples/echo_bot.exs -- --help
 ```
 
-## Reference
+See the [Echo Bot guide](https://hexdocs.pm/baileys_ex/echo-bot.html) for a
+walkthrough.
 
-Baileys is the spec. BaileysEx tracks the Baileys `7.00rc9` behavior surface as its upstream reference.
+## Telemetry
 
-When BaileysEx behavior and a design instinct disagree, prefer Baileys.
+BaileysEx emits [Telemetry](https://hexdocs.pm/telemetry) events under the
+`[:baileys_ex]` prefix — connection lifecycle, message send/receive, media
+upload/download, and NIF operations. Attach your handlers for dashboards,
+alerting, or tracing.
+
+## Status
+
+BaileysEx is in **alpha**. The API surface is stabilizing but may change before
+1.0. The library tracks Baileys `7.00rc9` as its upstream reference for wire
+behaviour and feature scope.
+
+## Acknowledgements
+
+- [Baileys](https://github.com/WhiskeySockets/Baileys) — the TypeScript original
+  that defines the protocol behaviour BaileysEx implements
+- [whatsmeow](https://github.com/tulir/whatsmeow) — Go implementation, referenced
+  for protocol details
+- [whatsapp-rust](https://github.com/nicksul/whatsapp-rs) — Rust implementation,
+  referenced for documentation patterns
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.

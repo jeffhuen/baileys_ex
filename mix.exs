@@ -58,10 +58,23 @@ defmodule BaileysEx.MixProject do
       main: "readme",
       warn_missing: [docs: true, moduledocs: true],
       groups_for_modules: [
-        "Internal Modules": ~r/.*/
+        "Public API": [BaileysEx],
+        Authentication: ~r/^BaileysEx\.Auth/,
+        Connection: ~r/^BaileysEx\.Connection/,
+        Features: ~r/^BaileysEx\.Feature/,
+        Messaging: ~r/^BaileysEx\.Message/,
+        Media: ~r/^BaileysEx\.Media/,
+        "Signal Protocol": ~r/^BaileysEx\.Signal/,
+        Protocol: ~r/^BaileysEx\.Protocol/,
+        "App State Sync": ~r/^BaileysEx\.Syncd/,
+        "Native NIFs": ~r/^BaileysEx\.Native/,
+        Analytics: ~r/^BaileysEx\.WAM/,
+        Telemetry: [BaileysEx.Telemetry],
+        Utilities: [BaileysEx.Crypto, BaileysEx.Util.LTHash]
       ],
       extras: [
         {"README.md", [title: "BaileysEx"]},
+        {"CHANGELOG.md", [title: "Changelog"]},
         {"user_docs/glossary.md", [title: "Glossary"]},
         {"user_docs/getting-started/installation.md", [title: "Installation"]},
         {"user_docs/getting-started/first-connection.md", [title: "First Connection"]},
@@ -91,7 +104,7 @@ defmodule BaileysEx.MixProject do
         {"examples/echo-bot.md", [title: "Echo Bot Example"]}
       ],
       groups_for_extras: [
-        {"Overview", ["README.md", "user_docs/glossary.md"]},
+        {"Overview", ["README.md", "CHANGELOG.md", "user_docs/glossary.md"]},
         {"Getting Started", ~r/user_docs\/getting-started\//},
         {"Guides", ~r/user_docs\/guides\//},
         {"Reference", ~r/user_docs\/reference\//},
@@ -102,7 +115,11 @@ defmodule BaileysEx.MixProject do
   end
 
   defp description do
-    "Behavior-accurate Elixir port of Baileys 7.00rc9 for WhatsApp Web automation"
+    """
+    WhatsApp Web API client for Elixir. Full-featured port of Baileys with \
+    end-to-end Signal Protocol encryption, multi-device support, groups, communities, \
+    media, newsletters, and native BEAM fault tolerance.\
+    """
   end
 
   defp package do
@@ -112,7 +129,8 @@ defmodule BaileysEx.MixProject do
       files: package_files(),
       links: %{
         "GitHub" => "https://github.com/jeffhuen/baileys_ex",
-        "Baileys Reference" => "https://github.com/WhiskeySockets/Baileys"
+        "Changelog" => "https://github.com/jeffhuen/baileys_ex/blob/main/CHANGELOG.md",
+        "Baileys (upstream reference)" => "https://github.com/WhiskeySockets/Baileys"
       }
     ]
   end
@@ -120,6 +138,7 @@ defmodule BaileysEx.MixProject do
   defp package_files do
     [
       ".formatter.exs",
+      "CHANGELOG.md",
       "LICENSE",
       "README.md",
       "examples/echo_bot.exs",

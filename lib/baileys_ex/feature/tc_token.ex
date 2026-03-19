@@ -154,16 +154,14 @@ defmodule BaileysEx.Feature.TcToken do
   end
 
   defp direct_get_token(%Store{} = store, jid) do
-    try do
-      case Store.get(store, :tctoken, [jid]) do
-        %{^jid => %{token: token}} when is_binary(token) -> {:ok, token}
-        _ -> :error
-      end
-    rescue
-      ArgumentError -> :error
-    catch
-      :exit, _reason -> :error
+    case Store.get(store, :tctoken, [jid]) do
+      %{^jid => %{token: token}} when is_binary(token) -> {:ok, token}
+      _ -> :error
     end
+  rescue
+    ArgumentError -> :error
+  catch
+    :exit, _reason -> :error
   end
 
   defp normalized_jid(jid) do

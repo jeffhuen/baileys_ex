@@ -118,28 +118,7 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
         handle_responses(%{state | response_headers: headers}, rest, events)
 
       {:done, request_ref} when request_ref == state.request_ref ->
-        case state.adapter.websocket_new(
-               state.conn,
-               state.request_ref,
-               state.status,
-               state.response_headers
-             ) do
-          {:ok, conn, websocket} ->
-            case flush_upgrade_buffer(%{state | conn: conn, websocket: websocket, phase: :open}) do
-              {:ok, state, buffered_events} ->
-                handle_responses(
-                  state,
-                  rest,
-                  Enum.reverse(buffered_events, [:connected | events])
-                )
-
-              {:error, state, reason} ->
-                {:error, state, reason}
-            end
-
-          {:error, conn, reason} ->
-            {:error, %{state | conn: conn}, reason}
-        end
+        complete_upgrade(state, rest, events)
 
       _other ->
         handle_responses(state, rest, events)
@@ -160,6 +139,35 @@ defmodule BaileysEx.Connection.Transport.MintWebSocket do
 
       _other ->
         handle_responses(state, rest, events)
+    end
+  end
+
+  defp complete_upgrade(state, rest, events) do
+    case state.adapter.websocket_new(
+           state.conn,
+           state.request_ref,
+           state.status,
+           state.response_headers
+         ) do
+      {:ok, conn, websocket} ->
+        handle_upgraded(%{state | conn: conn, websocket: websocket, phase: :open}, rest, events)
+
+      {:error, conn, reason} ->
+        {:error, %{state | conn: conn}, reason}
+    end
+  end
+
+  defp handle_upgraded(state, rest, events) do
+    case flush_upgrade_buffer(state) do
+      {:ok, state, buffered_events} ->
+        handle_responses(
+          state,
+          rest,
+          Enum.reverse(buffered_events, [:connected | events])
+        )
+
+      {:error, state, reason} ->
+        {:error, state, reason}
     end
   end
 

@@ -11,12 +11,12 @@ defmodule BaileysEx.Connection.Socket do
 
   require Logger
 
-  alias BaileysEx.BinaryNode
   alias BaileysEx.Auth.ConnectionValidator
   alias BaileysEx.Auth.Pairing
   alias BaileysEx.Auth.Phone
   alias BaileysEx.Auth.QR
   alias BaileysEx.Auth.State, as: AuthState
+  alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Transport
@@ -719,29 +719,33 @@ defmodule BaileysEx.Connection.Socket do
   defp apply_protocol_frame(current_state, frame, data) do
     case BinaryNodeUtil.decode(frame) do
       {:ok, node} ->
-        require Logger
-
-        child_tags =
-          case node.content do
-            [_ | _] = children ->
-              Enum.map_join(children, ",", fn
-                %BinaryNode{tag: t} -> t
-                _ -> "?"
-              end)
-
-            _ ->
-              ""
-          end
-
-        Logger.warning(
-          "[Wire] RECV tag=#{node.tag} id=#{node.attrs["id"]} children=[#{child_tags}] state=#{current_state}"
-        )
-
+        log_recv_node(node, current_state)
         apply_binary_node(current_state, node, data)
 
       {:error, reason} ->
         {:error, reason, data}
     end
+  end
+
+  defp log_recv_node(node, current_state) do
+    require Logger
+
+    child_tags =
+      case node.content do
+        [_ | _] = children ->
+          Enum.map_join(children, ",", fn
+            %BinaryNode{tag: t} -> t
+            _ -> "?"
+          end)
+
+        _ ->
+          ""
+      end
+
+    Logger.warning(
+      "[Wire] RECV tag=#{node.tag} id=#{node.attrs["id"]}" <>
+        " children=[#{child_tags}] state=#{current_state}"
+    )
   end
 
   defp apply_binary_node(:authenticating, %BinaryNode{tag: "success", attrs: attrs}, data) do

@@ -5,6 +5,7 @@ defmodule BaileysEx.Connection.Supervisor do
 
   use Elixir.Supervisor
 
+  alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.Coordinator
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
@@ -194,7 +195,7 @@ defmodule BaileysEx.Connection.Supervisor do
   @impl true
   def init(opts) do
     instance_id = Keyword.get(opts, :name, make_ref())
-    config = Keyword.get(opts, :config, BaileysEx.Connection.Config.new())
+    config = Keyword.get(opts, :config, Config.new())
     socket_module = Keyword.get(opts, :socket_module, Socket)
     signal_store_module = Keyword.get(opts, :signal_store_module, SignalStoreMemory)
     signal_store_opts = Keyword.get(opts, :signal_store_opts, [])

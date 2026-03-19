@@ -10,6 +10,8 @@ defmodule BaileysEx.Crypto do
   All other operations delegate to `:crypto` (backed by OpenSSL/LibreSSL).
   """
 
+  alias BaileysEx.Media.Types, as: MediaTypes
+
   # -- Types --
 
   @type key_pair :: %{public: binary(), private: binary()}
@@ -269,9 +271,9 @@ defmodule BaileysEx.Crypto do
   Returns a map with `:iv` (16 bytes), `:cipher_key` (32 bytes),
   `:mac_key` (32 bytes), and `:ref_key` (32 bytes).
   """
-  @spec expand_media_key(<<_::256>>, BaileysEx.Media.Types.media_type()) :: media_keys()
+  @spec expand_media_key(<<_::256>>, MediaTypes.media_type()) :: media_keys()
   def expand_media_key(media_key, media_type) do
-    info = BaileysEx.Media.Types.hkdf_info(media_type)
+    info = MediaTypes.hkdf_info(media_type)
     {:ok, expanded} = hkdf(media_key, info, 112)
 
     <<iv::binary-16, cipher_key::binary-32, mac_key::binary-32, ref_key::binary-32>> = expanded

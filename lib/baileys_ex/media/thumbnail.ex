@@ -167,7 +167,7 @@ defmodule BaileysEx.Media.Thumbnail do
   end
 
   defp image_from_binary(image_module, image_data) do
-    case apply(image_module, :from_binary, [image_data]) do
+    case image_module.from_binary(image_data) do
       {:ok, image} -> {:ok, image}
       {:error, reason} -> {:error, {:image_processing_failed, reason}}
       other -> {:error, {:image_processing_failed, other}}
@@ -193,7 +193,7 @@ defmodule BaileysEx.Media.Thumbnail do
   end
 
   defp image_write(image_module, image) do
-    case apply(image_module, :write, [image, :memory, [suffix: ".jpg", quality: 50]]) do
+    case image_module.write(image, :memory, suffix: ".jpg", quality: 50) do
       {:ok, jpeg_thumbnail} when is_binary(jpeg_thumbnail) -> {:ok, jpeg_thumbnail}
       {:error, reason} -> {:error, {:image_processing_failed, reason}}
       other -> {:error, {:image_processing_failed, other}}

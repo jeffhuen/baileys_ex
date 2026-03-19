@@ -25,11 +25,11 @@ defmodule BaileysEx.Feature.AppState do
           required(:operation) => operation()
         }
 
-  alias BaileysEx.Connection.Store
-  alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.BinaryNode
-  alias BaileysEx.Protocol.Proto.Syncd
+  alias BaileysEx.Connection.EventEmitter
+  alias BaileysEx.Connection.Store
   alias BaileysEx.Protocol.JID
+  alias BaileysEx.Protocol.Proto.Syncd
   alias BaileysEx.Signal.Store, as: SignalStore
   alias BaileysEx.Syncd.ActionMapper
   alias BaileysEx.Syncd.Codec

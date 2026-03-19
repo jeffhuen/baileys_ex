@@ -228,4 +228,4 @@ behaviour and feature scope.
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT

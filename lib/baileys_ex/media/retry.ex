@@ -45,8 +45,13 @@ defmodule BaileysEx.Media.Retry do
   @typedoc false
   @type decrypted_media_update :: MediaRetryNotification.t()
 
+  @typedoc """
+  Opaque WAProto `WebMessageInfo` struct used by media retry helpers.
+  """
+  @type web_message_info :: struct()
+
   @typedoc false
-  @type wa_message :: Message.t()
+  @type wa_message :: struct()
 
   @doc """
   Build the Baileys-style `server-error` receipt requesting media re-upload.
@@ -127,9 +132,9 @@ defmodule BaileysEx.Media.Retry do
   @spec update_media_message(
           GenServer.server() | term(),
           GenServer.server(),
-          WebMessageInfo.t(),
+          web_message_info(),
           keyword()
-        ) :: {:ok, WebMessageInfo.t()} | {:error, term()}
+        ) :: {:ok, web_message_info()} | {:error, term()}
   def update_media_message(socket, event_emitter, %WebMessageInfo{} = wa_message, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
 
@@ -202,7 +207,7 @@ defmodule BaileysEx.Media.Retry do
 
   Returns `{:ok, media_content}` or `{:error, :not_a_media_message}`.
   """
-  @spec assert_media_content(Message.t() | nil) ::
+  @spec assert_media_content(wa_message() | nil) ::
           {:ok, struct()} | {:error, :not_a_media_message}
   def assert_media_content(%Message{} = msg) do
     content =

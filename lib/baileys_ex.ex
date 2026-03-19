@@ -76,6 +76,11 @@ defmodule BaileysEx do
   @type connection :: GenServer.server()
   @type unsubscribe_fun :: (-> :ok)
 
+  @typedoc """
+  Opaque WAProto `WebMessageInfo` struct accepted by media download and retry helpers.
+  """
+  @type web_message_info :: struct()
+
   @doc """
   Start a connection runtime and optionally attach convenience callbacks.
 
@@ -274,8 +279,8 @@ defmodule BaileysEx do
     * `:timeout` — milliseconds to wait for the media update event (default 10_000)
 
   """
-  @spec update_media_message(connection(), WebMessageInfo.t(), keyword()) ::
-          {:ok, WebMessageInfo.t()} | {:error, term()}
+  @spec update_media_message(connection(), web_message_info(), keyword()) ::
+          {:ok, web_message_info()} | {:error, term()}
   def update_media_message(connection, %WebMessageInfo{} = message, opts \\ [])
       when is_list(opts) do
     with {:ok, queryable} <- queryable(connection),

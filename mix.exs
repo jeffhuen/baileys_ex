@@ -75,6 +75,7 @@ defmodule BaileysEx.MixProject do
       extras: [
         {"README.md", [title: "BaileysEx"]},
         {"CHANGELOG.md", [title: "Changelog"]},
+        {"LICENSE", [title: "License"]},
         {"user_docs/glossary.md", [title: "Glossary"]},
         {"user_docs/getting-started/installation.md", [title: "Installation"]},
         {"user_docs/getting-started/first-connection.md", [title: "First Connection"]},
@@ -104,7 +105,7 @@ defmodule BaileysEx.MixProject do
         {"examples/echo-bot.md", [title: "Echo Bot Example"]}
       ],
       groups_for_extras: [
-        {"Overview", ["README.md", "CHANGELOG.md", "user_docs/glossary.md"]},
+        {"Overview", ["README.md", "CHANGELOG.md", "LICENSE", "user_docs/glossary.md"]},
         {"Getting Started", ~r/user_docs\/getting-started\//},
         {"Guides", ~r/user_docs\/guides\//},
         {"Reference", ~r/user_docs\/reference\//},

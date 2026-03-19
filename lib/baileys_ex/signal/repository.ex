@@ -584,7 +584,7 @@ defmodule BaileysEx.Signal.Repository do
 
   defp sender_key_name(group, jid) do
     with {:ok, address} <- Address.from_jid(jid) do
-      {:ok, BaileysEx.Signal.Group.SenderKeyName.new(group, address)}
+      {:ok, SenderKeyName.new(group, address)}
     end
   end
 end

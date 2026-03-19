@@ -6,8 +6,8 @@ defmodule BaileysEx.Message.Receiver do
   require Logger
 
   alias BaileysEx.BinaryNode
-  alias BaileysEx.Connection.Store, as: ConnectionStore
   alias BaileysEx.Connection.EventEmitter
+  alias BaileysEx.Connection.Store, as: ConnectionStore
   alias BaileysEx.Message.Decode
   alias BaileysEx.Message.HistorySync
   alias BaileysEx.Message.Normalizer
@@ -19,8 +19,8 @@ defmodule BaileysEx.Message.Receiver do
   alias BaileysEx.Protocol.Proto.VerifiedNameCertificate
   alias BaileysEx.Protocol.Proto.VerifiedNameCertificate.Details, as: VerifiedNameDetails
   alias BaileysEx.Protocol.Proto.WebMessageInfo
-  alias BaileysEx.Signal.Store
   alias BaileysEx.Signal.Repository
+  alias BaileysEx.Signal.Store
   alias BaileysEx.Telemetry
 
   @type context :: %{
@@ -254,9 +254,8 @@ defmodule BaileysEx.Message.Receiver do
                  envelope.participant,
                  [attrs["id"]],
                  receipt_type(attrs["category"])
-               ),
-             :ok <- maybe_send_history_sync_receipt(fun, attrs["id"], envelope, received_message) do
-          :ok
+               ) do
+          maybe_send_history_sync_receipt(fun, attrs["id"], envelope, received_message)
         end
 
       _other ->

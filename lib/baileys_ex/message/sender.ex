@@ -4,18 +4,19 @@ defmodule BaileysEx.Message.Sender do
   """
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store, as: RuntimeStore
   alias BaileysEx.Feature.TcToken
   alias BaileysEx.JID
   alias BaileysEx.Media.MessageBuilder, as: MediaMessageBuilder
-  alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Reporting
+  alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Wire
   alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.Proto.Message
-  alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Device
+  alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store
   alias BaileysEx.Telemetry
@@ -99,30 +100,34 @@ defmodule BaileysEx.Message.Sender do
       if retry_participant?(opts[:participant]) do
         do_send_retry_resend(context, jid, proto_message, message_id, opts)
       else
-        with {:ok, updated_context, stanza_children} <-
-               relay_content(context, jid, proto_message, opts),
-             relay_node =
-               build_relay_node(
-                 updated_context,
-                 jid,
-                 message_id,
-                 proto_message,
-                 stanza_children,
-                 opts
-               ),
-             :ok <- log_relay_node(relay_node),
-             :ok <- relay(updated_context, relay_node),
-             :ok <-
-               maybe_cache_recent_message(updated_context, jid, message_id, proto_message, opts) do
-          {:ok,
-           %{
-             id: message_id,
-             jid: jid,
-             message: proto_message,
-             timestamp: now(opts)
-           }, updated_context}
-        end
+        do_send_new_message(context, jid, proto_message, message_id, opts)
       end
+    end
+  end
+
+  defp do_send_new_message(context, jid, proto_message, message_id, opts) do
+    with {:ok, updated_context, stanza_children} <-
+           relay_content(context, jid, proto_message, opts),
+         relay_node =
+           build_relay_node(
+             updated_context,
+             jid,
+             message_id,
+             proto_message,
+             stanza_children,
+             opts
+           ),
+         :ok <- log_relay_node(relay_node),
+         :ok <- relay(updated_context, relay_node),
+         :ok <-
+           maybe_cache_recent_message(updated_context, jid, message_id, proto_message, opts) do
+      {:ok,
+       %{
+         id: message_id,
+         jid: jid,
+         message: proto_message,
+         timestamp: now(opts)
+       }, updated_context}
     end
   end
 
@@ -248,24 +253,36 @@ defmodule BaileysEx.Message.Sender do
         )
         |> Enum.uniq()
 
-      with {:ok, context} <- maybe_assert_sessions(context, recipient_devices ++ own_devices),
-           dsm = wrap_device_sent_message(message, recipient_jid),
-           recipient_message = if(same_user?(recipient_jid, me_id), do: dsm, else: message),
-           {:ok, repo, me_nodes, me_include_identity?} <-
-             create_participant_nodes(context.signal_repository, own_devices, dsm),
-           {:ok, repo, other_nodes, other_include_identity?} <-
-             create_participant_nodes(repo, recipient_devices, recipient_message) do
-        children =
-          []
-          |> maybe_append_participants(me_nodes ++ other_nodes)
-          |> maybe_append_device_identity(
-            (me_include_identity? || other_include_identity?) &&
-              Map.has_key?(context, :device_identity),
-            context[:device_identity]
-          )
+      encrypt_direct_participants(context, message, recipient_jid, recipient_devices, own_devices)
+    end
+  end
 
-        {:ok, %{context | signal_repository: repo}, children}
-      end
+  defp encrypt_direct_participants(
+         context,
+         message,
+         recipient_jid,
+         recipient_devices,
+         own_devices
+       ) do
+    me_id = context.me_id
+
+    with {:ok, context} <- maybe_assert_sessions(context, recipient_devices ++ own_devices),
+         dsm = wrap_device_sent_message(message, recipient_jid),
+         recipient_message = if(same_user?(recipient_jid, me_id), do: dsm, else: message),
+         {:ok, repo, me_nodes, me_include_identity?} <-
+           create_participant_nodes(context.signal_repository, own_devices, dsm),
+         {:ok, repo, other_nodes, other_include_identity?} <-
+           create_participant_nodes(repo, recipient_devices, recipient_message) do
+      children =
+        []
+        |> maybe_append_participants(me_nodes ++ other_nodes)
+        |> maybe_append_device_identity(
+          (me_include_identity? || other_include_identity?) &&
+            Map.has_key?(context, :device_identity),
+          context[:device_identity]
+        )
+
+      {:ok, %{context | signal_repository: repo}, children}
     end
   end
 
@@ -403,62 +420,7 @@ defmodule BaileysEx.Message.Sender do
   defp log_relay_node(%BinaryNode{} = node) do
     require Logger
 
-    children_summary =
-      case node.content do
-        list when is_list(list) ->
-          Enum.map(list, fn
-            %BinaryNode{tag: "participants", content: participants} ->
-              %{
-                tag: "participants",
-                participants:
-                  Enum.map(participants, fn
-                    %BinaryNode{tag: "to", attrs: attrs, content: enc_nodes} ->
-                      %{
-                        jid: attrs["jid"],
-                        enc:
-                          Enum.map(List.wrap(enc_nodes), fn
-                            %BinaryNode{tag: "enc", attrs: enc_attrs} ->
-                              %{
-                                type: enc_attrs["type"],
-                                v: enc_attrs["v"],
-                                phash: summarize_phash(enc_attrs["phash"])
-                              }
-
-                            other ->
-                              inspect(other, limit: 50)
-                          end)
-                      }
-
-                    other ->
-                      inspect(other, limit: 100)
-                  end)
-              }
-
-            %BinaryNode{tag: tag, attrs: attrs, content: kids} ->
-              kid_tags =
-                case kids do
-                  l when is_list(l) ->
-                    Enum.map(l, fn
-                      %BinaryNode{tag: t, attrs: a} ->
-                        "#{t}(#{inspect(Map.take(a, ["type", "v", "e"]))})"
-
-                      other ->
-                        inspect(other, limit: 50)
-                    end)
-
-                  _ ->
-                    ["<binary>"]
-                end
-
-              "#{tag}(#{inspect(Map.take(attrs, ["jid"]))})[#{Enum.join(kid_tags, ", ")}]"
-
-            other ->
-              inspect(other, limit: 100)
-          end)
-
-        _ ->
-          ["<non-list content>"]
-      end
+    children_summary = summarize_node_children(node.content)
 
     Logger.warning(
       "[Sender] relay_node: tag=#{node.tag} attrs=#{inspect(node.attrs)} " <>
@@ -467,6 +429,55 @@ defmodule BaileysEx.Message.Sender do
 
     :ok
   end
+
+  defp summarize_node_children(list) when is_list(list) do
+    Enum.map(list, &summarize_child_node/1)
+  end
+
+  defp summarize_node_children(_content), do: ["<non-list content>"]
+
+  defp summarize_child_node(%BinaryNode{tag: "participants", content: participants}) do
+    %{tag: "participants", participants: Enum.map(participants, &summarize_participant/1)}
+  end
+
+  defp summarize_child_node(%BinaryNode{tag: tag, attrs: attrs, content: kids}) do
+    kid_tags = summarize_kid_tags(kids)
+    "#{tag}(#{inspect(Map.take(attrs, ["jid"]))})[#{Enum.join(kid_tags, ", ")}]"
+  end
+
+  defp summarize_child_node(other), do: inspect(other, limit: 100)
+
+  defp summarize_participant(%BinaryNode{tag: "to", attrs: attrs, content: enc_nodes}) do
+    %{
+      jid: attrs["jid"],
+      enc:
+        Enum.map(List.wrap(enc_nodes), fn
+          %BinaryNode{tag: "enc", attrs: enc_attrs} ->
+            %{
+              type: enc_attrs["type"],
+              v: enc_attrs["v"],
+              phash: summarize_phash(enc_attrs["phash"])
+            }
+
+          other ->
+            inspect(other, limit: 50)
+        end)
+    }
+  end
+
+  defp summarize_participant(other), do: inspect(other, limit: 100)
+
+  defp summarize_kid_tags(l) when is_list(l) do
+    Enum.map(l, fn
+      %BinaryNode{tag: t, attrs: a} ->
+        "#{t}(#{inspect(Map.take(a, ["type", "v", "e"]))})"
+
+      other ->
+        inspect(other, limit: 50)
+    end)
+  end
+
+  defp summarize_kid_tags(_kids), do: ["<binary>"]
 
   defp summarize_phash(phash) when is_binary(phash) and byte_size(phash) > 12 do
     binary_part(phash, 0, 12) <> "..."
@@ -477,7 +488,7 @@ defmodule BaileysEx.Message.Sender do
   defp relay(%{send_node_fun: fun}, %BinaryNode{} = node) when is_function(fun, 1), do: fun.(node)
 
   defp relay(%{socket: socket}, %BinaryNode{} = node),
-    do: BaileysEx.Connection.Socket.send_node(socket, node)
+    do: Socket.send_node(socket, node)
 
   defp relay(_context, %BinaryNode{} = _node), do: {:error, :send_node_not_configured}
 
@@ -503,11 +514,8 @@ defmodule BaileysEx.Message.Sender do
                jid,
                participant,
                message_id,
-               message,
-               type,
-               ciphertext,
-               count,
-               opts
+               %{type: type, ciphertext: ciphertext, count: count},
+               Keyword.put(opts, :message, message)
              )
            ),
          :ok <-
@@ -647,10 +655,7 @@ defmodule BaileysEx.Message.Sender do
          %JID{} = jid,
          participant,
          message_id,
-         %Message{} = message,
-         type,
-         ciphertext,
-         count,
+         %{type: type, ciphertext: ciphertext, count: count},
          opts
        ) do
     participant_jid = participant[:jid]
@@ -661,7 +666,7 @@ defmodule BaileysEx.Message.Sender do
       %{
         "id" => message_id,
         "to" => destination_jid,
-        "type" => stanza_type(message)
+        "type" => stanza_type(opts[:message])
       }
       |> Map.merge(stringify_attrs(opts[:additional_attributes] || %{}))
       |> maybe_put_attr("device_fanout", if(retry_device_fanout?(jid), do: "false"))

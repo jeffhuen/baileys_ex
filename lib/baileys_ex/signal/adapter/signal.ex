@@ -10,6 +10,7 @@ defmodule BaileysEx.Signal.Adapter.Signal do
   alias BaileysEx.Signal.Group.SenderKeyRecord
   alias BaileysEx.Signal.Group.SessionBuilder, as: GroupSessionBuilder
   alias BaileysEx.Signal.Identity
+  alias BaileysEx.Signal.PreKeyWhisperMessage
   alias BaileysEx.Signal.SessionBuilder
   alias BaileysEx.Signal.SessionCipher
   alias BaileysEx.Signal.SessionRecord
@@ -141,7 +142,7 @@ defmodule BaileysEx.Signal.Adapter.Signal do
   end
 
   defp prepare_pkmsg_record(store, address, session_key, record, ciphertext) do
-    case BaileysEx.Signal.PreKeyWhisperMessage.decode(ciphertext) do
+    case PreKeyWhisperMessage.decode(ciphertext) do
       {:ok, pkmsg} ->
         case Identity.save(store, address, pkmsg.identity_key) do
           {:ok, :changed} ->
@@ -321,7 +322,7 @@ defmodule BaileysEx.Signal.Adapter.Signal do
   end
 
   defp load_pre_key(store, ciphertext) do
-    with {:ok, pkmsg} <- BaileysEx.Signal.PreKeyWhisperMessage.decode(ciphertext),
+    with {:ok, pkmsg} <- PreKeyWhisperMessage.decode(ciphertext),
          pre_key_id when is_integer(pre_key_id) <- pkmsg.pre_key_id do
       key = Integer.to_string(pre_key_id)
 

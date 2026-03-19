@@ -930,18 +930,22 @@ as `false`, and reportable built messages now receive Baileys-aligned
 
 ---
 
-## Phase 14: Verified Behavior Parity Gaps
+## Phase 14: Verified Parity Gaps
 
 **Status:** COMPLETE · **Depends on:** Phase 12 · **Blocks:** —
 
-This phase closed four source-verified Baileys 7.00rc9 behavior gaps. Group stub
-notifications now emit the higher-level side effects Baileys produces, group sends
-can resolve recipients through cached metadata before falling back to live group
-queries, `limit_sharing` is supported in the builder and proto surface, and
-`BaileysEx.update_media_message/3` now performs the full retry/wait/apply flow and
-emits `messages_update` on success. Review follow-up fixes also aligned the cache
-callback contract, threaded `me_id` into notification handling, and restored
-`chats_update` output for subject and description stubs.
+This phase originally closed four source-verified Baileys 7.00rc9 behavior gaps:
+group stub side effects, cached group metadata fanout, `limit_sharing`, and the
+composed `update_media_message/3` helper. A release-readiness review then reopened
+the phase for one remaining source-verified parity slice: the top-level `BaileysEx`
+facade is still thinner than the Baileys socket surface even where the underlying
+Elixir feature modules already implement the behavior.
+
+The current Phase 14 focus is therefore facade parity over existing implementations,
+plus preservation of the current Baileys rc9 vs BaileysEx comparison matrix under
+`dev/parity/`. This explicitly excludes unsupported WAProto message types that are
+present in proto definitions but not exposed through the Baileys rc9
+`AnyMessageContent` builder.
 
 ### Tasks
 
@@ -949,6 +953,7 @@ callback contract, threaded `me_id` into notification handling, and restored
 - [x] 14.2 Add `cached_group_metadata` parity for group fanout
 - [x] 14.3 Restore `limitSharing` parity in proto + builder
 - [x] 14.4 Add composed `update_media_message` helper
+- [x] 14.5 Expand top-level facade parity for already-implemented source-supported socket helpers
 
 ### Acceptance Criteria
 
@@ -957,6 +962,8 @@ callback contract, threaded `me_id` into notification handling, and restored
 - [x] `limit_sharing` is supported with the correct proto shape and deterministic timestamp injection
 - [x] `BaileysEx.update_media_message/3` performs the full retry round trip and emits `messages_update` on success
 - [x] Review follow-up fixes are applied for the Baileys-style plain-map cache contract, `notification_context/1` `me_id` threading, and subject/description chat updates
+- [x] The top-level `BaileysEx` facade covers the remaining source-supported socket helpers that already exist in lower-level feature modules
+- [x] The Baileys rc9 vs BaileysEx support matrix is stored under `dev/parity/` and kept aligned with the implemented facade
 
 ### Files
 
@@ -971,11 +978,15 @@ callback contract, threaded `me_id` into notification handling, and restored
 | `lib/baileys_ex/message/builder.ex` | ✅ |
 | `lib/baileys_ex/protocol/proto/message_messages.ex` | ✅ |
 | `lib/baileys_ex/media/retry.ex` | ✅ |
+| `lib/baileys_ex.ex` | ✅ |
+| `README.md` | ✅ |
+| `dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md` | ✅ |
 | `test/baileys_ex/message/stub_side_effects_test.exs` | ✅ |
 | `test/baileys_ex/message/notification_handler_test.exs` | ✅ |
 | `test/baileys_ex/message/sender_test.exs` | ✅ |
 | `test/baileys_ex/message/builder_test.exs` | ✅ |
 | `test/baileys_ex/media/retry_test.exs` | ✅ |
+| `test/baileys_ex/public_api_test.exs` | ✅ |
 
 ---
 

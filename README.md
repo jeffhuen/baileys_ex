@@ -86,13 +86,15 @@ Top-level facade:
 
 Major feature wrappers:
 
-- Groups: `group_create/4`, `group_metadata/3`, `group_leave/2`
-- Communities: `community_create/4`, `community_metadata/3`
+- Chat/App State: archive, mute, pin, star, read, clear, delete, delete-for-me, and link-preview privacy wrappers
+- Groups: create, metadata, leave, participant/admin updates, invite flows, join approval, and settings wrappers
+- Communities: create, metadata, subgroup/link management, invite flows, join approval, and settings wrappers
 - Presence: `send_presence_update/4`, `presence_subscribe/3`
-- Profile: `profile_picture_url/4`, `update_profile_status/3`
-- Privacy: `privacy_settings/2`
-- Business: `update_business_profile/3`, `business_catalog/2`
-- Newsletters: `newsletter_metadata/4`, `newsletter_follow/3`, `newsletter_unfollow/3`
+- Profile & Queries: picture/status helpers plus `on_whatsapp/3`, `fetch_status/3`, `business_profile/3`, and profile mutation wrappers
+- Privacy: privacy settings, blocklist, and the current privacy mutation/query surface
+- Calls: `reject_call/4`, `create_call_link/4`
+- Business: business profile, catalog, cover photo, collections, product, and order wrappers
+- Newsletters: metadata, follow/unfollow, create/update/delete, mute/react, fetch, and owner-management wrappers
 
 Advanced callers can use:
 

@@ -642,6 +642,242 @@ defmodule BaileysEx.PublicApiTest do
     assert :ok = BaileysEx.disconnect(connection)
   end
 
+  test "public facade exports the remaining source-supported helper wrappers" do
+    wrappers = [
+      {:archive_chat, 5},
+      {:mute_chat, 4},
+      {:pin_chat, 4},
+      {:star_messages, 5},
+      {:mark_chat_read, 5},
+      {:clear_chat, 4},
+      {:delete_chat, 4},
+      {:delete_message_for_me, 6},
+      {:read_messages, 3},
+      {:update_link_previews_privacy, 3},
+      {:on_whatsapp, 3},
+      {:fetch_status, 3},
+      {:business_profile, 3},
+      {:update_profile_name, 3},
+      {:update_profile_picture, 5},
+      {:remove_profile_picture, 3},
+      {:reject_call, 4},
+      {:create_call_link, 4},
+      {:group_participants_update, 5},
+      {:group_update_subject, 4},
+      {:group_update_description, 4},
+      {:group_setting_update, 4},
+      {:group_invite_code, 3},
+      {:group_revoke_invite, 3},
+      {:group_accept_invite, 3},
+      {:group_get_invite_info, 3},
+      {:group_accept_invite_v4, 4},
+      {:group_revoke_invite_v4, 4},
+      {:group_request_participants_list, 3},
+      {:group_request_participants_update, 5},
+      {:group_fetch_all_participating, 2},
+      {:group_toggle_ephemeral, 4},
+      {:group_member_add_mode, 4},
+      {:group_join_approval_mode, 4},
+      {:fetch_blocklist, 2},
+      {:update_block_status, 4},
+      {:update_last_seen_privacy, 3},
+      {:update_online_privacy, 3},
+      {:update_profile_picture_privacy, 3},
+      {:update_status_privacy, 3},
+      {:update_read_receipts_privacy, 3},
+      {:update_groups_add_privacy, 3},
+      {:update_default_disappearing_mode, 3},
+      {:update_call_privacy, 3},
+      {:update_messages_privacy, 3},
+      {:update_business_cover_photo, 3},
+      {:remove_business_cover_photo, 3},
+      {:business_collections, 4},
+      {:business_product_create, 3},
+      {:business_product_update, 4},
+      {:business_product_delete, 3},
+      {:business_order_details, 4},
+      {:newsletter_create, 4},
+      {:newsletter_delete, 3},
+      {:newsletter_update, 4},
+      {:newsletter_subscribers, 3},
+      {:newsletter_admin_count, 3},
+      {:newsletter_mute, 3},
+      {:newsletter_unmute, 3},
+      {:newsletter_subscribe_updates, 3},
+      {:newsletter_fetch_messages, 4},
+      {:newsletter_react_message, 5},
+      {:newsletter_update_name, 4},
+      {:newsletter_update_description, 4},
+      {:newsletter_update_picture, 4},
+      {:newsletter_remove_picture, 3},
+      {:newsletter_change_owner, 4},
+      {:newsletter_demote, 4},
+      {:community_create_group, 5},
+      {:community_leave, 3},
+      {:community_update_subject, 4},
+      {:community_update_description, 4},
+      {:community_link_group, 4},
+      {:community_unlink_group, 4},
+      {:community_fetch_linked_groups, 3},
+      {:community_participants_update, 5},
+      {:community_request_participants_list, 3},
+      {:community_request_participants_update, 5},
+      {:community_invite_code, 3},
+      {:community_revoke_invite, 3},
+      {:community_accept_invite, 3},
+      {:community_get_invite_info, 3},
+      {:community_accept_invite_v4, 4},
+      {:community_revoke_invite_v4, 4},
+      {:community_toggle_ephemeral, 4},
+      {:community_setting_update, 4},
+      {:community_member_add_mode, 4},
+      {:community_join_approval_mode, 4},
+      {:community_fetch_all_participating, 2}
+    ]
+
+    Enum.each(wrappers, fn {name, arity} ->
+      assert function_exported?(BaileysEx, name, arity),
+             "expected BaileysEx.#{name}/#{arity} to be exported"
+    end)
+  end
+
+  test "new query-backed facade wrappers delegate through the runtime socket" do
+    query_handler = fn
+      %BinaryNode{
+        tag: "call",
+        attrs: %{"from" => "15550001111:1@s.whatsapp.net", "to" => "15551234567@s.whatsapp.net"}
+      },
+      321 ->
+        {:ok, %BinaryNode{tag: "call", attrs: %{"type" => "result"}, content: nil}}
+
+      %BinaryNode{
+        tag: "iq",
+        attrs: %{"to" => "120363001234567890@g.us", "type" => "get", "xmlns" => "w:g2"},
+        content: [%BinaryNode{tag: "invite"}]
+      },
+      _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "invite", attrs: %{"code" => "INVITE-123"}}]
+         }}
+
+      %BinaryNode{
+        tag: "iq",
+        attrs: %{"to" => "s.whatsapp.net", "type" => "get", "xmlns" => "blocklist"}
+      },
+      _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "list",
+               attrs: %{},
+               content: [
+                 %BinaryNode{tag: "item", attrs: %{"jid" => "11111@s.whatsapp.net"}},
+                 %BinaryNode{tag: "item", attrs: %{"jid" => "22222@s.whatsapp.net"}}
+               ]
+             }
+           ]
+         }}
+
+      %BinaryNode{
+        tag: "iq",
+        attrs: %{"to" => "s.whatsapp.net", "type" => "get", "xmlns" => "w:biz"}
+      },
+      987 ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "business_profile",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "profile",
+                   attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                   content: [
+                     %BinaryNode{tag: "description", attrs: %{}, content: "Store profile"}
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
+    assert {:ok, connection} =
+             BaileysEx.connect(%{creds: %{me: %{id: "15550001111:1@s.whatsapp.net"}}},
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self(),
+               query_handler: query_handler
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert {:ok, %BinaryNode{tag: "call"}} =
+             BaileysEx.reject_call(
+               connection,
+               "call-1",
+               "15551234567@s.whatsapp.net",
+               query_timeout: 321
+             )
+
+    assert_receive {:fake_socket_query, %BinaryNode{tag: "call"}, 321}
+
+    assert {:ok, "INVITE-123"} =
+             BaileysEx.group_invite_code(connection, "120363001234567890@g.us")
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{
+                        "to" => "120363001234567890@g.us",
+                        "type" => "get",
+                        "xmlns" => "w:g2"
+                      }
+                    }, _timeout}
+
+    assert {:ok, ["11111@s.whatsapp.net", "22222@s.whatsapp.net"]} =
+             BaileysEx.fetch_blocklist(connection)
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{
+                        "to" => "s.whatsapp.net",
+                        "type" => "get",
+                        "xmlns" => "blocklist"
+                      }
+                    }, _timeout}
+
+    assert {:ok, %{wid: "15551234567@s.whatsapp.net", description: "Store profile"}} =
+             BaileysEx.business_profile(connection, "15551234567@s.whatsapp.net",
+               query_timeout: 987
+             )
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{
+                        "to" => "s.whatsapp.net",
+                        "type" => "get",
+                        "xmlns" => "w:biz"
+                      }
+                    }, 987}
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
   test "send_wam_buffer/2 encodes BinaryInfo inputs before handing them to the socket" do
     assert {:ok, connection} =
              BaileysEx.connect(%{creds: %{}},

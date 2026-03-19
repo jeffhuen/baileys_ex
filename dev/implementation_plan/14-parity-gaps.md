@@ -1,14 +1,14 @@
-# Phase 14: Verified Behavior Parity Gaps
+# Phase 14: Verified Parity Gaps
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the remaining behavior and output gaps between BaileysEx and Baileys 7.00rc9 for socket/message flows.
+**Goal:** Close the remaining verified parity gaps between BaileysEx and Baileys 7.00rc9 for socket/message flows and the release-facing socket facade.
 
-**Architecture:** Measure parity by observable behavior, event payloads, send/receive semantics, and wire-affecting config. Do not treat JS socket method count as the target. If BaileysEx already produces the same behavior under different Elixir module boundaries, that is not a gap for this phase.
+**Architecture:** Measure parity by observable behavior, event payloads, send/receive semantics, wire-affecting config, and the top-level public facade for source-supported socket features. Do not treat JS socket method count as the target. If BaileysEx already produces the same behavior under different Elixir module boundaries, that is not a gap until package-facing facade parity matters.
 
 **Tech Stack:** Elixir 1.19+/OTP 28, existing `Connection.*`, `Message.*`, `Feature.*`, `Media.*`, and WAProto modules, with Baileys 7.00rc9 reference in `dev/reference/Baileys-master/`.
 
-**Status:** COMPLETE (2026-03-17)
+**Status:** COMPLETE (2026-03-18)
 
 ---
 
@@ -24,7 +24,7 @@
   - `dev/reference/Baileys-master/src/Types/Socket.ts`
   - `dev/reference/Baileys-master/WAProto/WAProto.proto`
 - A Baileys JS helper is not a gap if BaileysEx already implements the same behavior elsewhere.
-- A missing top-level `BaileysEx.*` delegate is an ergonomics issue, not a behavior gap, unless it is the only way to expose a required Baileys behavior.
+- A missing top-level `BaileysEx.*` delegate is not a wire-behavior gap by itself, but it is now in scope when the underlying feature is already implemented and directly exposed by the Baileys socket surface.
 - Do not re-open items already satisfied by existing code under different names.
 
 ---
@@ -99,18 +99,48 @@ observable output.
 
 ## 4. Deferred Work
 
-These may still be worthwhile, but they are **not** behavior-parity blockers for this phase.
+These may still be worthwhile, but they are **not** current parity blockers for this phase.
 
-- Broad `BaileysEx` facade expansion
 - `wait_for_connection` convenience wrappers
 - JS socket method-count parity
 - Separate `sendReceipts` wrapper purely for naming parity
 - Separate `sendMessageAck` task unless a concrete ack-semantics mismatch is demonstrated
-- Raw WAProto coverage for `listMessage`, `orderMessage`, `interactiveMessage`, `albumMessage`, and `stickerPackMessage` beyond what is needed for current behavior gaps
+- Raw WAProto coverage for `listMessage`, `orderMessage`, `interactiveMessage`, `albumMessage`, and `stickerPackMessage` beyond what is needed for current parity gaps. These types exist in WAProto, but they are not part of the Baileys rc9 `AnyMessageContent` builder in `src/Types/Message.ts` and `src/Utils/messages.ts`, so they are not source-verified send-message parity work right now.
 
 ---
 
-## 5. Implementation Tasks
+## 5. Reopened Gap: Public Facade Surface Is Still Thinner Than Baileys rc9
+
+**Status:** Resolved in code, tests, and release-facing docs.
+
+The remaining verified gap is no longer on-the-wire behavior. It is the top-level
+`BaileysEx` facade over source-supported socket methods that already exist in
+lower-level Elixir feature modules.
+
+This gap is now in scope because:
+
+- the implementation already exists in `Feature.*` modules
+- the package is being prepared for public release
+- the current thin facade forces callers onto `queryable/1` for operations that Baileys exposes directly on the socket object
+
+This slice must remain source-driven:
+
+- use the pinned Baileys rc9 README and socket-layer return surfaces as the spec
+- do not add wrappers for WAProto message types or helpers Baileys rc9 does not currently expose through its own content builder or socket surface
+- preserve the current JS-vs-Elixir comparison matrix under `dev/parity/` for later reference
+
+Resolved wrapper parity now includes:
+
+- chat/app-state helpers backed by `Feature.Chat` and `Feature.AppState`
+- user/profile/query helpers backed by `Feature.Profile`, `Feature.PhoneValidation`, and `Message.Receipt`
+- call helpers backed by `Feature.Call`
+- broader group/admin wrappers backed by `Feature.Group`
+- broader privacy wrappers backed by `Feature.Privacy`
+- broader business/newsletter/community wrappers backed by their existing feature modules
+
+---
+
+## 6. Implementation Tasks
 
 ### Task 1: Port shared group stub side effects from `process-message.ts`
 
@@ -348,7 +378,82 @@ git commit -m "feat(media): add update media message helper parity"
 
 ---
 
-## 6. Exit Criteria
+### Task 5: Expand the top-level `BaileysEx` facade for remaining source-supported socket features
+
+**Files:**
+- Modify: `lib/baileys_ex.ex`
+- Modify: `test/baileys_ex/public_api_test.exs`
+- Create: `dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md`
+- Modify: `README.md`
+- Reference: `dev/reference/Baileys-master/README.md`
+- Reference: `dev/reference/Baileys-master/src/Socket/chats.ts`
+- Reference: `dev/reference/Baileys-master/src/Socket/groups.ts`
+- Reference: `dev/reference/Baileys-master/src/Socket/business.ts`
+- Reference: `dev/reference/Baileys-master/src/Socket/newsletter.ts`
+- Reference: `dev/reference/Baileys-master/src/Socket/communities.ts`
+
+**Required outcome:** the top-level `BaileysEx` module exposes the remaining
+source-supported socket helpers that already exist in lower-level feature modules,
+and the current Baileys rc9 vs BaileysEx comparison is preserved under `dev/parity/`.
+
+- [x] **Step 1: Write failing public API tests for the missing facade wrappers**
+
+Cover at least:
+- chat/app-state wrappers
+- user/profile/query wrappers
+- call wrappers
+- expanded group wrappers
+- expanded privacy wrappers
+- expanded business wrappers
+- expanded newsletter wrappers
+- expanded community wrappers
+
+- [x] **Step 2: Run the public API test file and verify the new cases fail**
+
+Run: `mix test test/baileys_ex/public_api_test.exs`
+
+Expected: FAIL on missing top-level wrapper functions.
+
+- [x] **Step 3: Add the missing top-level `BaileysEx` wrapper functions**
+
+Delegate through `with_queryable/2` to the existing feature modules. Keep the
+public naming consistent with the current Elixir snake_case facade.
+
+- [x] **Step 4: Save the Baileys rc9 vs BaileysEx support matrix in `dev/parity/`**
+
+Record:
+- confirmed non-gaps
+- top-level facade coverage
+- lower-level feature coverage
+- remaining explicit deferrals, if any
+
+- [x] **Step 5: Update the public README summary**
+
+Reflect the expanded facade at a high level without turning the README into a
+full API reference.
+
+- [x] **Step 6: Run the affected tests**
+
+Run: `mix test test/baileys_ex/public_api_test.exs`
+
+Expected: PASS
+
+- [x] **Step 7: Run the relevant broader suite**
+
+Run: `mix test`
+
+Expected: PASS
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add lib/baileys_ex.ex test/baileys_ex/public_api_test.exs dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md README.md dev/implementation_plan/14-parity-gaps.md dev/implementation_plan/PROGRESS.md
+git commit -m "feat(api): expand top-level facade parity"
+```
+
+---
+
+## 7. Exit Criteria
 
 This phase is complete when all of the following are true:
 
@@ -356,11 +461,12 @@ This phase is complete when all of the following are true:
 - Group sends no longer require callers to hand-supply `group_participants:` in the common case
 - `limit_sharing` is supported with the correct proto shape
 - A composed `update_media_message` helper exists and is covered by tests
-- The phase file remains aligned with actual source-backed gaps rather than JS method-count parity
+- The top-level `BaileysEx` facade covers the remaining source-supported socket helpers that are already implemented in lower-level feature modules
+- The phase file remains aligned with actual source-backed gaps rather than JS method-count parity or unsupported WAProto message types
 
 ---
 
-## 7. Notes for Future Phases
+## 8. Notes for Future Phases
 
-- If raw WAProto coverage is later expanded, revisit `listMessage`, `orderMessage`, `interactiveMessage`, `albumMessage`, and `stickerPackMessage` as a **proto parity** phase, not as a `send_message` builder-only phase.
-- If user-facing migration ergonomics become important, schedule a separate **facade parity** phase after the behavior gaps above are closed.
+- If raw WAProto coverage is later expanded, revisit `listMessage`, `orderMessage`, `interactiveMessage`, `albumMessage`, and `stickerPackMessage` as a **proto parity** phase, not as a fake `send_message` builder parity task unless Baileys rc9 actually exposes them.
+- Keep `dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md` current when new source-backed parity questions come up.

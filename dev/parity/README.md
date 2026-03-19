@@ -6,6 +6,10 @@ Nothing here is part of the public Hex package, public API, or `user_docs/`.
 The goal is offline Baileys-vs-Elixir behavior checks against the pinned
 reference in `dev/reference/Baileys-master/`.
 
+The parity suite is excluded from default `mix test` runs and from the public
+CI workflow. Run it only through the dedicated commands in this directory or
+through `.github/workflows/parity-internal.yml`.
+
 ## Prerequisites
 
 - Elixir 1.19+/OTP 28

@@ -49,7 +49,7 @@ jobs:
         run: mix credo --all
 
       - name: Run tests
-        run: mix test
+        run: mix test --exclude parity
 
       - name: Build docs
         env:

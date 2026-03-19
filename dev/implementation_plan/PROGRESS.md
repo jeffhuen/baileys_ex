@@ -876,6 +876,8 @@ message, feature, syncd, and WAM surfaces; committed parity fixtures now live
 under `test/fixtures/parity/`; the contributor-only entrypoints exist at
 `dev/scripts/run_parity_suite.sh` and `dev/scripts/regenerate_parity_fixtures.sh`;
 an opt-in internal workflow exists at `.github/workflows/parity-internal.yml`;
+the parity suite is excluded from default `mix test` and the public CI path via
+the `:parity` tag;
 and the manual live-validation skeleton now lives under `dev/parity/live/`
 plus `dev/scripts/run_live_validation.exs`. The parity work also surfaced and
 closed two message-build gaps: absent reaction-key `from_me` no longer serializes

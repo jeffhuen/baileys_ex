@@ -26,6 +26,8 @@ dedicated `test/baileys_ex/parity/` suites. The fixture pipeline now writes a
 single internal dataset under `test/fixtures/parity/` via
 `dev/scripts/regenerate_parity_fixtures.sh` and `dev/tools/generate_parity_vectors.mts`.
 An opt-in internal workflow exists at `.github/workflows/parity-internal.yml`,
+the parity tests are excluded from default `mix test` and public CI by the
+`:parity` tag,
 and the manual live-validation skeleton now lives under `dev/parity/live/` with
 `dev/scripts/run_live_validation.exs`. During parity completion, the runtime was
 also brought closer to Baileys by fixing default `from_me` emission in reaction

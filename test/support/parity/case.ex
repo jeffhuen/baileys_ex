@@ -9,6 +9,7 @@ defmodule BaileysEx.Parity.Case do
   using opts do
     quote do
       use ExUnit.Case, unquote(opts)
+      @moduletag :parity
 
       import BaileysEx.Parity.Case,
         only: [normalize_binary_node: 1, run_baileys_reference!: 2]

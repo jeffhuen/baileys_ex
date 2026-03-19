@@ -11,3 +11,4 @@
 |> Enum.each(&Code.require_file/1)
 
 ExUnit.start()
+ExUnit.configure(exclude: [parity: true])

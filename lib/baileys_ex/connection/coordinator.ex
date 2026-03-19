@@ -1347,8 +1347,6 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp parse_retry_count(_count), do: 1
-
   defp normalize_retry_jid(jid) when is_binary(jid) do
     case BaileysEx.Protocol.JID.parse(jid) do
       %BaileysEx.JID{} = parsed -> {:ok, parsed}

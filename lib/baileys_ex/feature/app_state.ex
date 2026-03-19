@@ -72,10 +72,14 @@ defmodule BaileysEx.Feature.AppState do
     transaction_key = app_state_transaction_key(store, opts)
     codec_opts = Keyword.take(opts, [:external_blob_fetcher])
 
-    Logger.warning("[AppStateDiag] resync_app_state entering transaction key=#{inspect(transaction_key)}")
+    Logger.warning(
+      "[AppStateDiag] resync_app_state entering transaction key=#{inspect(transaction_key)}"
+    )
 
     with_app_state_transaction(state_store, transaction_key, fn ->
-      Logger.warning("[AppStateDiag] transaction acquired, starting resync loop collections=#{inspect(collections)}")
+      Logger.warning(
+        "[AppStateDiag] transaction acquired, starting resync loop collections=#{inspect(collections)}"
+      )
 
       context = %{
         queryable: queryable,
@@ -140,7 +144,12 @@ defmodule BaileysEx.Feature.AppState do
       - `:event_emitter` — pid
       - `:me` — current user contact info
   """
-  @spec app_patch(term(), GenServer.server(), patch(), keyword()) :: :ok | {:error, term()}
+  @spec app_patch(
+          term(),
+          GenServer.server() | BaileysEx.Connection.Store.Ref.t(),
+          patch(),
+          keyword()
+        ) :: :ok | {:error, term()}
   def app_patch(queryable, store, patch_create, opts \\ []) do
     emit_own = Keyword.get(opts, :emit_own_events, true)
     me = Keyword.get(opts, :me, %{})
@@ -179,7 +188,14 @@ defmodule BaileysEx.Feature.AppState do
 
   Ports `chatModify` from `chats.ts:899-902`.
   """
-  @spec chat_modify(term(), GenServer.server(), atom(), String.t(), term(), keyword()) ::
+  @spec chat_modify(
+          term(),
+          GenServer.server() | BaileysEx.Connection.Store.Ref.t(),
+          atom(),
+          String.t(),
+          term(),
+          keyword()
+        ) ::
           :ok | {:error, term()}
   def chat_modify(queryable, store, action, jid, value, opts \\ []) do
     patch = build_patch(action, jid, value, opts)
@@ -607,7 +623,9 @@ defmodule BaileysEx.Feature.AppState do
   defp do_resync_loop(_context, [], loop_state), do: {:ok, loop_state}
 
   defp do_resync_loop(context, collections_to_handle, loop_state) do
-    Logger.warning("[AppStateDiag] resync_loop pass collections=#{inspect(collections_to_handle)}")
+    Logger.warning(
+      "[AppStateDiag] resync_loop pass collections=#{inspect(collections_to_handle)}"
+    )
 
     {iq_node, states, initial_version_map} =
       build_resync_request(

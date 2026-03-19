@@ -148,7 +148,7 @@ defmodule BaileysEx.Message.StubSideEffects do
 
   # Group membership join approval request (non-admin add)
   def derive(%{stub_type: :GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD} = input) do
-    params = input.stub_parameters || []
+    params = input.stub_parameters
 
     with [participant_json | rest] <- params,
          {:ok, participant_data} <- JSON.decode(participant_json) do
@@ -179,7 +179,7 @@ defmodule BaileysEx.Message.StubSideEffects do
 
   @spec participant_effects(stub_input(), atom()) :: [side_effect()]
   defp participant_effects(input, action) do
-    participants = parse_participants(input.stub_parameters || [])
+    participants = parse_participants(input.stub_parameters)
 
     [
       {:group_participants_update,
@@ -227,7 +227,7 @@ defmodule BaileysEx.Message.StubSideEffects do
   @spec participants_include_me?(stub_input()) :: boolean()
   defp participants_include_me?(input) do
     me_id = input.me_id
-    participants = parse_participants(input.stub_parameters || [])
+    participants = parse_participants(input.stub_parameters)
 
     Enum.any?(participants, fn participant ->
       phone_number = participant["phone_number"] || participant["id"]

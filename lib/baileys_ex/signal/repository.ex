@@ -279,7 +279,12 @@ defmodule BaileysEx.Signal.Repository do
           t(),
           %{
             author_jid: String.t(),
-            item: %{group_id: String.t(), axolotl_sender_key_distribution_message: binary()}
+            item:
+              %{
+                group_id: String.t() | nil,
+                axolotl_sender_key_distribution_message: binary() | nil
+              }
+              | BaileysEx.Protocol.Proto.Message.SenderKeyDistributionMessage.t()
           }
         ) :: {:ok, t()} | {:error, adapter_error()}
   def process_sender_key_distribution_message(

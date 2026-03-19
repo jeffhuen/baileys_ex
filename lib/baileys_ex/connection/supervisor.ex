@@ -136,7 +136,11 @@ defmodule BaileysEx.Connection.Supervisor do
       when is_binary(phone_number) and is_list(opts) do
     case queryable(supervisor) do
       {socket_module, socket_pid} ->
-        socket_module.request_pairing_code(socket_pid, phone_number, opts)
+        socket_module.request_pairing_code(
+          socket_pid,
+          phone_number,
+          Keyword.take(opts, [:custom_pairing_code])
+        )
 
       nil ->
         {:error, :socket_not_available}

@@ -17,13 +17,18 @@ defmodule BaileysEx.Auth.Phone do
   @pairing_bundle_info "link_code_pairing_key_bundle_encryption_key"
   @adv_secret_info "adv_secret"
 
-  @spec derive_pairing_code_key(binary(), binary()) :: {:ok, binary()} | {:error, term()}
-  def derive_pairing_code_key(pairing_code, salt)
-      when is_binary(pairing_code) and is_binary(salt) and byte_size(salt) == 32 do
-    Crypto.pbkdf2_sha256(pairing_code, salt, @pairing_iterations, 32)
+  @spec derive_pairing_code_key(binary(), binary(), pos_integer()) ::
+          {:ok, binary()} | {:error, term()}
+  def derive_pairing_code_key(pairing_code, salt, iterations \\ @pairing_iterations)
+
+  def derive_pairing_code_key(pairing_code, salt, iterations)
+      when is_binary(pairing_code) and is_binary(salt) and byte_size(salt) == 32 and
+             is_integer(iterations) and iterations > 0 do
+    Crypto.pbkdf2_sha256(pairing_code, salt, iterations, 32)
   end
 
-  def derive_pairing_code_key(_pairing_code, _salt), do: {:error, :invalid_pairing_key_material}
+  def derive_pairing_code_key(_pairing_code, _salt, _iterations),
+    do: {:error, :invalid_pairing_key_material}
 
   @spec build_pairing_request(binary(), map(), Config.t(), keyword()) ::
           {:ok, %{pairing_code: binary(), creds_update: map(), node: BinaryNode.t()}}
@@ -61,7 +66,7 @@ defmodule BaileysEx.Auth.Phone do
          {:ok, signed_identity_key} <- fetch_key_pair(auth_state, :signed_identity_key),
          {:ok, me} <- fetch_me(auth_state),
          {:ok, code_pairing_public_key} <-
-           decipher_link_public_key(wrapped_primary_ephemeral_public_key, pairing_code),
+           decipher_link_public_key(wrapped_primary_ephemeral_public_key, pairing_code, opts),
          {:ok, companion_shared_key} <-
            Curve.shared_key(pairing_ephemeral_key.private, code_pairing_public_key),
          {:ok, finish_payload, adv_secret_key} <-
@@ -96,8 +101,9 @@ defmodule BaileysEx.Auth.Phone do
   defp generate_pairing_key(pairing_code, companion_ephemeral_public_key, opts) do
     salt = random_bytes(opts, :pairing_key_salt, 32)
     iv = random_bytes(opts, :pairing_key_iv, 16)
+    iterations = Keyword.get(opts, :pairing_iterations, @pairing_iterations)
 
-    with {:ok, key} <- derive_pairing_code_key(pairing_code, salt),
+    with {:ok, key} <- derive_pairing_code_key(pairing_code, salt, iterations),
          {:ok, encrypted_public_key} <-
            Crypto.aes_ctr_encrypt(key, iv, companion_ephemeral_public_key) do
       {:ok, salt <> iv <> encrypted_public_key}
@@ -205,14 +211,17 @@ defmodule BaileysEx.Auth.Phone do
 
   defp decipher_link_public_key(
          <<salt::binary-size(32), iv::binary-size(16), payload::binary-size(32)>>,
-         pairing_code
+         pairing_code,
+         opts
        ) do
-    with {:ok, secret_key} <- derive_pairing_code_key(pairing_code, salt) do
+    iterations = Keyword.get(opts, :pairing_iterations, @pairing_iterations)
+
+    with {:ok, secret_key} <- derive_pairing_code_key(pairing_code, salt, iterations) do
       Crypto.aes_ctr_decrypt(secret_key, iv, payload)
     end
   end
 
-  defp decipher_link_public_key(_wrapped_public_key, _pairing_code),
+  defp decipher_link_public_key(_wrapped_public_key, _pairing_code, _opts),
     do: {:error, :invalid_wrapped_primary_ephemeral_public_key}
 
   defp random_bytes(opts, key, size) do

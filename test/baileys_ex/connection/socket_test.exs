@@ -1363,7 +1363,8 @@ defmodule BaileysEx.Connection.SocketTest do
       start_authenticated_socket(
         event_emitter: event_emitter,
         config: Config.new(browser: {"BaileysEx", "Chrome", "0.1.0"}),
-        auth_state: auth_state
+        auth_state: auth_state,
+        pairing_iterations: 1
       )
 
     assert {:ok, "ABCDEFGH"} =
@@ -1374,7 +1375,7 @@ defmodule BaileysEx.Connection.SocketTest do
     {server_transport, _pairing_request_node} =
       decode_client_transport_frame(server_transport, pairing_request_frame)
 
-    notification = phone_pairing_notification("ref-123", "ABCDEFGH")
+    notification = phone_pairing_notification("ref-123", "ABCDEFGH", 1)
 
     {server_transport, notification_frame} =
       server_transport_frame(server_transport, notification)
@@ -1935,6 +1936,7 @@ defmodule BaileysEx.Connection.SocketTest do
       |> maybe_put_opt(:clock_ms_fun, opts[:clock_ms_fun])
       |> maybe_put_opt(:date_time_fun, opts[:date_time_fun])
       |> maybe_put_opt(:monotonic_ms_fun, opts[:monotonic_ms_fun])
+      |> maybe_put_opt(:pairing_iterations, opts[:pairing_iterations])
       |> maybe_put_opt(:message_tag_fun, opts[:message_tag_fun])
 
     assert {:ok, pid} = Socket.start_link(start_link_opts)
@@ -2123,12 +2125,12 @@ defmodule BaileysEx.Connection.SocketTest do
     }
   end
 
-  defp phone_pairing_notification(ref, pairing_code) do
+  defp phone_pairing_notification(ref, pairing_code, iterations) do
     primary_identity_key = x25519_key_pair(154)
     code_pairing_key = x25519_key_pair(155)
     salt = :binary.copy(<<17>>, 32)
     iv = :binary.copy(<<29>>, 16)
-    {:ok, pairing_key} = Phone.derive_pairing_code_key(pairing_code, salt)
+    {:ok, pairing_key} = Phone.derive_pairing_code_key(pairing_code, salt, iterations)
     {:ok, wrapped_public_key} = Crypto.aes_ctr_encrypt(pairing_key, iv, code_pairing_key.public)
 
     %BinaryNode{

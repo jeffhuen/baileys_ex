@@ -237,6 +237,28 @@ defmodule BaileysEx.PublicApiTest do
     assert :ok = BaileysEx.disconnect(connection)
   end
 
+  test "request_pairing_code/3 forwards only public pairing options" do
+    assert {:ok, connection} =
+             BaileysEx.connect(%{creds: %{}},
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert {:ok, "123-456"} =
+             BaileysEx.request_pairing_code(connection, "15551234567",
+               custom_pairing_code: "ABCDEFGH",
+               pairing_iterations: 1
+             )
+
+    assert_receive {:fake_socket_pairing_code, "15551234567",
+                    [custom_pairing_code: "ABCDEFGH"]}
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
   test "subscribe/2 and subscribe_raw/2 return an error after disconnect" do
     assert {:ok, connection} =
              BaileysEx.connect(%{creds: %{}},

@@ -71,6 +71,7 @@ defmodule BaileysEx.Connection.Socket do
           qr_refs: [binary()],
           next_qr_timeout_ms: pos_integer(),
           pending_queries: %{optional(binary()) => {pid(), reference(), reference()}},
+          pairing_iterations: pos_integer(),
           pending_phone_pairing_notification: {binary(), BinaryNode.t(), map()} | nil,
           server_time_offset_ms: integer(),
           clock_ms_fun: (-> integer()),
@@ -101,6 +102,7 @@ defmodule BaileysEx.Connection.Socket do
     qr_refs: [],
     next_qr_timeout_ms: 20_000,
     pending_queries: %{},
+    pairing_iterations: 131_072,
     pending_phone_pairing_notification: nil,
     server_time_offset_ms: 0,
     clock_ms_fun: nil,
@@ -294,6 +296,7 @@ defmodule BaileysEx.Connection.Socket do
       signal_store: Keyword.get(opts, :signal_store),
       task_supervisor: Keyword.get(opts, :task_supervisor),
       noise_opts: Keyword.get(opts, :noise_opts, []),
+      pairing_iterations: Keyword.get(opts, :pairing_iterations, 131_072),
       transport_module: transport_module,
       transport_options: transport_options,
       clock_ms_fun: Keyword.get(opts, :clock_ms_fun, fn -> System.os_time(:millisecond) end),
@@ -513,8 +516,10 @@ defmodule BaileysEx.Connection.Socket do
 
   defp handle_call(:authenticating, from, {:request_pairing_code, phone_number, opts}, data)
        when is_binary(phone_number) and is_list(opts) do
+    request_opts = pairing_request_opts(opts, data)
+
     with {:ok, %{pairing_code: pairing_code, creds_update: creds_update, node: node}} <-
-           Phone.build_pairing_request(phone_number, data.auth_state, data.config, opts),
+           Phone.build_pairing_request(phone_number, data.auth_state, data.config, request_opts),
          auth_state <- AuthState.merge_updates(data.auth_state, creds_update),
          data = %{data | auth_state: auth_state},
          :ok <- emit_event(data, :creds_update, creds_update),
@@ -955,7 +960,7 @@ defmodule BaileysEx.Connection.Socket do
 
   defp handle_phone_pairing_notification(%BinaryNode{} = node, %__MODULE__{} = data) do
     with {:ok, %{creds_update: creds_update, node: finish_node}} <-
-           Phone.complete_pairing(node, data.auth_state),
+           Phone.complete_pairing(node, data.auth_state, pairing_iterations: data.pairing_iterations),
          {finish_node, query_id} <- ensure_query_id(finish_node, data),
          {:ok, data} <- send_node_internal(data, finish_node) do
       {:defer_notification_ack, :authenticating,
@@ -1423,6 +1428,12 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp maybe_emit_socket_notification(result, _node), do: result
+
+  defp pairing_request_opts(opts, %__MODULE__{} = data) do
+    opts
+    |> Keyword.take([:custom_pairing_code])
+    |> Keyword.put(:pairing_iterations, data.pairing_iterations)
+  end
 
   defp pending_phone_pairing_finish_response?(
          %__MODULE__{pending_phone_pairing_notification: {query_id, _node, _creds_update}},

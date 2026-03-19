@@ -658,7 +658,6 @@ defmodule BaileysEx.Feature.Business do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp parse_int(nil), do: nil
-  defp parse_int(value) when is_integer(value), do: value
 
   defp parse_int(value) when is_binary(value) do
     case Integer.parse(value) do

@@ -5,19 +5,23 @@ defmodule BaileysEx.Message.ReceiverTest do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Store, as: ConnectionStore
   alias BaileysEx.Message.Builder
-  alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Receiver
+  alias BaileysEx.Message.Retry
   alias BaileysEx.Protocol.Proto.Conversation
   alias BaileysEx.Protocol.Proto.HistorySync, as: HistorySyncProto
   alias BaileysEx.Protocol.Proto.HistorySyncMsg
-  alias BaileysEx.Protocol.Proto.Wire
   alias BaileysEx.Protocol.Proto.Message
+
+  alias BaileysEx.Protocol.Proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult,
+    as: PDOResult
+
   alias BaileysEx.Protocol.Proto.MessageContextInfo
   alias BaileysEx.Protocol.Proto.MessageKey
   alias BaileysEx.Protocol.Proto.PhoneNumberToLIDMapping
   alias BaileysEx.Protocol.Proto.WebMessageInfo
-  alias BaileysEx.Signal.Store
+  alias BaileysEx.Protocol.Proto.Wire
   alias BaileysEx.Signal.Repository
+  alias BaileysEx.Signal.Store
   alias BaileysEx.TestHelpers.MessageSignalHelpers
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
@@ -1024,11 +1028,10 @@ defmodule BaileysEx.Message.ReceiverTest do
           %Message.PeerDataOperationRequestResponseMessage{
             stanza_id: "request-123",
             peer_data_operation_result: [
-              %Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult{
-                placeholder_message_resend_response:
-                  %Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.PlaceholderMessageResendResponse{
-                    web_message_info_bytes: web_message_info
-                  }
+              %PDOResult{
+                placeholder_message_resend_response: %PDOResult.PlaceholderMessageResendResponse{
+                  web_message_info_bytes: web_message_info
+                }
               }
             ]
           }

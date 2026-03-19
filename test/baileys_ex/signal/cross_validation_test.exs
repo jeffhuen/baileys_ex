@@ -1,20 +1,20 @@
 defmodule BaileysEx.Signal.CrossValidationTest do
   use ExUnit.Case, async: true
 
-  alias BaileysEx.Signal.LIDMappingStore
-  alias BaileysEx.Signal.Repository
-  alias BaileysEx.Signal.Store
   alias BaileysEx.Signal.Address
-  alias BaileysEx.Signal.SessionBuilder, as: DirectSessionBuilder
-  alias BaileysEx.Signal.SessionCipher, as: DirectSessionCipher
-  alias BaileysEx.Signal.SessionRecord
   alias BaileysEx.Signal.Group.Cipher
-  alias BaileysEx.Signal.Group.SessionBuilder
   alias BaileysEx.Signal.Group.SenderKeyDistributionMessage
+  alias BaileysEx.Signal.Group.SenderKeyMessage
   alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.Group.SenderKeyRecord
   alias BaileysEx.Signal.Group.SenderKeyState
-  alias BaileysEx.Signal.Group.SenderKeyMessage
+  alias BaileysEx.Signal.Group.SessionBuilder
+  alias BaileysEx.Signal.LIDMappingStore
+  alias BaileysEx.Signal.Repository
+  alias BaileysEx.Signal.SessionBuilder, as: DirectSessionBuilder
+  alias BaileysEx.Signal.SessionCipher, as: DirectSessionCipher
+  alias BaileysEx.Signal.SessionRecord
+  alias BaileysEx.Signal.Store
 
   @fixture_path Path.expand("../../fixtures/signal/baileys_v7.json", __DIR__)
 

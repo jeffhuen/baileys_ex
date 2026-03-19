@@ -10,9 +10,11 @@ defmodule BaileysEx.Connection.SupervisorTest do
   alias BaileysEx.Connection.Store
   alias BaileysEx.Connection.Supervisor
   alias BaileysEx.Message.Builder
+  alias BaileysEx.Message.Retry
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store, as: SignalStore
+  alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
   alias BaileysEx.TestHelpers.MessageSignalHelpers
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
@@ -471,7 +473,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
     session = MessageSignalHelpers.session_fixture()
 
     assert {:ok, repo} =
-             BaileysEx.Signal.Repository.inject_e2e_session(repo, %{
+             Repository.inject_e2e_session(repo, %{
                jid: "15551234567:2@s.whatsapp.net",
                session: session
              })
@@ -493,7 +495,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
       |> Store.wrap()
 
     assert :ok =
-             BaileysEx.Message.Retry.add_recent_message(
+             Retry.add_recent_message(
                runtime_store,
                "15551234567@s.whatsapp.net",
                "retry-runtime-1",
@@ -1256,8 +1258,8 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     signal_store_ref =
       supervisor
-      |> child_pid!(BaileysEx.Signal.Store.Memory)
-      |> BaileysEx.Signal.Store.Memory.wrap()
+      |> child_pid!(SignalStoreMemory)
+      |> SignalStoreMemory.wrap()
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :lid_mapping_update, %{
@@ -1266,7 +1268,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
              })
 
     assert_eventually(fn ->
-      BaileysEx.Signal.Store.Memory.get(signal_store_ref, :"lid-mapping", [
+      SignalStoreMemory.get(signal_store_ref, :"lid-mapping", [
         "15551234567",
         "123456789_reverse"
       ]) == %{
@@ -1610,8 +1612,8 @@ defmodule BaileysEx.Connection.SupervisorTest do
     emitter_pid = child_pid!(supervisor, EventEmitter)
 
     signal_store =
-      child_pid!(supervisor, BaileysEx.Signal.Store.Memory)
-      |> BaileysEx.Signal.Store.Memory.wrap()
+      child_pid!(supervisor, SignalStoreMemory)
+      |> SignalStoreMemory.wrap()
 
     parent = self()
     unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:events, &1}))
@@ -1753,7 +1755,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                     }}
 
     assert_eventually(fn ->
-      BaileysEx.Signal.Store.Memory.get(signal_store, :tctoken, ["15551234567@s.whatsapp.net"])[
+      SignalStoreMemory.get(signal_store, :tctoken, ["15551234567@s.whatsapp.net"])[
         "15551234567@s.whatsapp.net"
       ] == %{token: "trusted-token", timestamp: "1710000803"}
     end)
@@ -1832,7 +1834,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
     session = MessageSignalHelpers.session_fixture()
 
     assert {:ok, signal_repository} =
-             BaileysEx.Signal.Repository.inject_e2e_session(signal_repository, %{
+             Repository.inject_e2e_session(signal_repository, %{
                jid: "15551234567@s.whatsapp.net",
                session: session
              })

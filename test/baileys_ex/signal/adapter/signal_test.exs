@@ -2,8 +2,8 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Crypto
-  alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Adapter.Signal, as: SignalAdapter
+  alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.Identity
   alias BaileysEx.Signal.Repository
@@ -149,8 +149,8 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
     alice_jid = "alice@s.whatsapp.net"
     bob_jid = "bob@s.whatsapp.net"
 
-    {:ok, alice_address} = BaileysEx.Signal.Address.from_jid(bob_jid)
-    {:ok, bob_address} = BaileysEx.Signal.Address.from_jid(alice_jid)
+    {:ok, alice_address} = Address.from_jid(bob_jid)
+    {:ok, bob_address} = Address.from_jid(alice_jid)
 
     bob_bundle = %{
       registration_id: 4000,

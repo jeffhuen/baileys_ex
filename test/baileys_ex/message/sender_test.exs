@@ -4,6 +4,7 @@ defmodule BaileysEx.Message.SenderTest do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Store, as: RuntimeStore
   alias BaileysEx.JID
+  alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Sender
   alias BaileysEx.Message.Wire
@@ -815,7 +816,7 @@ defmodule BaileysEx.Message.SenderTest do
       end
     }
 
-    message = BaileysEx.Message.Builder.build(%{text: "retry replay"})
+    message = Builder.build(%{text: "retry replay"})
 
     assert {:ok, %{id: "3EB0RETRY1"}, _updated_context} =
              Sender.send_proto(context, jid, message,

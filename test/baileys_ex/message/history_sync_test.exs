@@ -2,6 +2,7 @@ defmodule BaileysEx.Message.HistorySyncTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Message.Builder
+  alias BaileysEx.Message.HistorySync
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Protocol.Proto.MessageKey
   alias BaileysEx.Protocol.Proto.WebMessageInfo
@@ -53,11 +54,11 @@ defmodule BaileysEx.Message.HistorySyncTest do
       |> Map.put(:initial_hist_bootstrap_inline_payload, payload)
 
     assert {:ok, data} =
-             apply(BaileysEx.Message.HistorySync, :process_notification, [
+             HistorySync.process_notification(
                notification,
                %{key: %{id: "history-msg"}},
                %{inflate_fun: fn bytes -> {:ok, bytes} end}
-             ])
+             )
 
     assert data.sync_type == :INITIAL_BOOTSTRAP
     assert data.progress == 77
@@ -103,7 +104,7 @@ defmodule BaileysEx.Message.HistorySyncTest do
       |> Map.put(:direct_path, "/history-sync/1")
 
     assert {:ok, data} =
-             apply(BaileysEx.Message.HistorySync, :process_notification, [
+             HistorySync.process_notification(
                notification,
                %{key: %{id: "history-msg-2"}},
                %{
@@ -113,7 +114,7 @@ defmodule BaileysEx.Message.HistorySyncTest do
                  end,
                  inflate_fun: fn bytes -> {:ok, bytes} end
                }
-             ])
+             )
 
     assert data.sync_type == :PUSH_NAME
     assert data.progress == 12

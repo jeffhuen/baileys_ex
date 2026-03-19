@@ -1,8 +1,8 @@
 defmodule BaileysEx.Syncd.ActionMapperTest do
   use ExUnit.Case, async: true
 
-  alias BaileysEx.Syncd.ActionMapper
   alias BaileysEx.Protocol.Proto.Syncd
+  alias BaileysEx.Syncd.ActionMapper
 
   @me %{name: "Test User", id: "me@s.whatsapp.net"}
   @jid "user@s.whatsapp.net"

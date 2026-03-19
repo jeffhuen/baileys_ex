@@ -6,6 +6,7 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Message.Builder
+  alias BaileysEx.Message.NotificationHandler
   alias BaileysEx.Protocol.Proto.Message
 
   test "process_node/2 emits synthetic group create notifications and group upserts" do
@@ -37,10 +38,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -103,10 +104,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                picture_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{contacts_update: [%{id: "120363001234567890@g.us", img_url: :changed}]}}
@@ -137,10 +138,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                disappearing_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -176,10 +177,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                blocklist_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{blocklist_update: %{blocklist: ["15551234567@s.whatsapp.net"], type: :add}}}
@@ -230,10 +231,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -275,10 +276,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                reaction_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -310,10 +311,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                participant_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -345,10 +346,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                settings_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -379,10 +380,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                message_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -420,10 +421,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                update_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -446,10 +447,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                promote_node,
                %{event_emitter: emitter}
-             ])
+             )
 
     assert_receive {:events,
                     %{
@@ -497,10 +498,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
           }
         ] do
       assert :ok =
-               apply(BaileysEx.Message.NotificationHandler, :process_node, [
+               NotificationHandler.process_node(
                  node,
                  %{}
-               ])
+               )
     end
 
     privacy_token_node = %BinaryNode{
@@ -522,7 +523,7 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                privacy_token_node,
                %{
                  store_privacy_token_fun: fn jid, token, timestamp ->
@@ -530,7 +531,7 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
                    :ok
                  end
                }
-             ])
+             )
 
     assert_receive {:privacy_token, "15551234567@s.whatsapp.net", "token-1", "1710000704"}
   end
@@ -547,10 +548,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     log =
       capture_log(fn ->
         assert :ok =
-                 apply(BaileysEx.Message.NotificationHandler, :process_node, [
+                 NotificationHandler.process_node(
                    node,
                    %{resync_app_state_fun: fn "regular_high" -> {:error, :decrypt_failed} end}
-                 ])
+                 )
       end)
 
     assert log =~ "server_sync resync failed"
@@ -591,10 +592,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                node,
                %{event_emitter: emitter, me_id: "15559999999@s.whatsapp.net"}
-             ])
+             )
 
     # Verify synthetic message is still emitted
     assert_receive {:events,
@@ -616,7 +617,7 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
                     }}
 
     assert is_list(participants)
-    assert length(participants) >= 1
+    assert participants != []
 
     unsubscribe.()
   end
@@ -646,10 +647,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                node,
                %{event_emitter: emitter, me_id: "15559999999@s.whatsapp.net"}
-             ])
+             )
 
     # Verify the groups_update side effect is emitted
     assert_receive {:events,
@@ -700,10 +701,10 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
     }
 
     assert :ok =
-             apply(BaileysEx.Message.NotificationHandler, :process_node, [
+             NotificationHandler.process_node(
                node,
                %{event_emitter: emitter, me_id: me_id}
-             ])
+             )
 
     # Verify group_participants_update with remove action
     assert_receive {:events,

@@ -1,11 +1,11 @@
 defmodule BaileysEx.Signal.RepositoryTest do
   use ExUnit.Case, async: true
 
-  alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Group.Cipher, as: GroupCipher
-  alias BaileysEx.Signal.Group.SessionBuilder, as: GroupSessionBuilder
   alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.Group.SenderKeyRecord
+  alias BaileysEx.Signal.Group.SessionBuilder, as: GroupSessionBuilder
+  alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
   alias BaileysEx.TestHelpers.TelemetryHelpers
 

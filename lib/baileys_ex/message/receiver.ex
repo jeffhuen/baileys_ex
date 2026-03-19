@@ -336,6 +336,8 @@ defmodule BaileysEx.Message.Receiver do
 
   defp emit_protocol_side_effects(_received_message, context), do: {:ok, context}
 
+  # Dialyzer: proto struct SenderKeyDistributionMessage is a superset of the plain map spec
+  @dialyzer {:nowarn_function, maybe_process_sender_key_distribution_message: 3}
   defp maybe_process_sender_key_distribution_message(
          %Repository{} = repo,
          %{signal_author_jid: signal_author_jid},

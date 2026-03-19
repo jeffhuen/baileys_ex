@@ -108,25 +108,34 @@ defmodule BaileysEx.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      files: [
-        ".formatter.exs",
-        "LICENSE",
-        "README.md",
-        "examples",
-        "lib",
-        "mix.exs",
-        "native/baileys_nif/.cargo",
-        "native/baileys_nif/Cargo.lock",
-        "native/baileys_nif/Cargo.toml",
-        "native/baileys_nif/src",
-        "priv/proto",
-        "priv/wam",
-        "user_docs"
-      ],
+      files: package_files(),
       links: %{
         "GitHub" => "https://github.com/jeffhuen/baileys_ex",
         "Baileys Reference" => "https://github.com/WhiskeySockets/Baileys"
       }
     ]
+  end
+
+  defp package_files do
+    [
+      ".formatter.exs",
+      "LICENSE",
+      "README.md",
+      "examples/echo_bot.exs",
+      "examples/echo-bot.md",
+      "mix.exs",
+      "native/baileys_nif/.cargo/config.toml",
+      "native/baileys_nif/Cargo.lock",
+      "native/baileys_nif/Cargo.toml",
+      "user_docs/glossary.md"
+    ] ++
+      Path.wildcard("lib/**/*.ex") ++
+      Path.wildcard("native/baileys_nif/src/**/*.rs") ++
+      Path.wildcard("priv/proto/**/*") ++
+      Path.wildcard("priv/wam/**/*") ++
+      Path.wildcard("user_docs/getting-started/**/*.md") ++
+      Path.wildcard("user_docs/guides/**/*.md") ++
+      Path.wildcard("user_docs/reference/**/*.md") ++
+      Path.wildcard("user_docs/troubleshooting/**/*.md")
   end
 end

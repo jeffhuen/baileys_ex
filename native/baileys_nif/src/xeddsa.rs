@@ -18,7 +18,7 @@ fn sign<'a>(env: Env<'a>, private_key: Binary<'a>, message: Binary<'a>) -> NifRe
     clamped[31] |= 64;
 
     let a = Scalar::from_bytes_mod_order(clamped);
-    let big_a = &a * &ED25519_BASEPOINT_POINT;
+    let big_a = a * ED25519_BASEPOINT_POINT;
     let sign_bit = big_a.compress().to_bytes()[31] & 0x80;
     let big_a_bytes = big_a.compress().to_bytes();
 
@@ -28,7 +28,7 @@ fn sign<'a>(env: Env<'a>, private_key: Binary<'a>, message: Binary<'a>) -> NifRe
         .finalize();
     let r = Scalar::from_bytes_mod_order_wide(&nonce_hash.into());
 
-    let big_r = &r * &ED25519_BASEPOINT_POINT;
+    let big_r = r * ED25519_BASEPOINT_POINT;
     let big_r_bytes = big_r.compress().to_bytes();
 
     let h_hash = Sha512::new()
@@ -89,5 +89,5 @@ fn verify(public_key: Binary, message: Binary, signature: Binary) -> bool {
         .finalize();
     let h = Scalar::from_bytes_mod_order_wide(&h_hash.into());
 
-    &s * &ED25519_BASEPOINT_POINT - &h * &edwards == big_r
+    s * ED25519_BASEPOINT_POINT - h * edwards == big_r
 }

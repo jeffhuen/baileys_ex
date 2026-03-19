@@ -6,13 +6,22 @@ BaileysEx follows the Baileys wire protocol and feature surface closely while ex
 
 ## Installation
 
+Prerequisites:
+
+- Elixir 1.19+
+- OTP 28
+- Rust toolchain available on the machine that runs `mix compile`
+
 ```elixir
 def deps do
   [
-    {:baileys_ex, "~> 0.1.0"}
+    {:baileys_ex, "~> 0.1.0-alpha.1"}
   ]
 end
 ```
+
+This package is currently published as an alpha prerelease, so the prerelease
+version must be requested explicitly.
 
 ## Quick Start
 
@@ -29,13 +38,13 @@ parent = self()
   BaileysEx.connect(
     persisted_auth.state,
     Keyword.merge(persisted_auth.connect_opts, [
-    transport: {MintWebSocket, []},
-    on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
-    on_connection: fn update ->
-      IO.inspect(update, label: "connection")
-      send(parent, {:connection_update, update})
-    end
-  ])
+      transport: {MintWebSocket, []},
+      on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
+      on_connection: fn update ->
+        IO.inspect(update, label: "connection")
+        send(parent, {:connection_update, update})
+      end
+    ])
   )
 
 _unsubscribe =
@@ -143,20 +152,8 @@ Show usage:
 mix run examples/echo_bot.exs -- --help
 ```
 
-## Development
-
-```bash
-mix format
-mix compile
-mix test
-mix credo
-mix dialyzer
-mix docs
-mix hex.build
-```
-
 ## Reference
 
-Baileys is the spec. The pinned upstream reference used for this port lives in `dev/reference/Baileys-master/`.
+Baileys is the spec. BaileysEx tracks the Baileys `7.00rc9` behavior surface as its upstream reference.
 
 When BaileysEx behavior and a design instinct disagree, prefer Baileys.

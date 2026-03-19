@@ -18,12 +18,13 @@ Add BaileysEx to your `mix.exs` dependencies.
 ```elixir
 defp deps do
   [
-    {:baileys_ex, "~> 0.1.0"}
+    {:baileys_ex, "~> 0.1.0-alpha.1"}
   ]
 end
 ```
 
 BaileysEx builds native code during compilation, so you need Rust on the machine that runs `mix compile`.
+Because the current public release is an alpha prerelease, the prerelease version must be requested explicitly.
 
 ### 2. Fetch and compile the project
 

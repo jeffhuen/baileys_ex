@@ -23,7 +23,7 @@ static LIVE_SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Internal state machine for the Noise session.
 /// Transitions from Handshake to Transport after the XX pattern completes.
 enum NoiseState {
-    Handshake(snow::HandshakeState),
+    Handshake(Box<snow::HandshakeState>),
     Transport(snow::TransportState),
     /// Temporary placeholder during in-place state transitions.
     /// Never observed by callers — exists only to satisfy Rust ownership rules
@@ -99,7 +99,9 @@ fn init(
         .build_initiator()
         .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("snow init failed: {e}"))))?;
 
-    Ok(ResourceArc::new(NoiseSession::new(NoiseState::Handshake(hs))))
+    Ok(ResourceArc::new(NoiseSession::new(NoiseState::Handshake(
+        Box::new(hs),
+    ))))
 }
 
 /// Initialize a Noise XX responder session (used only in tests).
@@ -134,7 +136,9 @@ fn init_responder(
         .build_responder()
         .map_err(|e| rustler::Error::RaiseTerm(Box::new(format!("snow init failed: {e}"))))?;
 
-    Ok(ResourceArc::new(NoiseSession::new(NoiseState::Handshake(hs))))
+    Ok(ResourceArc::new(NoiseSession::new(NoiseState::Handshake(
+        Box::new(hs),
+    ))))
 }
 
 fn local_private_key_bytes(
@@ -268,7 +272,7 @@ fn finish(session: ResourceArc<NoiseSession>) -> NifResult<Atom> {
 
     match state {
         NoiseState::Handshake(hs) => {
-            let transport = hs.into_transport_mode().map_err(|e| {
+            let transport = (*hs).into_transport_mode().map_err(|e| {
                 // HandshakeState was consumed — session is now unusable on error.
                 rustler::Error::RaiseTerm(Box::new(format!("finish failed: {e}")))
             })?;

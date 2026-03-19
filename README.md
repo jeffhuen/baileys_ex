@@ -102,7 +102,7 @@ Add `baileys_ex` to your `mix.exs` dependencies:
 ```elixir
 def deps do
   [
-    {:baileys_ex, "~> 0.1.0-alpha.1"}
+    {:baileys_ex, "~> 0.1.0-alpha.2"}
   ]
 end
 ```

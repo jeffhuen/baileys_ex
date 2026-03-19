@@ -960,7 +960,9 @@ defmodule BaileysEx.Connection.Socket do
 
   defp handle_phone_pairing_notification(%BinaryNode{} = node, %__MODULE__{} = data) do
     with {:ok, %{creds_update: creds_update, node: finish_node}} <-
-           Phone.complete_pairing(node, data.auth_state, pairing_iterations: data.pairing_iterations),
+           Phone.complete_pairing(node, data.auth_state,
+             pairing_iterations: data.pairing_iterations
+           ),
          {finish_node, query_id} <- ensure_query_id(finish_node, data),
          {:ok, data} <- send_node_internal(data, finish_node) do
       {:defer_notification_ack, :authenticating,

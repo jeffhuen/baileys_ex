@@ -124,11 +124,14 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
 
     File.write!(file_path, ~s({"__type__":"atom","value":"#{unknown_atom}"}))
 
-    assert {:error, %ArgumentError{}} = FilePersistence.load_keys(tmp_dir, :session, "unknown-atom")
+    assert {:error, %ArgumentError{}} =
+             FilePersistence.load_keys(tmp_dir, :session, "unknown-atom")
   end
 
   @tag :tmp_dir
-  test "load_keys/3 rejects persisted atom map keys that do not already exist", %{tmp_dir: tmp_dir} do
+  test "load_keys/3 rejects persisted atom map keys that do not already exist", %{
+    tmp_dir: tmp_dir
+  } do
     unknown_atom = "baileys_ex_unknown_atom_key_from_disk"
     file_path = Path.join(tmp_dir, "session-unknown-key.json")
 
@@ -139,7 +142,8 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
       ~s({"__atom_keys__":["#{unknown_atom}"],"#{unknown_atom}":"value"})
     )
 
-    assert {:error, %ArgumentError{}} = FilePersistence.load_keys(tmp_dir, :session, "unknown-key")
+    assert {:error, %ArgumentError{}} =
+             FilePersistence.load_keys(tmp_dir, :session, "unknown-key")
   end
 
   defp session(base_key) do

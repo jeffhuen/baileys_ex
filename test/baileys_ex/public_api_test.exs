@@ -253,8 +253,7 @@ defmodule BaileysEx.PublicApiTest do
                pairing_iterations: 1
              )
 
-    assert_receive {:fake_socket_pairing_code, "15551234567",
-                    [custom_pairing_code: "ABCDEFGH"]}
+    assert_receive {:fake_socket_pairing_code, "15551234567", [custom_pairing_code: "ABCDEFGH"]}
 
     assert :ok = BaileysEx.disconnect(connection)
   end

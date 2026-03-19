@@ -36,7 +36,7 @@ defmodule BaileysEx.Signal.Group.SenderKeyRecord do
         signature_key
       ) do
     state = SenderKeyState.new(id, iteration, chain_key, %{public: signature_key, private: nil})
-    %{record | sender_key_states: Enum.take(states ++ [state], -@max_states)}
+    %{record | sender_key_states: append_bounded_state(states, state)}
   end
 
   @spec set_state(t(), non_neg_integer(), non_neg_integer(), binary(), %{
@@ -49,8 +49,19 @@ defmodule BaileysEx.Signal.Group.SenderKeyRecord do
 
   @spec put_state(t(), SenderKeyState.t()) :: t()
   def put_state(%__MODULE__{sender_key_states: states} = record, %SenderKeyState{} = state) do
-    updated_states = Enum.reject(states, &(&1.sender_key_id == state.sender_key_id)) ++ [state]
+    updated_states =
+      states
+      |> Enum.reject(&(&1.sender_key_id == state.sender_key_id))
+      |> append_bounded_state(state)
 
-    %{record | sender_key_states: Enum.take(updated_states, -@max_states)}
+    %{record | sender_key_states: updated_states}
+  end
+
+  defp append_bounded_state(states, state) do
+    states
+    |> Enum.reverse()
+    |> Enum.take(@max_states - 1)
+    |> then(&[state | &1])
+    |> Enum.reverse()
   end
 end

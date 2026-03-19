@@ -81,10 +81,16 @@ defmodule BaileysEx.Syncd.ActionMapper do
 
     results = [{:contacts_upsert, [contact]}]
 
-    if action.lid_jid && JID.lid?(action.lid_jid) && id_is_pn do
-      results ++ [{:lid_mapping_update, %{lid: action.lid_jid, pn: id}}]
-    else
-      results
+    case action.lid_jid do
+      lid_jid when is_binary(lid_jid) ->
+        if id_is_pn and JID.lid?(lid_jid) do
+          results ++ [{:lid_mapping_update, %{lid: lid_jid, pn: id}}]
+        else
+          results
+        end
+
+      _ ->
+        results
     end
   end
 

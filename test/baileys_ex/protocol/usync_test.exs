@@ -92,6 +92,52 @@ defmodule BaileysEx.Protocol.USyncTest do
 
       assert {:error, {:missing_protocols, []}} = USync.to_node(query, "tag-1")
     end
+
+    test "preserves wire order when seeded lists are extended through the builder helpers" do
+      query =
+        USync.new(
+          protocols: [:devices, :contact],
+          users: [%User{phone: "+15551234567"}],
+          context: :background
+        )
+        |> USync.with_protocol(:lid)
+        |> USync.with_user(%User{id: "15557654321@s.whatsapp.net"})
+
+      assert {:ok,
+              %BinaryNode{
+                content: [
+                  %BinaryNode{
+                    attrs: %{"context" => "background"},
+                    content: [
+                      %BinaryNode{
+                        tag: "query",
+                        content: [
+                          %BinaryNode{tag: "devices"},
+                          %BinaryNode{tag: "contact"},
+                          %BinaryNode{tag: "lid"}
+                        ]
+                      },
+                      %BinaryNode{
+                        tag: "list",
+                        content: [
+                          %BinaryNode{
+                            tag: "user",
+                            attrs: %{},
+                            content: [
+                              %BinaryNode{tag: "contact", content: "+15551234567"}
+                            ]
+                          },
+                          %BinaryNode{
+                            tag: "user",
+                            attrs: %{"jid" => "15557654321@s.whatsapp.net"}
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }} = USync.to_node(query, "tag-2")
+    end
   end
 
   describe "parse_result/2" do

@@ -827,18 +827,28 @@ defmodule BaileysEx.Message.Receiver do
          key,
          message_timestamp
        ) do
-    processed_history_messages =
-      case context[:store_ref] && ConnectionStore.get(context.store_ref, :creds, %{}) do
-        %{processed_history_messages: processed} when is_list(processed) ->
-          processed ++ [%{key: key, message_timestamp: message_timestamp}]
+    history_entry = %{key: key, message_timestamp: message_timestamp}
+
+    creds_update =
+      case context[:store_ref] do
+        %ConnectionStore.Ref{} = store_ref ->
+          processed_history_messages =
+            store_ref
+            |> current_processed_history_messages()
+            |> append_processed_history_message(history_entry)
+
+          :ok =
+            ConnectionStore.merge_creds(store_ref, %{
+              processed_history_messages: processed_history_messages
+            })
+
+          %{processed_history_messages: processed_history_messages}
 
         _ ->
-          [%{key: key, message_timestamp: message_timestamp}]
+          %{processed_history_messages: [history_entry]}
       end
 
-    EventEmitter.emit(event_emitter, :creds_update, %{
-      processed_history_messages: processed_history_messages
-    })
+    EventEmitter.emit(event_emitter, :creds_update, creds_update)
   end
 
   defp history_sync_payload(notification, received_message, context) do
@@ -872,8 +882,8 @@ defmodule BaileysEx.Message.Receiver do
   defp history_sync_latest_value(_notification, is_latest), do: is_latest
 
   defp placeholder_cached_message(context, %WebMessageInfo{} = info) do
-    case {context[:store_ref], info.key && info.key.id} do
-      {%ConnectionStore.Ref{} = store_ref, message_id} when is_binary(message_id) ->
+    case {context[:store_ref], info.key} do
+      {%ConnectionStore.Ref{} = store_ref, %{id: message_id}} when is_binary(message_id) ->
         Retry.get_placeholder_resend(store_ref, message_id)
 
       _ ->
@@ -882,11 +892,27 @@ defmodule BaileysEx.Message.Receiver do
   end
 
   defp maybe_resolve_placeholder_resend(context, %WebMessageInfo{} = info) do
-    if context[:store_ref] && info.key && is_binary(info.key.id) do
-      Retry.resolve_placeholder_resend(context.store_ref, info.key.id)
-    else
-      :ok
+    case {context[:store_ref], info.key} do
+      {%ConnectionStore.Ref{} = store_ref, %{id: message_id}} when is_binary(message_id) ->
+        Retry.resolve_placeholder_resend(store_ref, message_id)
+
+      _ ->
+        :ok
     end
+  end
+
+  defp current_processed_history_messages(%ConnectionStore.Ref{} = store_ref) do
+    case ConnectionStore.get(store_ref, :creds, %{}) do
+      %{processed_history_messages: processed} when is_list(processed) -> processed
+      _ -> []
+    end
+  end
+
+  # creds_update emits the full history list, so preserving insertion order still
+  # requires materializing a list for the event payload.
+  defp append_processed_history_message(processed_history_messages, history_entry)
+       when is_list(processed_history_messages) do
+    :lists.reverse([history_entry | :lists.reverse(processed_history_messages)])
   end
 
   defp decode_lid_mapping_pairs(decoded_payload) do

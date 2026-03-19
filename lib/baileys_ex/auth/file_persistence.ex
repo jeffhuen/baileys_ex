@@ -290,7 +290,7 @@ defmodule BaileysEx.Auth.FilePersistence do
   end
 
   defp decode_term(%{"__type__" => "atom", "value" => value}) when is_binary(value) do
-    String.to_atom(value)
+    String.to_existing_atom(value)
   end
 
   defp decode_term(%{"type" => @buffer_tag, "data" => data}) when is_list(data) do
@@ -305,7 +305,7 @@ defmodule BaileysEx.Auth.FilePersistence do
     |> Enum.map(fn {key, value} ->
       decoded_key =
         if key in atom_keys do
-          String.to_atom(key)
+          String.to_existing_atom(key)
         else
           key
         end

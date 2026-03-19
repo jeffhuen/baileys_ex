@@ -269,14 +269,21 @@ defmodule BaileysEx.Media.Retry do
   """
   @spec decode_notification_event(BinaryNode.t()) :: media_update_event()
   def decode_notification_event(%BinaryNode{} = node) do
-    rmr = BinaryNodeUtil.child(node, "rmr")
+    {remote_jid, from_me, participant} =
+      case BinaryNodeUtil.child(node, "rmr") do
+        %BinaryNode{attrs: attrs} ->
+          {attrs["jid"], attrs["from_me"] == "true", attrs["participant"]}
+
+        _ ->
+          {nil, false, nil}
+      end
 
     event = %{
       key: %{
         id: node.attrs["id"],
-        remote_jid: rmr && rmr.attrs["jid"],
-        from_me: rmr && rmr.attrs["from_me"] == "true",
-        participant: rmr && rmr.attrs["participant"]
+        remote_jid: remote_jid,
+        from_me: from_me,
+        participant: participant
       }
     }
 

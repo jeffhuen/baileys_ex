@@ -149,7 +149,10 @@ defmodule BaileysEx.Feature.Group do
              %BinaryNode{tag: "invite", attrs: %{"code" => code}}
            ]) do
       {:ok,
-       BinaryNodeUtil.child(result, "group") && BinaryNodeUtil.child(result, "group").attrs["jid"]}
+       case BinaryNodeUtil.child(result, "group") do
+         %BinaryNode{attrs: %{"jid" => jid}} -> jid
+         _ -> nil
+       end}
     end
   end
 

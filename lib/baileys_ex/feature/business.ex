@@ -290,8 +290,13 @@ defmodule BaileysEx.Feature.Business do
              },
              Keyword.get(opts, :query_timeout, @timeout)
            ) do
-      delete_node = BinaryNodeUtil.child(result, "product_catalog_delete")
-      {:ok, %{deleted: parse_int(delete_node && delete_node.attrs["deleted_count"]) || 0}}
+      deleted_count =
+        case BinaryNodeUtil.child(result, "product_catalog_delete") do
+          %BinaryNode{attrs: %{"deleted_count" => count}} -> parse_int(count) || 0
+          _ -> 0
+        end
+
+      {:ok, %{deleted: deleted_count}}
     end
   end
 

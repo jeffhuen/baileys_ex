@@ -64,26 +64,26 @@ defmodule BaileysEx.Message.HistorySync do
     {chats, contacts, messages, lid_pn_mappings} =
       Enum.reduce(
         history_sync.conversations,
-        {[], [], [], explicit_mappings(history_sync)},
+        {[], [], [], Enum.reverse(explicit_mappings(history_sync))},
         fn conversation, {chats, contacts, messages, mappings} ->
           chat = conversation_to_chat(conversation)
           contact = conversation_to_contact(conversation)
           conversation_messages = conversation_messages(conversation)
 
           {
-            chats ++ [chat],
-            contacts ++ [contact],
-            messages ++ conversation_messages,
-            mappings ++ conversation_lid_pn_mappings(conversation)
+            [chat | chats],
+            [contact | contacts],
+            Enum.reverse(conversation_messages, messages),
+            Enum.reverse(conversation_lid_pn_mappings(conversation), mappings)
           }
         end
       )
 
     %{
-      chats: chats,
-      contacts: contacts,
-      messages: messages,
-      lid_pn_mappings: Enum.uniq(lid_pn_mappings),
+      chats: Enum.reverse(chats),
+      contacts: Enum.reverse(contacts),
+      messages: Enum.reverse(messages),
+      lid_pn_mappings: lid_pn_mappings |> Enum.reverse() |> Enum.uniq(),
       sync_type: sync_type,
       progress: history_sync.progress
     }

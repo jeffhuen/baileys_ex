@@ -1692,10 +1692,14 @@ defmodule BaileysEx.Connection.Coordinator do
   defp normalize_patch_names(names) when is_list(names) do
     Enum.reduce_while(names, {:ok, []}, fn name, {:ok, acc} ->
       case normalize_patch_name(name) do
-        {:ok, collection} -> {:cont, {:ok, acc ++ [collection]}}
+        {:ok, collection} -> {:cont, {:ok, [collection | acc]}}
         {:error, _} = err -> {:halt, err}
       end
     end)
+    |> case do
+      {:ok, collections} -> {:ok, Enum.reverse(collections)}
+      {:error, _} = error -> error
+    end
   end
 
   defp normalize_patch_name(name) when is_atom(name) do

@@ -252,22 +252,24 @@ defmodule BaileysEx.Feature.Profile do
         email: email,
         category: category,
         business_hours: %{
-          timezone: business_hours && business_hours.attrs["timezone"],
-          business_config:
-            if business_hours do
-              Enum.map(
-                BinaryNodeUtil.children(business_hours, "business_hours_config"),
-                & &1.attrs
-              )
-            else
-              []
-            end
+          timezone:
+            case business_hours do
+              %BinaryNode{attrs: %{"timezone" => timezone}} -> timezone
+              _ -> nil
+            end,
+          business_config: business_hours_configs(business_hours)
         }
       }
     else
       _ -> nil
     end
   end
+
+  defp business_hours_configs(%BinaryNode{} = business_hours) do
+    Enum.map(BinaryNodeUtil.children(business_hours, "business_hours_config"), & &1.attrs)
+  end
+
+  defp business_hours_configs(_business_hours), do: []
 
   defp child_content(nil, _tag), do: nil
 

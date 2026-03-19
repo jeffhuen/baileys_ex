@@ -883,6 +883,62 @@ defmodule BaileysEx.Message.ReceiverTest do
     unsubscribe.()
   end
 
+  test "process_node/3 accumulates processed history metadata across sequential notifications without waiting for async store updates" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    {:ok, runtime_store} =
+      ConnectionStore.start_link(auth_state: %{processed_history_messages: []})
+
+    runtime_store_ref = ConnectionStore.wrap(runtime_store)
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid",
+      store_ref: runtime_store_ref,
+      send_receipt_fun: fn _receipt_node -> :ok end,
+      history_sync_fun: fn _notification, _received_message, _context -> {:ok, %{}} end
+    }
+
+    assert {:ok, _message, _context} =
+             Receiver.process_node(
+               history_sync_notification_node("hist-1", 1_710_000_600),
+               context
+             )
+
+    assert {:ok, _message, _context} =
+             Receiver.process_node(
+               history_sync_notification_node("hist-2", 1_710_000_601),
+               context
+             )
+
+    assert_receive {:events,
+                    %{
+                      creds_update: %{
+                        processed_history_messages: [
+                          %{key: %{id: "hist-1"}, message_timestamp: 1_710_000_600}
+                        ]
+                      }
+                    }}
+
+    assert_receive {:events,
+                    %{
+                      creds_update: %{
+                        processed_history_messages: [
+                          %{key: %{id: "hist-1"}, message_timestamp: 1_710_000_600},
+                          %{key: %{id: "hist-2"}, message_timestamp: 1_710_000_601}
+                        ]
+                      }
+                    }}
+
+    unsubscribe.()
+  end
+
   test "process_node/3 falls back to the history-sync module when no custom callback is configured" do
     {:ok, emitter} = EventEmitter.start_link()
     parent = self()
@@ -1571,5 +1627,34 @@ defmodule BaileysEx.Message.ReceiverTest do
     iv = :binary.copy(<<32>>, 12)
     {:ok, ciphertext} = BaileysEx.Crypto.aes_gcm_encrypt(dec_key, iv, payload, aad)
     {ciphertext, iv}
+  end
+
+  defp history_sync_notification_node(message_id, message_timestamp) do
+    history_message = %Message{
+      protocol_message: %Message.ProtocolMessage{
+        type: :HISTORY_SYNC_NOTIFICATION,
+        history_sync_notification: %Message.HistorySyncNotification{
+          sync_type: :INITIAL_BOOTSTRAP,
+          progress: 77,
+          peer_data_request_session_id: "pdo-session-1"
+        }
+      }
+    }
+
+    %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => message_id,
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => Integer.to_string(message_timestamp)
+      },
+      content: [
+        %BinaryNode{
+          tag: "plaintext",
+          attrs: %{},
+          content: Message.encode(history_message)
+        }
+      ]
+    }
   end
 end

@@ -13,7 +13,10 @@ defmodule BaileysEx.Protocol.Proto.MessageSupport do
 
   def decode_fields(binary, struct, specs) do
     field_map = Map.new(specs, fn {field, spec} -> {field_number(spec), {field, spec}} end)
-    do_decode_fields(binary, struct, field_map)
+
+    with {:ok, decoded} <- do_decode_fields(binary, struct, field_map) do
+      {:ok, reverse_repeated_fields(decoded, specs)}
+    end
   end
 
   defp do_decode_fields(<<>>, struct, _field_map), do: {:ok, struct}
@@ -178,7 +181,7 @@ defmodule BaileysEx.Protocol.Proto.MessageSupport do
     Wire.continue_bytes(
       rest,
       struct,
-      &Map.update!(&1, field, fn values -> values ++ [&2] end),
+      &Map.update!(&1, field, fn values -> [&2 | values] end),
       &do_decode_fields(&1, &2, field_map)
     )
   end
@@ -187,7 +190,7 @@ defmodule BaileysEx.Protocol.Proto.MessageSupport do
     Wire.continue_bytes(
       rest,
       struct,
-      &Map.update!(&1, field, fn values -> values ++ [&2] end),
+      &Map.update!(&1, field, fn values -> [&2 | values] end),
       &do_decode_fields(&1, &2, field_map)
     )
   end
@@ -197,13 +200,29 @@ defmodule BaileysEx.Protocol.Proto.MessageSupport do
       rest,
       struct,
       &module.decode/1,
-      &Map.update!(&1, field, fn values -> values ++ [&2] end),
+      &Map.update!(&1, field, fn values -> [&2 | values] end),
       &do_decode_fields(&1, &2, field_map)
     )
   end
 
   defp decode_field(rest, struct, _field, _spec, wire_type, field_map) do
     Wire.skip_and_continue(wire_type, rest, struct, &do_decode_fields(&1, &2, field_map))
+  end
+
+  defp reverse_repeated_fields(struct, specs) do
+    Enum.reduce(specs, struct, fn
+      {field, {:repeated_string, _field_number}}, acc ->
+        Map.update!(acc, field, &Enum.reverse/1)
+
+      {field, {:repeated_bytes, _field_number}}, acc ->
+        Map.update!(acc, field, &Enum.reverse/1)
+
+      {field, {:repeated_message, _field_number, _module}}, acc ->
+        Map.update!(acc, field, &Enum.reverse/1)
+
+      _spec, acc ->
+        acc
+    end)
   end
 
   defp field_number({_, field_number}), do: field_number

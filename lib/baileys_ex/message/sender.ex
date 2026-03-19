@@ -362,31 +362,37 @@ defmodule BaileysEx.Message.Sender do
        ) do
     bytes = Wire.encode(message)
 
-    Enum.reduce_while(device_jids, {:ok, repo, [], false}, fn device_jid,
-                                                              {:ok, acc_repo, nodes,
-                                                               include_identity?} ->
-      case Repository.encrypt_message(acc_repo, %{jid: device_jid, data: bytes}) do
-        {:ok, next_repo, %{type: type, ciphertext: ciphertext}} ->
-          node = %BinaryNode{
-            tag: "to",
-            attrs: %{"jid" => device_jid},
-            content: [
-              %BinaryNode{
-                tag: "enc",
-                attrs:
-                  %{"type" => Atom.to_string(type), "v" => "2"}
-                  |> Map.merge(stringify_attrs(enc_attrs)),
-                content: {:binary, ciphertext}
-              }
-            ]
-          }
+    case Enum.reduce_while(device_jids, {:ok, repo, [], false}, fn device_jid,
+                                                                 {:ok, acc_repo, nodes,
+                                                                  include_identity?} ->
+           case Repository.encrypt_message(acc_repo, %{jid: device_jid, data: bytes}) do
+             {:ok, next_repo, %{type: type, ciphertext: ciphertext}} ->
+               node = %BinaryNode{
+                 tag: "to",
+                 attrs: %{"jid" => device_jid},
+                 content: [
+                   %BinaryNode{
+                     tag: "enc",
+                     attrs:
+                       %{"type" => Atom.to_string(type), "v" => "2"}
+                       |> Map.merge(stringify_attrs(enc_attrs)),
+                     content: {:binary, ciphertext}
+                   }
+                 ]
+               }
 
-          {:cont, {:ok, next_repo, nodes ++ [node], include_identity? || type == :pkmsg}}
+               {:cont, {:ok, next_repo, [node | nodes], include_identity? || type == :pkmsg}}
 
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
+             {:error, reason} ->
+               {:halt, {:error, reason}}
+           end
+         end) do
+      {:ok, next_repo, nodes, include_identity?} ->
+        {:ok, next_repo, Enum.reverse(nodes), include_identity?}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp discover_devices(context, jids, opts) do

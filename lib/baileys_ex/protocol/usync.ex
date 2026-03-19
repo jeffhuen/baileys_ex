@@ -51,8 +51,16 @@ defmodule BaileysEx.Protocol.USync do
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     %__MODULE__{
-      protocols: Keyword.get(opts, :protocols, []),
-      users: Keyword.get(opts, :users, []),
+      protocols:
+        opts
+        |> Keyword.get(:protocols, [])
+        |> Enum.map(&normalize_protocol/1)
+        |> Enum.reverse(),
+      users:
+        opts
+        |> Keyword.get(:users, [])
+        |> Enum.map(&normalize_user/1)
+        |> Enum.reverse(),
       context: normalize_context(Keyword.get(opts, :context, :interactive)),
       mode: normalize_mode(Keyword.get(opts, :mode, :query))
     }
@@ -61,17 +69,17 @@ defmodule BaileysEx.Protocol.USync do
   @doc "Appends an explicit feature protocol string to the USync query."
   @spec with_protocol(t(), protocol() | :device) :: t()
   def with_protocol(%__MODULE__{} = query, protocol) do
-    %{query | protocols: query.protocols ++ [normalize_protocol(protocol)]}
+    %{query | protocols: [normalize_protocol(protocol) | query.protocols]}
   end
 
   @doc "Appends a user resolution request payload to the USync query."
   @spec with_user(t(), User.t() | map()) :: t()
   def with_user(%__MODULE__{} = query, %User{} = user) do
-    %{query | users: query.users ++ [user]}
+    %{query | users: [user | query.users]}
   end
 
   def with_user(%__MODULE__{} = query, user) when is_map(user) do
-    with_user(query, struct(User, user))
+    with_user(query, normalize_user(user))
   end
 
   @doc "Modifies the invocation context context tag."
@@ -90,16 +98,7 @@ defmodule BaileysEx.Protocol.USync do
   @spec build_query([protocol() | :device], [User.t() | map()], keyword()) ::
           {:ok, BinaryNode.t()} | {:error, term()}
   def build_query(protocols, users, opts \\ []) do
-    query =
-      Enum.reduce(protocols, new(opts), fn protocol, acc ->
-        with_protocol(acc, protocol)
-      end)
-
-    query =
-      Enum.reduce(users, query, fn user, acc ->
-        with_user(acc, user)
-      end)
-
+    query = new(Keyword.merge(opts, protocols: protocols, users: users))
     sid = Keyword.get_lazy(opts, :sid, &default_sid/0)
     to_node(query, sid)
   end
@@ -110,6 +109,8 @@ defmodule BaileysEx.Protocol.USync do
   def to_node(%__MODULE__{users: []}, _sid), do: {:error, {:missing_users, []}}
 
   def to_node(%__MODULE__{} = query, sid) when is_binary(sid) do
+    protocols = ordered_protocols(query)
+
     {:ok,
      %BinaryNode{
        tag: "iq",
@@ -128,12 +129,12 @@ defmodule BaileysEx.Protocol.USync do
              %BinaryNode{
                tag: "query",
                attrs: %{},
-               content: Enum.map(query.protocols, &protocol_query_node/1)
+               content: Enum.map(protocols, &protocol_query_node/1)
              },
              %BinaryNode{
                tag: "list",
                attrs: %{},
-               content: Enum.map(query.users, &user_query_node(&1, query.protocols))
+               content: Enum.map(ordered_users(query), &user_query_node(&1, protocols))
              }
            ]
          }
@@ -161,6 +162,12 @@ defmodule BaileysEx.Protocol.USync do
     do: {:error, {:unexpected_iq_type, type}}
 
   def parse_result(%__MODULE__{}, %BinaryNode{}), do: {:error, {:unexpected_iq_type, nil}}
+
+  defp ordered_protocols(%__MODULE__{protocols: protocols}), do: Enum.reverse(protocols)
+  defp ordered_users(%__MODULE__{users: users}), do: Enum.reverse(users)
+
+  defp normalize_user(%User{} = user), do: user
+  defp normalize_user(user) when is_map(user), do: struct(User, user)
 
   defp parse_user_list(nil, _protocols), do: {:ok, []}
 

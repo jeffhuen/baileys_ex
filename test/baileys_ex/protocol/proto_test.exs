@@ -8,6 +8,12 @@ defmodule BaileysEx.Protocol.ProtoTest do
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientFinish
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientHello
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ServerHello
+  alias BaileysEx.Protocol.Proto.Message.ContextInfo
+  alias BaileysEx.Protocol.Proto.Message.PollCreationMessage
+  alias BaileysEx.Protocol.Proto.Message.PollCreationMessage.Option
+  alias BaileysEx.Protocol.Proto.Message.PollVoteMessage
+  alias BaileysEx.Protocol.Proto.WebMessageInfo
+  alias BaileysEx.Protocol.Proto.WebMessageInfo.UserReceipt
 
   test "HandshakeMessage roundtrips client hello fields" do
     message = %HandshakeMessage{
@@ -116,5 +122,45 @@ defmodule BaileysEx.Protocol.ProtoTest do
               not_before: 1_700_000_000,
               not_after: 1_800_000_000
             }} = Details.decode(details_bin)
+  end
+
+  test "message proto repeated fields preserve decode order" do
+    context_info = %ContextInfo{
+      mentioned_jid: ["15550001111@s.whatsapp.net", "15550002222@s.whatsapp.net"]
+    }
+
+    poll_vote_message = %PollVoteMessage{
+      selected_options: [<<1, 2, 3>>, <<4, 5, 6>>]
+    }
+
+    receipts = [
+      %UserReceipt{user_jid: "15550001111@s.whatsapp.net", receipt_timestamp: 1},
+      %UserReceipt{user_jid: "15550002222@s.whatsapp.net", receipt_timestamp: 2}
+    ]
+
+    poll_creation_message = %PollCreationMessage{
+      name: "Which option?",
+      options: [%Option{option_name: "first"}, %Option{option_name: "second"}]
+    }
+
+    mentioned_jid = context_info.mentioned_jid
+    selected_options = poll_vote_message.selected_options
+    options = poll_creation_message.options
+
+    assert {:ok, %ContextInfo{mentioned_jid: ^mentioned_jid}} =
+             context_info |> ContextInfo.encode() |> ContextInfo.decode()
+
+    assert {:ok, %PollVoteMessage{selected_options: ^selected_options}} =
+             poll_vote_message |> PollVoteMessage.encode() |> PollVoteMessage.decode()
+
+    assert {:ok, %PollCreationMessage{options: ^options}} =
+             poll_creation_message
+             |> PollCreationMessage.encode()
+             |> PollCreationMessage.decode()
+
+    assert {:ok, %WebMessageInfo{user_receipt: ^receipts}} =
+             %WebMessageInfo{user_receipt: receipts}
+             |> WebMessageInfo.encode()
+             |> WebMessageInfo.decode()
   end
 end

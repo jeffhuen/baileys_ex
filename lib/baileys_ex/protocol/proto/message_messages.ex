@@ -1783,7 +1783,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
         end
       end
 
-      alias BaileysEx.Protocol.Proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.PlaceholderMessageResendResponse
+      alias __MODULE__.PlaceholderMessageResendResponse
       alias BaileysEx.Protocol.Proto.MessageSupport
 
       defstruct placeholder_message_resend_response: nil
@@ -1950,12 +1950,12 @@ defmodule BaileysEx.Protocol.Proto.Message do
   defmodule ProtocolMessage do
     @moduledoc false
 
+    alias BaileysEx.Protocol.Proto.Message
     alias BaileysEx.Protocol.Proto.Message.AppStateSyncKeyShare
     alias BaileysEx.Protocol.Proto.Message.HistorySyncNotification
     alias BaileysEx.Protocol.Proto.Message.LIDMigrationMappingSyncMessage
     alias BaileysEx.Protocol.Proto.Message.LimitSharing
     alias BaileysEx.Protocol.Proto.Message.MemberLabel
-    alias BaileysEx.Protocol.Proto.Message
     alias BaileysEx.Protocol.Proto.Message.PeerDataOperationRequestMessage
     alias BaileysEx.Protocol.Proto.Message.PeerDataOperationRequestResponseMessage
     alias BaileysEx.Protocol.Proto.MessageKey

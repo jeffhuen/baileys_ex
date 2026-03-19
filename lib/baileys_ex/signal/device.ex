@@ -6,6 +6,7 @@ defmodule BaileysEx.Signal.Device do
   require Logger
 
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Connection.Socket
   alias BaileysEx.JID
   alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.USync
@@ -77,6 +78,7 @@ defmodule BaileysEx.Signal.Device do
 
   defp fetch_devices_via_query(%{signal_store: %Store{} = store} = context, jids) do
     query = Enum.reduce(jids, USync.new(context: :message), &USync.with_user(&2, %{id: &1}))
+
     query =
       query
       |> USync.with_protocol(:devices)
@@ -91,7 +93,8 @@ defmodule BaileysEx.Signal.Device do
       )
 
       fetched =
-        Enum.reduce(results, %{}, fn %{id: jid, devices: %{device_list: device_list}} = result, acc ->
+        Enum.reduce(results, %{}, fn %{id: jid, devices: %{device_list: device_list}} = result,
+                                     acc ->
           ids = Enum.map(device_list, &Integer.to_string(&1.id))
           requested_jid = requested_jid_for_result(result, jids)
 
@@ -126,7 +129,7 @@ defmodule BaileysEx.Signal.Device do
   end
 
   defp query_node(%{query_fun: fun}, node) when is_function(fun, 1), do: fun.(node)
-  defp query_node(%{socket: socket}, node), do: BaileysEx.Connection.Socket.query(socket, node)
+  defp query_node(%{socket: socket}, node), do: Socket.query(socket, node)
 
   defp query_node(_context, _node),
     do: {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: []}}
@@ -160,7 +163,8 @@ defmodule BaileysEx.Signal.Device do
     Enum.map(ids, &device_jid(parsed, &1))
   end
 
-  defp requested_jid_for_result(%{id: jid} = result, requested_jids) when is_list(requested_jids) do
+  defp requested_jid_for_result(%{id: jid} = result, requested_jids)
+       when is_list(requested_jids) do
     lid = Map.get(result, :lid)
     normalized_requested = MapSet.new(Enum.map(requested_jids, &normalize_user_jid/1))
     normalized_lid = normalize_user_jid(lid)

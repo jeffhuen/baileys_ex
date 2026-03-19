@@ -277,23 +277,29 @@ defmodule BaileysEx.Message.Retry do
     if retry_count >= max_retry_count do
       {:error, :max_retries_exceeded}
     else
-      ids = [attrs["id"] | parse_list_ids(node)]
-      remote_jid = attrs["from"] || attrs["recipient"] || attrs["to"]
-      resend_fun = opts[:resend_fun]
+      do_handle_retry_receipt(store_ref, attrs, node, opts)
+    end
+  end
 
-      entries =
-        ids
-        |> Enum.map(fn id ->
-          case get_recent_message(store_ref, remote_jid, id) do
-            %{message: message} = entry -> %{id: id, message: message, entry: entry}
-            nil -> nil
-          end
-        end)
-        |> Enum.reject(&is_nil/1)
+  defp do_handle_retry_receipt(store_ref, attrs, node, opts) do
+    ids = [attrs["id"] | parse_list_ids(node)]
+    remote_jid = attrs["from"] || attrs["recipient"] || attrs["to"]
+    resend_fun = opts[:resend_fun]
 
-      maybe_resend_messages(entries, resend_fun, remote_jid, ids)
+    entries =
+      ids
+      |> Enum.map(&lookup_recent_entry(store_ref, remote_jid, &1))
+      |> Enum.reject(&is_nil/1)
 
-      {:ok, entries}
+    maybe_resend_messages(entries, resend_fun, remote_jid, ids)
+
+    {:ok, entries}
+  end
+
+  defp lookup_recent_entry(store_ref, remote_jid, id) do
+    case get_recent_message(store_ref, remote_jid, id) do
+      %{message: message} = entry -> %{id: id, message: message, entry: entry}
+      nil -> nil
     end
   end
 

@@ -11,7 +11,6 @@ defmodule BaileysEx.Protocol.Noise do
   import Bitwise
 
   alias BaileysEx.Crypto
-  alias BaileysEx.Signal.Curve
   alias BaileysEx.Protocol.Proto.CertChain
   alias BaileysEx.Protocol.Proto.CertChain.NoiseCertificate
   alias BaileysEx.Protocol.Proto.CertChain.NoiseCertificate.Details
@@ -19,6 +18,7 @@ defmodule BaileysEx.Protocol.Noise do
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientFinish
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientHello
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ServerHello
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.Telemetry
 
   @noise_mode "Noise_XX_25519_AESGCM_SHA256\0\0\0\0"

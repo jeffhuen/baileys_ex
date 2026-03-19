@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.0-alpha.3] - 2026-03-19
+
+### Changed
+
+- Event emission no longer blocks callers on slow subscribers
+- Protocol and connection logging demoted from warning to debug level
+- Improved binary node encoding and decoding performance
+
+### Fixed
+
+- Programmer errors in Noise protocol functions are no longer silently swallowed
+- Rust NIF error handling hardened to eliminate panic paths
+
 ## [0.1.0-alpha.2] - 2026-03-19
 
 Initial alpha release.

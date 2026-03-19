@@ -679,12 +679,8 @@ defmodule BaileysEx.Connection.Socket do
     noise_opts = Keyword.put_new(data.noise_opts, :routing_info, routing_info)
 
     with {:ok, noise} <- Noise.new(noise_opts),
-         {:ok, {noise, client_hello}} <- Noise.client_hello(noise),
-         {:ok, data} <- send_transport_binary(%{data | noise: noise}, client_hello) do
-      {:ok, data}
-    else
-      {:error, reason, data} -> {:error, reason, data}
-      {:error, reason} -> {:error, reason, data}
+         {:ok, {noise, client_hello}} <- Noise.client_hello(noise) do
+      send_transport_binary(%{data | noise: noise}, client_hello)
     end
   end
 
@@ -742,7 +738,7 @@ defmodule BaileysEx.Connection.Socket do
           ""
       end
 
-    Logger.warning(
+    Logger.debug(
       "[Wire] RECV tag=#{node.tag} id=#{node.attrs["id"]}" <>
         " children=[#{child_tags}] state=#{current_state}"
     )
@@ -1019,13 +1015,8 @@ defmodule BaileysEx.Connection.Socket do
 
   defp send_transport_binary(%__MODULE__{noise: %Noise{} = noise} = data, payload)
        when is_binary(payload) do
-    case Noise.encode_frame(noise, payload) do
-      {:ok, {noise, frame}} ->
-        do_send_transport_binary(%{data | noise: noise}, frame)
-
-      {:error, reason} ->
-        {:error, reason, data}
-    end
+    {:ok, {noise, frame}} = Noise.encode_frame(noise, payload)
+    do_send_transport_binary(%{data | noise: noise}, frame)
   end
 
   defp send_transport_binary(%__MODULE__{} = data, payload) when is_binary(payload) do
@@ -1060,10 +1051,6 @@ defmodule BaileysEx.Connection.Socket do
 
   defp safe_configure_successful_pairing(node, auth_state) do
     Pairing.configure_successful_pairing(node, auth_state)
-  rescue
-    error -> {:error, {:pairing_error, error}}
-  catch
-    kind, reason -> {:error, {:pairing_error, {kind, reason}}}
   end
 
   defp send_keep_alive_ping(data) do
@@ -1166,12 +1153,12 @@ defmodule BaileysEx.Connection.Socket do
   # (e.g. app-state sync pushNameSetting) while avoiding infinite loops.
   defp apply_sync_creds_update(%__MODULE__{} = data, creds_update)
        when is_map(creds_update) do
-    previous_name = nested_auth_name(data.auth_state)
+    previous_name = AuthState.me_name(data.auth_state)
     updated_auth_state = AuthState.merge_updates(data.auth_state, creds_update)
-    next_name = nested_auth_name(updated_auth_state)
+    next_name = AuthState.me_name(updated_auth_state)
 
     if previous_name != next_name do
-      Logger.warning(
+      Logger.debug(
         "[SocketDiag] synced external creds_update into live auth_state " <>
           "previous_name=#{inspect(previous_name)} next_name=#{inspect(next_name)}"
       )
@@ -1345,7 +1332,7 @@ defmodule BaileysEx.Connection.Socket do
   defp send_node_internal(data, %BinaryNode{} = node) do
     require Logger
 
-    Logger.warning(
+    Logger.debug(
       "[Wire] SEND tag=#{node.tag} id=#{node.attrs["id"]} xmlns=#{node.attrs["xmlns"]} " <>
         "type=#{node.attrs["type"]} to=#{node.attrs["to"]}"
     )
@@ -1746,12 +1733,6 @@ defmodule BaileysEx.Connection.Socket do
       content: nil
     }
   end
-
-  defp nested_auth_name(%{me: %{name: name}}) when is_binary(name), do: name
-  defp nested_auth_name(%{me: %{"name" => name}}) when is_binary(name), do: name
-  defp nested_auth_name(%{"me" => %{name: name}}) when is_binary(name), do: name
-  defp nested_auth_name(%{"me" => %{"name" => name}}) when is_binary(name), do: name
-  defp nested_auth_name(_auth_state), do: nil
 
   defp generate_message_tag(data), do: data.message_tag_fun.()
   defp clock_ms(data), do: data.clock_ms_fun.()

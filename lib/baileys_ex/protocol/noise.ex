@@ -100,7 +100,7 @@ defmodule BaileysEx.Protocol.Noise do
   - `:header` - custom Noise header, defaults to WhatsApp's `<<87, 65, 6, 3>>`
   - `:trusted_cert` - trusted certificate authority details for validation
   """
-  @spec new(keyword()) :: {:ok, t()} | {:error, term()}
+  @spec new(keyword()) :: {:ok, t()}
   def new(opts \\ []) do
     header = Keyword.get(opts, :header, @noise_wa_header)
     routing_info = Keyword.get(opts, :routing_info)
@@ -125,8 +125,6 @@ defmodule BaileysEx.Protocol.Noise do
       |> authenticate(ephemeral_key_pair.public)
 
     {:ok, state}
-  rescue
-    error -> {:error, normalize_error(error)}
   end
 
   @doc "Return WhatsApp's Noise header."
@@ -144,7 +142,7 @@ defmodule BaileysEx.Protocol.Noise do
   @doc """
   Encode the client hello `HandshakeMessage`.
   """
-  @spec client_hello(t()) :: {:ok, {t(), binary()}} | {:error, term()}
+  @spec client_hello(t()) :: {:ok, {t(), binary()}}
   def client_hello(%__MODULE__{} = state) do
     message =
       HandshakeMessage.encode(%HandshakeMessage{
@@ -152,8 +150,6 @@ defmodule BaileysEx.Protocol.Noise do
       })
 
     {:ok, {state, message}}
-  rescue
-    error -> {:error, normalize_error(error)}
   end
 
   @doc """
@@ -172,8 +168,6 @@ defmodule BaileysEx.Protocol.Noise do
       {:ok, %HandshakeMessage{}} -> {:error, :invalid_server_hello}
       {:error, _} = error -> error
     end
-  rescue
-    error -> {:error, normalize_error(error)}
   end
 
   @doc """
@@ -203,8 +197,6 @@ defmodule BaileysEx.Protocol.Noise do
 
       {:ok, {%{state | pending_static: nil}, message}}
     end
-  rescue
-    error -> {:error, normalize_error(error)}
   end
 
   @doc """
@@ -214,11 +206,7 @@ defmodule BaileysEx.Protocol.Noise do
   @spec finish_init(t()) :: {:ok, t()} | {:error, term()}
   def finish_init(%__MODULE__{transport: %TransportState{}} = state), do: {:ok, state}
 
-  def finish_init(%__MODULE__{} = state) do
-    finish_transport(state)
-  rescue
-    error -> {:error, normalize_error(error)}
-  end
+  def finish_init(%__MODULE__{} = state), do: finish_transport(state)
 
   @doc """
   Encode an outbound length-prefixed frame.
@@ -226,7 +214,7 @@ defmodule BaileysEx.Protocol.Noise do
   On the first transport frame, this prepends WhatsApp's intro header exactly as
   Baileys does. Payload encryption only happens after the handshake is complete.
   """
-  @spec encode_frame(t(), binary()) :: {:ok, {t(), binary()}} | {:error, term()}
+  @spec encode_frame(t(), binary()) :: {:ok, {t(), binary()}}
   def encode_frame(%__MODULE__{} = state, data) when is_binary(data) do
     with {:ok, state, payload} <- maybe_encrypt_transport(state, data) do
       size = byte_size(payload)
@@ -240,8 +228,6 @@ defmodule BaileysEx.Protocol.Noise do
 
       {:ok, {%{state | sent_intro?: true}, frame}}
     end
-  rescue
-    error -> {:error, normalize_error(error)}
   end
 
   @doc """
@@ -262,8 +248,6 @@ defmodule BaileysEx.Protocol.Noise do
     with {:ok, state, frames, rest} <- do_decode_frames(%{state | in_bytes: @empty}, buffer, []) do
       {:ok, {%{state | in_bytes: rest}, frames}}
     end
-  rescue
-    error -> {:error, normalize_error(error)}
   end
 
   defp do_process_server_hello(state, %ServerHello{} = server_hello, noise_key_pair) do
@@ -460,11 +444,4 @@ defmodule BaileysEx.Protocol.Noise do
   end
 
   defp generate_iv(counter), do: <<0::64, counter::32-big>>
-
-  defp normalize_error(error) do
-    case Exception.message(error) do
-      message when is_binary(message) and message != "" -> message
-      _ -> inspect(error)
-    end
-  end
 end

@@ -170,6 +170,12 @@ defmodule BaileysEx.Protocol.NoiseTest do
                     %{phase: :transport}}
   end
 
+  test "new/1 does not swallow programmer errors from invalid injected key pairs" do
+    assert_raise KeyError, fn ->
+      Noise.new(ephemeral_key_pair: %{private: <<1::256>>})
+    end
+  end
+
   defp complete_handshake do
     client_ephemeral_key_pair = x25519_key_pair(12)
     client_noise_key_pair = x25519_key_pair(13)

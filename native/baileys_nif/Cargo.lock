@@ -39,10 +39,9 @@ dependencies = [
 
 [[package]]
 name = "baileys_nif"
-version = "0.1.0"
+version = "0.1.0-alpha.3"
 dependencies = [
  "curve25519-dalek",
- "getrandom",
  "rustler",
  "sha2",
  "snow",

@@ -282,6 +282,27 @@ defmodule BaileysEx.Connection.SocketTest do
     assert decoded_payload.user_agent.locale_country_iso31661_alpha2 == "GB"
   end
 
+  test "authenticated handshake does not emit warning-level wire diagnostics" do
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    log =
+      capture_log([level: :warning], fn ->
+        assert {:ok, pid, server_transport} =
+                 start_authenticated_socket(
+                   event_emitter: event_emitter,
+                   config: Config.new(fire_init_queries: false, mark_online_on_connect: false)
+                 )
+
+        {_, frame} =
+          server_transport_frame(server_transport, %BinaryNode{tag: "success", attrs: %{}})
+
+        Kernel.send(pid, {:scripted_transport, {:binary, frame}})
+        assert_receive {:transport_sent, _post_auth_frame}
+      end)
+
+    assert log == ""
+  end
+
   test "an invalid server hello returns the socket to disconnected and records the error" do
     client_noise_key_pair = x25519_key_pair(131)
     root_key_pair = x25519_key_pair(132)

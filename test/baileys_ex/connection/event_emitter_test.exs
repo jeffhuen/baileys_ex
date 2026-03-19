@@ -232,4 +232,24 @@ defmodule BaileysEx.Connection.EventEmitterTest do
       assert_receive {:processed_events, %{^event => ^payload}}
     end)
   end
+
+  test "emit/3 returns before slow subscribers finish processing" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:subscriber_started, events})
+        Process.sleep(150)
+        send(test_pid, {:processed_events, events})
+      end)
+
+    start = System.monotonic_time(:millisecond)
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :connecting})
+    elapsed = System.monotonic_time(:millisecond) - start
+
+    assert elapsed < 100
+    assert_receive {:subscriber_started, %{connection_update: %{connection: :connecting}}}
+    assert_receive {:processed_events, %{connection_update: %{connection: :connecting}}}, 300
+  end
 end

@@ -174,8 +174,7 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   def handle_call({:emit, event, data}, _from, %State{} = state) do
     {state, deliveries} = emit_event(state, event, data)
-    dispatch(state.taps, [%{event => data}])
-    dispatch(state.subscribers, deliveries)
+    dispatch_async(state.taps, [%{event => data}], state.subscribers, deliveries)
     {:reply, :ok, state}
   end
 
@@ -203,7 +202,7 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   def handle_call(:flush, _from, %State{} = state) do
     {state, deliveries} = flush_buffer(state, :stop)
-    dispatch(state.subscribers, deliveries)
+    dispatch_async(%{}, [], state.subscribers, deliveries)
     {:reply, true, state}
   end
 
@@ -231,13 +230,19 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   def handle_info(:buffer_timeout, %State{} = state) do
     {state, deliveries} = flush_buffer(state, :stop)
-    dispatch(state.subscribers, deliveries)
+    dispatch_async(%{}, [], state.subscribers, deliveries)
     {:noreply, state}
   end
 
   def handle_info(:flush_pending, %State{buffering?: true, buffer_count: 0} = state) do
     {state, deliveries} = flush_buffer(state, :stop)
-    dispatch(state.subscribers, deliveries)
+    dispatch_async(%{}, [], state.subscribers, deliveries)
+    {:noreply, state}
+  end
+
+  def handle_info({:dispatch, taps, tap_deliveries, subscribers, deliveries}, %State{} = state) do
+    dispatch(taps, tap_deliveries)
+    dispatch(subscribers, deliveries)
     {:noreply, state}
   end
 
@@ -406,6 +411,14 @@ defmodule BaileysEx.Connection.EventEmitter do
   defp maybe_cancel_pending_flush(%State{flush_pending_timer: timer} = state) do
     Process.cancel_timer(timer)
     %{state | flush_pending_timer: nil}
+  end
+
+  defp dispatch_async(taps, tap_deliveries, subscribers, deliveries) do
+    if tap_deliveries != [] or deliveries != [] do
+      send(self(), {:dispatch, taps, tap_deliveries, subscribers, deliveries})
+    end
+
+    :ok
   end
 
   defp dispatch(_subscribers, []), do: :ok

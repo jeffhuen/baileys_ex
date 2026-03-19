@@ -131,6 +131,24 @@ defmodule BaileysEx.Auth.State do
   def get(_state, _key, default), do: default
 
   @doc """
+  Returns the current account name from the auth state when present.
+  """
+  @spec me_name(t() | map()) :: binary() | nil
+  def me_name(state), do: me_field(state, :name)
+
+  @doc """
+  Returns the current account JID from the auth state when present.
+  """
+  @spec me_id(t() | map()) :: binary() | nil
+  def me_id(state), do: me_field(state, :id)
+
+  @doc """
+  Returns the current LID from the auth state when present.
+  """
+  @spec me_lid(t() | map()) :: binary() | nil
+  def me_lid(state), do: me_field(state, :lid)
+
+  @doc """
   Returns a `creds` viewing projection mapping suitable for saving standalone.
   """
   @spec creds_view(t() | map()) :: map()
@@ -180,6 +198,24 @@ defmodule BaileysEx.Auth.State do
   end
 
   defp nested_creds_get(_state, _key, default), do: default
+
+  defp me_field(%{me: me}, field) when is_map(me), do: me_field(me, field)
+  defp me_field(%{"me" => me}, field) when is_map(me), do: me_field(me, field)
+
+  defp me_field(map, field) when is_map(map) do
+    case Map.fetch(map, field) do
+      {:ok, value} when is_binary(value) ->
+        value
+
+      _ ->
+        case Map.get(map, Atom.to_string(field)) do
+          value when is_binary(value) -> value
+          _ -> nil
+        end
+    end
+  end
+
+  defp me_field(_state, _field), do: nil
 
   defp merge_maps(left, right) when is_map(left) and is_map(right) do
     Map.merge(left, right, fn _key, left_value, right_value ->

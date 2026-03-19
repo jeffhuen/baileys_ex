@@ -187,7 +187,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
     socket_result = fetch_socket_pid(state)
 
-    Logger.warning(
+    Logger.debug(
       "[Coordinator] send_message: jid=#{inspect(jid)} has_query_fun=#{is_function(ctx[:query_fun], 1)} " <>
         "has_send_node_fun=#{is_function(ctx[:send_node_fun], 1)} " <>
         "socket_lookup=#{inspect(socket_result)} " <>
@@ -272,7 +272,7 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def handle_info(:initial_sync_timeout, %State{sync_state: :awaiting_initial_sync} = state) do
-    Logger.warning("[SyncDiag] initial sync timeout fired, forcing :online")
+    Logger.debug("[SyncDiag] initial sync timeout fired, forcing :online")
     _ = EventEmitter.flush(state.event_emitter)
     {:noreply, %{state | initial_sync_timer: nil, sync_state: :online}}
   end
@@ -282,7 +282,7 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def handle_info(:complete_initial_sync, %State{sync_state: :syncing} = state) do
-    Logger.warning("[SyncDiag] completing initial sync, transitioning to :online")
+    Logger.debug("[SyncDiag] completing initial sync, transitioning to :online")
     _ = EventEmitter.flush(state.event_emitter)
     {:noreply, %{state | sync_state: :online}}
   end
@@ -345,9 +345,9 @@ defmodule BaileysEx.Connection.Coordinator do
 
     case result do
       :ok ->
-        Logger.warning(
+        Logger.debug(
           "[AppStateDiag] initial app state sync complete " <>
-            "store_name=#{inspect(nested_name(%{me: current_me(state)}))}"
+            "store_name=#{inspect(AuthState.me_name(%{me: current_me(state)}))}"
         )
 
         increment_account_sync_counter(state)
@@ -557,7 +557,7 @@ defmodule BaileysEx.Connection.Coordinator do
     :ok = EventEmitter.buffer(state.event_emitter)
     will_sync_history = should_sync_history_message?(state.config, %{sync_type: :RECENT})
 
-    Logger.warning(
+    Logger.debug(
       "[SyncDiag] received_pending_notifications=true sync_state=:connecting " <>
         "will_sync_history=#{inspect(will_sync_history)}"
     )
@@ -589,7 +589,7 @@ defmodule BaileysEx.Connection.Coordinator do
          %State{sync_state: :awaiting_initial_sync} = state,
          %{messaging_history_set: _history}
        ) do
-    Logger.warning("[SyncDiag] messaging_history_set received, transitioning to :syncing")
+    Logger.debug("[SyncDiag] messaging_history_set received, transitioning to :syncing")
     _ = Process.send_after(self(), :complete_initial_sync, 25)
 
     state
@@ -866,7 +866,7 @@ defmodule BaileysEx.Connection.Coordinator do
       |> Map.get(:last_prop_hash, "")
       |> normalize_props_hash()
 
-    Logger.warning("[PropsDiag] fetch_props sending hash=#{inspect(props_hash)}")
+    Logger.debug("[PropsDiag] fetch_props sending hash=#{inspect(props_hash)}")
 
     %BinaryNode{
       tag: "iq",
@@ -886,7 +886,7 @@ defmodule BaileysEx.Connection.Coordinator do
     props = reduce_children_to_dictionary(props_node, "prop")
     response_hash = props_node && props_node.attrs["hash"]
 
-    Logger.warning(
+    Logger.debug(
       "[PropsDiag] fetch_props received props_count=#{map_size(props)} " <>
         "hash=#{inspect(response_hash)}"
     )
@@ -964,11 +964,11 @@ defmodule BaileysEx.Connection.Coordinator do
          %{creds_update: %{me: me_update}}
        )
        when is_map(previous_creds) and is_map(me_update) do
-    previous_name = nested_name(previous_creds)
-    next_name = nested_name(%{me: me_update})
+    previous_name = AuthState.me_name(previous_creds)
+    next_name = AuthState.me_name(%{me: me_update})
 
     if is_binary(next_name) and next_name != "" and next_name != previous_name do
-      Logger.warning(
+      Logger.debug(
         "[PushNameDiag] creds_update changed push name " <>
           "previous=#{inspect(previous_name)} next=#{inspect(next_name)}"
       )
@@ -977,11 +977,11 @@ defmodule BaileysEx.Connection.Coordinator do
 
       case fetch_socket_pid(state) do
         {:ok, socket_pid} ->
-          Logger.warning("[PushNameDiag] sending bare presence name=#{inspect(next_name)}")
+          Logger.debug("[PushNameDiag] sending bare presence name=#{inspect(next_name)}")
           _ = state.socket_module.send_node(socket_pid, node)
 
         :error ->
-          Logger.warning(
+          Logger.debug(
             "[PushNameDiag] skipped bare presence send because socket pid is unavailable"
           )
 
@@ -1244,8 +1244,8 @@ defmodule BaileysEx.Connection.Coordinator do
       signal_repository: repository,
       event_emitter: state.event_emitter,
       enable_recent_message_cache: state.config.enable_recent_message_cache,
-      me_id: nested_id(creds),
-      me_lid: nested_lid(creds),
+      me_id: AuthState.me_id(creds),
+      me_lid: AuthState.me_lid(creds),
       store_ref: state.store_ref,
       signal_store: state.signal_store
     }
@@ -1262,8 +1262,8 @@ defmodule BaileysEx.Connection.Coordinator do
       enable_recent_message_cache: state.config.enable_recent_message_cache,
       signal_repository: repository,
       signal_store: state.signal_store,
-      me_id: nested_id(creds),
-      me_lid: nested_lid(creds)
+      me_id: AuthState.me_id(creds),
+      me_lid: AuthState.me_lid(creds)
     }
     |> maybe_put(:device_identity, encoded_device_identity(creds))
     |> maybe_put(:store_ref, state.store_ref)
@@ -1423,8 +1423,8 @@ defmodule BaileysEx.Connection.Coordinator do
 
       context = %{
         signal_repository: state.signal_repository,
-        me_id: nested_id(creds),
-        me_lid: nested_lid(creds),
+        me_id: AuthState.me_id(creds),
+        me_lid: AuthState.me_lid(creds),
         assert_sessions_fun: fn ctx, jids, force? ->
           assert_sessions(state, ctx, jids, force?)
         end
@@ -1508,7 +1508,7 @@ defmodule BaileysEx.Connection.Coordinator do
       end)
     else
       {:error, reason} ->
-        Logger.warning("[LIDDiag] background pn->lid usync failed: #{inspect(reason)}")
+        Logger.debug("[LIDDiag] background pn->lid usync failed: #{inspect(reason)}")
         nil
     end
   end
@@ -1613,7 +1613,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
         {:ok, _pid} =
           Task.Supervisor.start_child(state.task_supervisor, fn ->
-            Logger.warning("[AppStateDiag] sync Task started pid=#{inspect(self())}")
+            Logger.debug("[AppStateDiag] sync Task started pid=#{inspect(self())}")
 
             result =
               try do
@@ -1626,20 +1626,18 @@ defmodule BaileysEx.Connection.Coordinator do
                 )
               rescue
                 exception ->
-                  Logger.warning(
+                  Logger.debug(
                     "[AppStateDiag] sync Task rescued: #{Exception.message(exception)}"
                   )
 
                   {:error, exception}
               catch
                 kind, reason ->
-                  Logger.warning("[AppStateDiag] sync Task caught #{kind}: #{inspect(reason)}")
+                  Logger.debug("[AppStateDiag] sync Task caught #{kind}: #{inspect(reason)}")
                   {:error, {kind, reason}}
               end
 
-            Logger.warning(
-              "[AppStateDiag] sync Task sending completion result=#{inspect(result)}"
-            )
+            Logger.debug("[AppStateDiag] sync Task sending completion result=#{inspect(result)}")
 
             Kernel.send(
               coordinator_pid,
@@ -1745,24 +1743,6 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp nested_name(%{me: %{name: name}}) when is_binary(name), do: name
-  defp nested_name(%{me: %{"name" => name}}) when is_binary(name), do: name
-  defp nested_name(%{"me" => %{name: name}}) when is_binary(name), do: name
-  defp nested_name(%{"me" => %{"name" => name}}) when is_binary(name), do: name
-  defp nested_name(_creds), do: nil
-
-  defp nested_id(%{me: %{id: id}}) when is_binary(id), do: id
-  defp nested_id(%{me: %{"id" => id}}) when is_binary(id), do: id
-  defp nested_id(%{"me" => %{id: id}}) when is_binary(id), do: id
-  defp nested_id(%{"me" => %{"id" => id}}) when is_binary(id), do: id
-  defp nested_id(_creds), do: nil
-
-  defp nested_lid(%{me: %{lid: lid}}) when is_binary(lid), do: lid
-  defp nested_lid(%{me: %{"lid" => lid}}) when is_binary(lid), do: lid
-  defp nested_lid(%{"me" => %{lid: lid}}) when is_binary(lid), do: lid
-  defp nested_lid(%{"me" => %{"lid" => lid}}) when is_binary(lid), do: lid
-  defp nested_lid(_creds), do: nil
 
   defp encoded_device_identity(%{account: %ADVSignedDeviceIdentity{} = account}) do
     account

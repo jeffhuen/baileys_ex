@@ -1,6 +1,6 @@
 [package]
 name = "baileys_nif"
-version = "0.1.0"
+version = "0.1.0-alpha.3"
 edition = "2021"
 
 [lib]
@@ -15,6 +15,10 @@ snow = "0.9"
 # curve25519-dalek: 35M+ downloads, used by Tor/Zcash — battle-tested
 curve25519-dalek = { version = "4", features = ["digest"] }
 sha2 = "0.10"       # Required by curve25519-dalek for nonce derivation
-getrandom = "0.2"   # Secure random for XEdDSA nonce
 # NOTE: No crypto crates here — Erlang :crypto handles AES, HMAC, HKDF, etc.
 # NOTE: No libsignal-protocol — Signal implemented in pure Elixir (~1,500 lines)
+
+[lints.clippy]
+all = { level = "deny", priority = 10 }
+perf = { level = "deny", priority = 5 }
+pedantic = { level = "warn", priority = 3 }

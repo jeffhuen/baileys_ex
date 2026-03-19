@@ -44,11 +44,10 @@ defmodule BaileysEx.Protocol.BinaryNode do
   """
   @spec encode(BinaryNode.t()) :: binary()
   def encode(%BinaryNode{} = node) do
-    buffer = <<0>>
-    encode_node(node, buffer)
+    IO.iodata_to_binary([<<0>>, encode_node(node)])
   end
 
-  defp encode_node(%BinaryNode{tag: tag, attrs: attrs, content: content}, buffer) do
+  defp encode_node(%BinaryNode{tag: tag, attrs: attrs, content: content}) do
     valid_attrs =
       (attrs || %{})
       |> Enum.filter(fn {_k, v} -> v != nil end)
@@ -58,123 +57,95 @@ defmodule BaileysEx.Protocol.BinaryNode do
 
     list_size = 2 * num_attrs + 1 + if(has_content, do: 1, else: 0)
 
-    buffer = write_list_start(buffer, list_size)
-    buffer = write_string(buffer, tag)
-
-    buffer =
-      Enum.reduce(valid_attrs, buffer, fn {key, value}, buf ->
-        buf
-        |> write_string(key)
-        |> write_string(value)
-      end)
-
-    encode_content(buffer, content)
+    [
+      write_list_start(list_size),
+      write_string(tag),
+      Enum.map(valid_attrs, fn {key, value} -> [write_string(key), write_string(value)] end),
+      encode_content(content)
+    ]
   end
 
-  defp encode_content(buffer, nil), do: buffer
+  defp encode_content(nil), do: []
 
-  defp encode_content(buffer, {:binary, data}) when is_binary(data) do
-    write_byte_length(buffer, byte_size(data)) <> data
-  end
+  defp encode_content({:binary, data}) when is_binary(data),
+    do: [write_byte_length(byte_size(data)), data]
 
-  defp encode_content(buffer, content) when is_binary(content) do
-    write_string(buffer, content)
-  end
+  defp encode_content(content) when is_binary(content), do: write_string(content)
 
-  defp encode_content(buffer, content) when is_list(content) do
+  defp encode_content(content) when is_list(content) do
     valid_content = Enum.filter(content, &(&1 != nil))
-    buffer = write_list_start(buffer, length(valid_content))
-
-    Enum.reduce(valid_content, buffer, fn child, buf ->
-      encode_node(child, buf)
-    end)
+    [write_list_start(length(valid_content)), Enum.map(valid_content, &encode_node/1)]
   end
 
-  defp write_list_start(buffer, 0), do: buffer <> <<@list_empty>>
-  defp write_list_start(buffer, size) when size < 256, do: buffer <> <<@list_8, size>>
+  defp write_list_start(0), do: <<@list_empty>>
+  defp write_list_start(size) when size < 256, do: <<@list_8, size>>
 
-  defp write_list_start(buffer, size) do
-    buffer <> <<@list_16, size::16-big>>
-  end
+  defp write_list_start(size), do: <<@list_16, size::16-big>>
 
   @binary_20_threshold bsl(1, 20)
 
-  defp write_byte_length(buffer, length) when length >= @binary_20_threshold do
-    buffer <> <<@binary_32, length::32-big>>
-  end
+  defp write_byte_length(length) when length >= @binary_20_threshold,
+    do: <<@binary_32, length::32-big>>
 
-  defp write_byte_length(buffer, length) when length >= 256 do
-    buffer <> <<@binary_20, length >>> 16 &&& 0x0F, length >>> 8 &&& 0xFF, length &&& 0xFF>>
-  end
+  defp write_byte_length(length) when length >= 256,
+    do: <<@binary_20, length >>> 16 &&& 0x0F, length >>> 8 &&& 0xFF, length &&& 0xFF>>
 
-  defp write_byte_length(buffer, length) do
-    buffer <> <<@binary_8, length>>
-  end
+  defp write_byte_length(length), do: <<@binary_8, length>>
 
-  defp write_string(buffer, nil), do: buffer <> <<@list_empty>>
+  defp write_string(nil), do: <<@list_empty>>
 
-  defp write_string(buffer, "") do
+  defp write_string("") do
     # Empty string is written as raw string with 0 length
-    write_string_raw(buffer, "")
+    write_string_raw("")
   end
 
-  defp write_string(buffer, str) when is_binary(str) do
+  defp write_string(str) when is_binary(str) do
     case Constants.lookup_token(str) do
       %{dict: dict, index: index} ->
-        buffer <> <<@dictionary_0 + dict, index>>
+        <<@dictionary_0 + dict, index>>
 
       %{index: index} ->
-        buffer <> <<index>>
+        <<index>>
 
       nil ->
-        write_string_non_token(buffer, str)
+        write_string_non_token(str)
     end
   end
 
-  defp write_string_non_token(buffer, str) do
+  defp write_string_non_token(str) do
     cond do
       nibble?(str) ->
-        write_packed_bytes(buffer, str, :nibble)
+        write_packed_bytes(str, :nibble)
 
       hex?(str) ->
-        write_packed_bytes(buffer, str, :hex)
+        write_packed_bytes(str, :hex)
 
       true ->
-        write_string_jid_or_raw(buffer, str)
+        write_string_jid_or_raw(str)
     end
   end
 
-  defp write_string_jid_or_raw(buffer, str) do
+  defp write_string_jid_or_raw(str) do
     case JIDUtil.parse(str) do
-      nil -> write_string_raw(buffer, str)
-      jid -> write_jid(buffer, jid)
+      nil -> write_string_raw(str)
+      jid -> write_jid(jid)
     end
   end
 
-  defp write_string_raw(buffer, str) do
-    bytes = str
-    write_byte_length(buffer, byte_size(bytes)) <> bytes
-  end
+  defp write_string_raw(str), do: [write_byte_length(byte_size(str)), str]
 
-  defp write_jid(buffer, %BaileysEx.JID{device: device} = jid) when not is_nil(device) do
+  defp write_jid(%BaileysEx.JID{device: device} = jid) when not is_nil(device) do
     domain_type = JIDUtil.domain_type_for_server(jid.server)
 
-    buffer
-    |> Kernel.<>(<<@ad_jid, domain_type, device>>)
-    |> write_string(jid.user || "")
+    [<<@ad_jid, domain_type, device>>, write_string(jid.user || "")]
   end
 
-  defp write_jid(buffer, %BaileysEx.JID{user: user, server: server}) do
-    buffer = buffer <> <<@jid_pair>>
-
-    buffer =
-      if user && user != "" do
-        write_string(buffer, user)
-      else
-        buffer <> <<@list_empty>>
-      end
-
-    write_string(buffer, server)
+  defp write_jid(%BaileysEx.JID{user: user, server: server}) do
+    [
+      <<@jid_pair>>,
+      if(user && user != "", do: write_string(user), else: <<@list_empty>>),
+      write_string(server)
+    ]
   end
 
   # Nibble packing: digits, '-', '.'
@@ -195,7 +166,7 @@ defmodule BaileysEx.Protocol.BinaryNode do
     |> Enum.all?(fn c -> (c >= ?0 and c <= ?9) or (c >= ?A and c <= ?F) end)
   end
 
-  defp write_packed_bytes(buffer, str, type) do
+  defp write_packed_bytes(str, type) do
     tag_byte = if type == :nibble, do: @nibble_8, else: @hex_8
     len = String.length(str)
     rounded_length = div(len + 1, 2)
@@ -207,24 +178,24 @@ defmodule BaileysEx.Protocol.BinaryNode do
         rounded_length
       end
 
-    buffer = buffer <> <<tag_byte, rounded_length>>
     chars = String.to_charlist(str)
     pack_fn = if type == :nibble, do: &pack_nibble/1, else: &pack_hex/1
 
-    buffer = pack_char_pairs(buffer, chars, pack_fn)
-    buffer
+    [<<tag_byte, rounded_length>>, pack_char_pairs(chars, pack_fn)]
   end
 
-  defp pack_char_pairs(buffer, [], _pack_fn), do: buffer
+  defp pack_char_pairs(chars, pack_fn), do: do_pack_char_pairs(chars, pack_fn, [])
 
-  defp pack_char_pairs(buffer, [c1, c2 | rest], pack_fn) do
+  defp do_pack_char_pairs([], _pack_fn, acc), do: Enum.reverse(acc)
+
+  defp do_pack_char_pairs([c1, c2 | rest], pack_fn, acc) do
     byte = bsl(pack_fn.(c1), 4) ||| pack_fn.(c2)
-    pack_char_pairs(buffer <> <<byte>>, rest, pack_fn)
+    do_pack_char_pairs(rest, pack_fn, [<<byte>> | acc])
   end
 
-  defp pack_char_pairs(buffer, [c1], pack_fn) do
+  defp do_pack_char_pairs([c1], pack_fn, acc) do
     byte = bsl(pack_fn.(c1), 4) ||| pack_fn.(0)
-    buffer <> <<byte>>
+    Enum.reverse([<<byte>> | acc])
   end
 
   defp pack_nibble(c) when c >= ?0 and c <= ?9, do: c - ?0
@@ -451,8 +422,10 @@ defmodule BaileysEx.Protocol.BinaryNode do
         {byte, d} = read_byte(d)
         high = unpack_byte(tag, bsr(band(byte, 0xF0), 4))
         low = unpack_byte(tag, band(byte, 0x0F))
-        {acc ++ [high, low], d}
+        {[low, high | acc], d}
       end)
+
+    chars = Enum.reverse(chars)
 
     value =
       if odd do
@@ -480,10 +453,13 @@ defmodule BaileysEx.Protocol.BinaryNode do
   defp read_list(tag, data) do
     {size, data} = consume_list_size(tag, data)
 
-    Enum.reduce(1..size//1, {[], data}, fn _, {acc, d} ->
-      {node, d} = decode_node(d)
-      {acc ++ [node], d}
-    end)
+    {nodes, data} =
+      Enum.reduce(1..size//1, {[], data}, fn _, {acc, d} ->
+        {node, d} = decode_node(d)
+        {[node | acc], d}
+      end)
+
+    {Enum.reverse(nodes), data}
   end
 
   # ---- Generic node helpers ----

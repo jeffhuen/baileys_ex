@@ -4,23 +4,25 @@ defmodule BaileysEx.Connection.SocketTest do
   import ExUnit.CaptureLog
   import Kernel, except: [send: 2]
 
-  alias BaileysEx.BinaryNode
-  alias BaileysEx.Auth.State
-  alias BaileysEx.Crypto
+  alias BaileysEx.Auth.Phone
   alias BaileysEx.Auth.QR
+  alias BaileysEx.Auth.State
+  alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
+  alias BaileysEx.Crypto
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Noise
-  alias BaileysEx.Protocol.Proto.ClientPayload
   alias BaileysEx.Protocol.Proto.ADVDeviceIdentity
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentityHMAC
+  alias BaileysEx.Protocol.Proto.ClientPayload
   alias BaileysEx.Protocol.Proto.HandshakeMessage
   alias BaileysEx.Protocol.Proto.HandshakeMessage.ClientHello
   alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.Store, as: SignalStore
+  alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
   alias BaileysEx.TestSupport.Connection.NoiseServer
 
   defmodule ScriptedTransport do
@@ -1397,7 +1399,7 @@ defmodule BaileysEx.Connection.SocketTest do
   test "success waits for pre-key upload, passive iq, and digest validation before opening" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
-    {:ok, signal_store_pid} = BaileysEx.Signal.Store.Memory.start_link()
+    {:ok, signal_store_pid} = SignalStoreMemory.start_link()
     {:ok, task_supervisor} = Task.Supervisor.start_link()
 
     _unsubscribe =
@@ -1415,8 +1417,8 @@ defmodule BaileysEx.Connection.SocketTest do
         config: Config.new(keep_alive_interval_ms: 5_000),
         auth_state: auth_state,
         signal_store: %SignalStore{
-          module: BaileysEx.Signal.Store.Memory,
-          ref: BaileysEx.Signal.Store.Memory.wrap(signal_store_pid)
+          module: SignalStoreMemory,
+          ref: SignalStoreMemory.wrap(signal_store_pid)
         },
         task_supervisor: task_supervisor
       )
@@ -1529,7 +1531,7 @@ defmodule BaileysEx.Connection.SocketTest do
   test "success continues to passive iq when pre-key validation fails" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
-    {:ok, signal_store_pid} = BaileysEx.Signal.Store.Memory.start_link()
+    {:ok, signal_store_pid} = SignalStoreMemory.start_link()
     {:ok, task_supervisor} = Task.Supervisor.start_link()
 
     _unsubscribe =
@@ -1547,8 +1549,8 @@ defmodule BaileysEx.Connection.SocketTest do
         config: Config.new(keep_alive_interval_ms: 5_000),
         auth_state: auth_state,
         signal_store: %SignalStore{
-          module: BaileysEx.Signal.Store.Memory,
-          ref: BaileysEx.Signal.Store.Memory.wrap(signal_store_pid)
+          module: SignalStoreMemory,
+          ref: SignalStoreMemory.wrap(signal_store_pid)
         },
         task_supervisor: task_supervisor
       )
@@ -1614,7 +1616,7 @@ defmodule BaileysEx.Connection.SocketTest do
   test "success still opens when digest validation fails" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
-    {:ok, signal_store_pid} = BaileysEx.Signal.Store.Memory.start_link()
+    {:ok, signal_store_pid} = SignalStoreMemory.start_link()
     {:ok, task_supervisor} = Task.Supervisor.start_link()
 
     _unsubscribe =
@@ -1632,8 +1634,8 @@ defmodule BaileysEx.Connection.SocketTest do
         config: Config.new(keep_alive_interval_ms: 5_000),
         auth_state: auth_state,
         signal_store: %SignalStore{
-          module: BaileysEx.Signal.Store.Memory,
-          ref: BaileysEx.Signal.Store.Memory.wrap(signal_store_pid)
+          module: SignalStoreMemory,
+          ref: SignalStoreMemory.wrap(signal_store_pid)
         },
         task_supervisor: task_supervisor
       )
@@ -2105,7 +2107,7 @@ defmodule BaileysEx.Connection.SocketTest do
     code_pairing_key = x25519_key_pair(155)
     salt = :binary.copy(<<17>>, 32)
     iv = :binary.copy(<<29>>, 16)
-    {:ok, pairing_key} = BaileysEx.Auth.Phone.derive_pairing_code_key(pairing_code, salt)
+    {:ok, pairing_key} = Phone.derive_pairing_code_key(pairing_code, salt)
     {:ok, wrapped_public_key} = Crypto.aes_ctr_encrypt(pairing_key, iv, code_pairing_key.public)
 
     %BinaryNode{

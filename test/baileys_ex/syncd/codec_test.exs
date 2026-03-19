@@ -1,9 +1,9 @@
 defmodule BaileysEx.Syncd.CodecTest do
   use ExUnit.Case, async: true
 
+  alias BaileysEx.Protocol.Proto.Syncd
   alias BaileysEx.Syncd.Codec
   alias BaileysEx.Syncd.Keys
-  alias BaileysEx.Protocol.Proto.Syncd
 
   # Deterministic test fixtures
   @key_data :binary.copy(<<0xAB>>, 32)

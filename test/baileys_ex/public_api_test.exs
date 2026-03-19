@@ -7,10 +7,10 @@ defmodule BaileysEx.PublicApiTest do
   alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.State, as: AuthState
   alias BaileysEx.BinaryNode
-  alias BaileysEx.Crypto
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Supervisor
+  alias BaileysEx.Crypto
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Signal.Curve

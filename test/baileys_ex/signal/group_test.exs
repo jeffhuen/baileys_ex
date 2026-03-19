@@ -4,11 +4,11 @@ defmodule BaileysEx.Signal.GroupTest do
   alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Group.Cipher
   alias BaileysEx.Signal.Group.SenderChainKey
-  alias BaileysEx.Signal.Group.SessionBuilder
   alias BaileysEx.Signal.Group.SenderKeyDistributionMessage
   alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.Group.SenderKeyRecord
   alias BaileysEx.Signal.Group.SenderKeyState
+  alias BaileysEx.Signal.Group.SessionBuilder
 
   test "sender key name serializes like Baileys" do
     assert {:ok, address} = Address.from_jid("5511999887766:3@s.whatsapp.net")

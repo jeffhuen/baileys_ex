@@ -4,8 +4,8 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
   alias BaileysEx.Auth.FilePersistence
   alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.State
-  alias BaileysEx.TestSupport.DeterministicAuth
   alias BaileysEx.Signal.SessionRecord
+  alias BaileysEx.TestSupport.DeterministicAuth
 
   @tag :tmp_dir
   test "load_credentials/1 initializes fresh credentials when creds.json is missing", %{

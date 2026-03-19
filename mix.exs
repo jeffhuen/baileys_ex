@@ -107,6 +107,7 @@ defmodule BaileysEx.MixProject do
 
   defp package do
     [
+      maintainers: ["Jeff Huen"],
       licenses: ["MIT"],
       files: package_files(),
       links: %{

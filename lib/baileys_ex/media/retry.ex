@@ -136,59 +136,72 @@ defmodule BaileysEx.Media.Retry do
           keyword()
         ) :: {:ok, web_message_info()} | {:error, term()}
   def update_media_message(socket, event_emitter, %WebMessageInfo{} = wa_message, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
-
     with {:ok, %MessageKey{id: msg_id} = key} when is_binary(msg_id) <-
            extract_message_key(wa_message),
          {:ok, media_content} <- assert_media_content(wa_message.message),
          media_key when is_binary(media_key) <- media_key_from(media_content) do
-      caller = self()
-      ref = make_ref()
-
-      unsubscribe =
-        EventEmitter.process(event_emitter, fn events ->
-          case events do
-            %{messages_media_update: updates} when is_list(updates) ->
-              case Enum.find(updates, &(&1.key.id == msg_id)) do
-                nil -> :ok
-                match -> send(caller, {ref, match})
-              end
-
-            _ ->
-              :ok
-          end
-        end)
-
-      retry_key = %{
-        id: msg_id,
-        remote_jid: key.remote_jid || "",
-        from_me: key.from_me || false,
-        participant: key.participant
-      }
-
-      send_result = request_reupload(socket, retry_key, media_key, opts)
-
-      case send_result do
-        :ok ->
-          result = await_media_update(ref, wa_message, media_key, timeout)
-          unsubscribe.()
-
-          case result do
-            {:ok, updated_msg} ->
-              emit_messages_update(event_emitter, updated_msg)
-              {:ok, updated_msg}
-
-            error ->
-              error
-          end
-
-        {:error, _} = err ->
-          unsubscribe.()
-          err
-      end
+      do_update_media_message(socket, event_emitter, wa_message, key, msg_id, media_key, opts)
     else
       {:error, _} = err -> err
       nil -> {:error, :missing_media_key}
+    end
+  end
+
+  defp do_update_media_message(socket, event_emitter, wa_message, key, msg_id, media_key, opts) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
+    ref = make_ref()
+
+    unsubscribe = subscribe_media_update(event_emitter, msg_id, ref)
+    retry_key = build_retry_key(key, msg_id)
+
+    case request_reupload(socket, retry_key, media_key, opts) do
+      :ok ->
+        finalize_media_update(event_emitter, ref, wa_message, media_key, timeout, unsubscribe)
+
+      {:error, _} = err ->
+        unsubscribe.()
+        err
+    end
+  end
+
+  defp subscribe_media_update(event_emitter, msg_id, ref) do
+    caller = self()
+
+    EventEmitter.process(event_emitter, fn events ->
+      find_media_update_match(events, msg_id, caller, ref)
+    end)
+  end
+
+  defp find_media_update_match(%{messages_media_update: updates}, msg_id, caller, ref)
+       when is_list(updates) do
+    case Enum.find(updates, &(&1.key.id == msg_id)) do
+      nil -> :ok
+      match -> send(caller, {ref, match})
+    end
+  end
+
+  defp find_media_update_match(_events, _msg_id, _caller, _ref), do: :ok
+
+  defp build_retry_key(key, msg_id) do
+    %{
+      id: msg_id,
+      remote_jid: key.remote_jid || "",
+      from_me: key.from_me || false,
+      participant: key.participant
+    }
+  end
+
+  defp finalize_media_update(event_emitter, ref, wa_message, media_key, timeout, unsubscribe) do
+    result = await_media_update(ref, wa_message, media_key, timeout)
+    unsubscribe.()
+
+    case result do
+      {:ok, updated_msg} ->
+        emit_messages_update(event_emitter, updated_msg)
+        {:ok, updated_msg}
+
+      error ->
+        error
     end
   end
 

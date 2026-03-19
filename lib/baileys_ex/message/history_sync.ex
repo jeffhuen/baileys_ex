@@ -54,11 +54,9 @@ defmodule BaileysEx.Message.HistorySync do
   defp inflate_payload(payload, %{inflate_fun: fun}) when is_function(fun, 1), do: fun.(payload)
 
   defp inflate_payload(payload, _context) when is_binary(payload) do
-    try do
-      {:ok, :zlib.uncompress(payload)}
-    rescue
-      _error -> {:error, :inflate_failed}
-    end
+    {:ok, :zlib.uncompress(payload)}
+  rescue
+    _error -> {:error, :inflate_failed}
   end
 
   defp process_history_sync(%HistorySyncProto{sync_type: sync_type} = history_sync)

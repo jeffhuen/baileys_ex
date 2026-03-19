@@ -13,6 +13,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
   alias BaileysEx.Auth.State, as: AuthState
   alias BaileysEx.BinaryNode
+  alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
@@ -24,18 +25,19 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Message.IdentityChangeHandler
   alias BaileysEx.Message.NotificationHandler
   alias BaileysEx.Message.Receipt
-  alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Receiver
+  alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Sender
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Protocol.USync
-  alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Adapter.Signal, as: DefaultSignalAdapter
+  alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store, as: SignalStore
   alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
+  alias BaileysEx.Syncd.Codec, as: SyncdCodec
   alias BaileysEx.Telemetry
 
   @s_whatsapp_net "s.whatsapp.net"
@@ -697,7 +699,7 @@ defmodule BaileysEx.Connection.Coordinator do
   defp disconnect_reason(_last_disconnect), do: nil
 
   defp should_schedule_reconnect?(config, reason, attempt),
-    do: BaileysEx.Connection.Config.should_reconnect?(config, reason, attempt)
+    do: Config.should_reconnect?(config, reason, attempt)
 
   defp should_sync_history_message?(%{should_sync_history_message: fun}, history_message)
        when is_function(fun, 1) do
@@ -705,36 +707,39 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp should_sync_history_message?(_config, history_message),
-    do: BaileysEx.Connection.Config.default_should_sync_history_message(history_message)
+    do: Config.default_should_sync_history_message(history_message)
 
   defp maybe_execute_init_queries(%State{config: %{fire_init_queries: false}} = state), do: state
 
   defp maybe_execute_init_queries(%State{} = state) do
-    with {:ok, socket_pid} <- fetch_socket_pid(state) do
-      Enum.reduce(init_query_work(state), state, fn spec, acc ->
-        case acc.socket_module.start_query(
-               socket_pid,
-               self(),
-               spec.node,
-               acc.config.default_query_timeout_ms
-             ) do
-          {:ok, ref} ->
-            %{
-              acc
-              | init_query_handlers: Map.put(acc.init_query_handlers, ref, spec.handle_response)
-            }
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        Enum.reduce(init_query_work(state), state, fn spec, acc ->
+          start_init_query(acc, socket_pid, spec)
+        end)
 
-          {:error, :timeout} ->
-            Logger.warning("[Coordinator] init query timed out")
-            acc
+      :error ->
+        state
+    end
+  end
 
-          {:error, reason} ->
-            Logger.warning("[Coordinator] init query failed: #{inspect(reason)}")
-            acc
-        end
-      end)
-    else
-      :error -> state
+  defp start_init_query(acc, socket_pid, spec) do
+    case acc.socket_module.start_query(
+           socket_pid,
+           self(),
+           spec.node,
+           acc.config.default_query_timeout_ms
+         ) do
+      {:ok, ref} ->
+        %{acc | init_query_handlers: Map.put(acc.init_query_handlers, ref, spec.handle_response)}
+
+      {:error, :timeout} ->
+        Logger.warning("[Coordinator] init query timed out")
+        acc
+
+      {:error, reason} ->
+        Logger.warning("[Coordinator] init query failed: #{inspect(reason)}")
+        acc
     end
   end
 
@@ -1604,7 +1609,7 @@ defmodule BaileysEx.Connection.Coordinator do
         ref = make_ref()
         coordinator_pid = self()
         me = current_me(state)
-        collections = BaileysEx.Syncd.Codec.patch_names()
+        collections = SyncdCodec.patch_names()
 
         {:ok, _pid} =
           Task.Supervisor.start_child(state.task_supervisor, fn ->
@@ -1696,7 +1701,7 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp normalize_patch_name(name) when is_atom(name) do
-    if name in BaileysEx.Syncd.Codec.patch_names() do
+    if name in SyncdCodec.patch_names() do
       {:ok, name}
     else
       {:error, {:unknown_patch_name, name}}
@@ -1704,7 +1709,7 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp normalize_patch_name(name) when is_binary(name) do
-    case Enum.find(BaileysEx.Syncd.Codec.patch_names(), &(Atom.to_string(&1) == name)) do
+    case Enum.find(SyncdCodec.patch_names(), &(Atom.to_string(&1) == name)) do
       nil -> {:error, {:unknown_patch_name, name}}
       collection -> {:ok, collection}
     end

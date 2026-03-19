@@ -4,8 +4,8 @@ defmodule BaileysEx.Media.Upload do
   """
 
   alias BaileysEx.BinaryNode
-  alias BaileysEx.Connection.Store
   alias BaileysEx.Connection.Socket
+  alias BaileysEx.Connection.Store
   alias BaileysEx.Media.HTTP
   alias BaileysEx.Media.Types
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil

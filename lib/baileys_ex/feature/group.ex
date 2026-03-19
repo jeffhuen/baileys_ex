@@ -6,11 +6,11 @@ defmodule BaileysEx.Feature.Group do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
-  alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Message.Sender
   alias BaileysEx.Message.Wire
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID
+  alias BaileysEx.Protocol.Proto.Message
 
   @s_whatsapp_net "s.whatsapp.net"
   @timeout 60_000

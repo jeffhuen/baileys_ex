@@ -7,7 +7,7 @@ defmodule BaileysEx.Auth.Persistence do
   - `BaileysEx.Auth.NativeFilePersistence` for the recommended durable
     Elixir-first ETF storage
   - `BaileysEx.Auth.FilePersistence` for the Baileys-compatible JSON multi-file
-    helper
+    helper kept as a migration/compatibility bridge from Baileys JS sidecars
 
   Custom backends can implement either the context-free callbacks, the
   context-aware callbacks, or both. `BaileysEx.Auth.KeyStore` dispatches to the

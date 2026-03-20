@@ -6,6 +6,12 @@ defmodule BaileysEx.Auth.FilePersistence do
   backend in Elixir-first applications. Use this module when you need the
   Baileys-shaped JSON file layout and helper semantics.
 
+  Treat this backend as a compatibility bridge for migrating existing
+  Baileys JS sidecar deployments onto BaileysEx. It is intentionally kept
+  separate from the native durable backend so the Elixir-first path can remain
+  idiomatic, and it can be retired in a future major release once users no
+  longer depend on the Baileys JSON helper contract.
+
   This module does not migrate existing auth directories automatically. If you
   switch an existing linked device from this backend to the native backend,
   migrate once with `BaileysEx.Auth.PersistenceMigration` or re-pair on the new

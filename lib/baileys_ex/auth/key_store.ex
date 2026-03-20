@@ -16,7 +16,7 @@ defmodule BaileysEx.Auth.KeyStore do
 
   @behaviour BaileysEx.Signal.Store
 
-  alias BaileysEx.Auth.FilePersistence
+  alias BaileysEx.Auth.NativeFilePersistence
 
   @missing :"$missing"
 
@@ -60,6 +60,7 @@ defmodule BaileysEx.Auth.KeyStore do
   Options:
 
   - `:persistence_module` - module implementing `BaileysEx.Auth.Persistence`
+    (defaults to `BaileysEx.Auth.NativeFilePersistence`)
   - `:persistence_context` - backend-specific context passed to the built-in
     context-aware persistence callbacks when exported
   """
@@ -172,7 +173,7 @@ defmodule BaileysEx.Auth.KeyStore do
     {:ok,
      %{
        table: table,
-       persistence_module: Keyword.get(opts, :persistence_module, FilePersistence),
+       persistence_module: Keyword.get(opts, :persistence_module, NativeFilePersistence),
        persistence_context: Keyword.get(opts, :persistence_context),
        locks: %{},
        monitor_keys: %{},

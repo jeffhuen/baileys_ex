@@ -30,7 +30,8 @@ keys in the same directory.
 
 If you need the Baileys-compatible JSON multi-file layout instead, use
 `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` with the same
-connection flow.
+connection flow. Treat that helper as a compatibility bridge for sidecar
+migrations, not as the long-term default for new Elixir deployments.
 
 Switching between those backends later is not automatic. If you move an
 existing linked device from compatibility JSON to the native backend, either

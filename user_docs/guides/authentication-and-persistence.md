@@ -8,6 +8,8 @@ Use this guide when you need a session that survives restarts, or when you want 
   recommended durable backend for Elixir-first applications.
 - `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` keeps the
   Baileys-compatible JSON multi-file layout when you need that helper contract.
+  Treat it as a compatibility bridge for migrations off a Baileys JS sidecar,
+  not as the long-term default for Elixir apps.
 - Custom SQL/NoSQL backends remain supported through
   `BaileysEx.Auth.Persistence` and a matching `BaileysEx.Signal.Store`
   implementation.
@@ -76,7 +78,8 @@ auth_path = Path.expand("tmp/baileys_auth_json", File.cwd!())
 
 Use this helper when you need the Baileys-shaped JSON file layout on disk, for
 example during compatibility testing or when mirroring an existing Baileys
-multi-file auth directory.
+multi-file auth directory. It exists to bridge migrations off Baileys JS
+sidecars; new Elixir-first deployments should start on the native backend.
 
 ### Switch from compatibility JSON to the native backend
 

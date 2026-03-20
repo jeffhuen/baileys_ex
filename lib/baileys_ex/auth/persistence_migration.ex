@@ -7,6 +7,10 @@ defmodule BaileysEx.Auth.PersistenceMigration do
   recommended durable backend. This module provides the one-step migration path
   between those built-in backends without forcing users to re-pair.
 
+  The JSON helper exists as a compatibility bridge for users migrating away
+  from Baileys JS sidecars. This module is the explicit off-ramp from that
+  bridge to the Elixir-first native backend.
+
   Migration is explicit. The built-in auth helpers do not convert existing auth
   directories automatically during `connect/2`.
   """

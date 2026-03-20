@@ -6,6 +6,12 @@
 
 **Architecture:** This phase keeps `BaileysEx.Auth.FilePersistence` as the Baileys-compatible multi-file helper where on-disk JSON shape is part of the compatibility promise, but rewrites it around an explicit schema-driven JSON codec instead of generic tagged Elixir-term roundtripping. In parallel, it adds a durable native backend for Elixir-first deployments, backed by ETF (`:erlang.term_to_binary` / `:erlang.binary_to_term`) plus crash-safe file writes, format versioning, and migration support. `ETS` remains a runtime cache only; durability lives on disk.
 
+**Retirement intent:** The compatibility JSON helper remains only as a migration
+bridge for users coming from Baileys JS sidecars or other code that depends on
+the `useMultiFileAuthState` on-disk contract. Once that migration pressure is
+gone, the native backend should remain the product path and the compatibility
+layer can be retired in a future major release.
+
 **Tech Stack:** Elixir 1.19+/OTP 28, `:erlang.term_to_binary`, `:erlang.binary_to_term([:safe])`, existing `Auth.Persistence` / `Auth.KeyStore` behaviour surfaces, current file-backed Signal store integration, and Baileys 7.00rc9 `useMultiFileAuthState` / `BufferJSON` reference code in `dev/reference/Baileys-master/src/Utils/`.
 
 **Status:** COMPLETE (2026-03-19)
@@ -41,6 +47,7 @@ The repo guidance now explicitly says "match observable behaviour, not JS intern
 - keep the compatibility helper where compatibility matters
 - introduce a more reliable Elixir-native durable backend where compatibility does not
 - document the distinction clearly so future work does not drift back into "copy JS internals everywhere"
+- treat the compatibility layer as transitional glue, not a permanent center of gravity for the Elixir architecture
 
 ---
 

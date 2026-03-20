@@ -228,6 +228,11 @@ defmodule BaileysEx.Auth.KeyStoreTest do
     assert 0 == TrackingPersistence.delete_count(persistence, :"pre-key", "3")
   end
 
+  test "defaults to the native persistence backend when no persistence module is configured" do
+    assert {:ok, store_pid} = KeyStore.start_link()
+    assert %{persistence_module: NativeFilePersistence} = :sys.get_state(store_pid)
+  end
+
   defp start_store(opts) do
     Store.start_link(
       Keyword.merge(

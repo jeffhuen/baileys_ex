@@ -116,6 +116,8 @@ end
   keys in durable ETF files with crash-safe writes.
 - `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` keeps the
   Baileys-compatible multi-file JSON layout when you need that on-disk contract.
+  Treat it as a compatibility bridge for teams migrating off a Baileys JS
+  sidecar, not as the long-term Elixir-first default.
 - Custom SQL/NoSQL backends remain supported through
   `BaileysEx.Auth.Persistence` and `BaileysEx.Signal.Store`.
 
@@ -158,7 +160,8 @@ after
 end
 ```
 
-If you need Baileys-compatible JSON auth files instead, swap in
+If you specifically need Baileys-compatible JSON auth files during a sidecar
+migration or compatibility rollout, swap in
 `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1`.
 
 ### Send a message

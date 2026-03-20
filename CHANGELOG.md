@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.0-alpha.4] - 2026-03-19
+
+### Added
+
+- `NativeFilePersistence` — durable ETF-based file backend with crash-safe writes, recommended for Elixir-first deployments
+- `PersistenceMigration` — staged atomic migration from compatibility JSON to native format
+- `PersistenceIO` — shared crash-safe file write primitives (temp + fsync + rename + dir fsync)
+- Format versioning and manifest support for both persistence backends
+- Cross-backend contract tests and fresh-VM regression tests for persistence decoding
+- `Auth.Persistence` behaviour extended with context-aware optional callbacks
+
+### Changed
+
+- `FilePersistence` rewritten with explicit Baileys-shaped JSON codecs — no more generic tagged Elixir term serialization
+- Docs and README recommend `NativeFilePersistence` as default for Elixir apps
+
+### Fixed
+
+- Atom table exhaustion risk from `String.to_atom` on untrusted disk data
+- Flaky CI test from PBKDF2 timing — iteration count now injectable at socket startup
+- Quadratic list appending in protobuf decoder, history sync, message sender, and other hot paths
+- Nil-punning (`value && value.field`) replaced with pattern matching across feature modules
+- Dialyzer and Credo strict warnings resolved
+
 ## [0.1.0-alpha.3] - 2026-03-19
 
 ### Changed

@@ -76,15 +76,15 @@ defmodule BaileysEx.Feature.AppState do
       "[AppStateDiag] resync_app_state entering transaction key=#{inspect(transaction_key)}"
     )
 
-    with_app_state_transaction(state_store, transaction_key, fn ->
+    with_app_state_transaction(state_store, transaction_key, fn tx_state_store ->
       Logger.warning(
         "[AppStateDiag] transaction acquired, starting resync loop collections=#{inspect(collections)}"
       )
 
       context = %{
         queryable: queryable,
-        state_store: state_store,
-        get_key: fn key_id -> get_app_state_sync_key(state_store, key_id) end,
+        state_store: tx_state_store,
+        get_key: fn key_id -> get_app_state_sync_key(tx_state_store, key_id) end,
         validate_snapshot: validate_snapshot,
         validate_patch: validate_patch,
         codec_opts: codec_opts
@@ -158,7 +158,7 @@ defmodule BaileysEx.Feature.AppState do
     transaction_key = app_state_transaction_key(store, opts)
     name = patch_create.type
 
-    with_app_state_transaction(state_store, transaction_key, fn ->
+    with_app_state_transaction(state_store, transaction_key, fn tx_state_store ->
       creds = fetch_creds(store, opts)
       my_key_id = opts[:my_app_state_key_id] || creds[:my_app_state_key_id]
 
@@ -167,7 +167,7 @@ defmodule BaileysEx.Feature.AppState do
           do_app_patch(%{
             queryable: queryable,
             store: store,
-            state_store: state_store,
+            state_store: tx_state_store,
             patch_create: patch_create,
             my_key_id: key_id,
             name: name,
@@ -840,8 +840,9 @@ defmodule BaileysEx.Feature.AppState do
 
   defp do_app_patch(context) do
     get_key = fn key_id -> get_app_state_sync_key(context.state_store, key_id) end
+    tx_opts = Keyword.put(context.opts, :signal_store, context.state_store)
 
-    with :ok <- resync_app_state(context.queryable, context.store, [context.name], context.opts),
+    with :ok <- resync_app_state(context.queryable, context.store, [context.name], tx_opts),
          initial <-
            get_app_state_sync_version(context.state_store, context.name) ||
              Codec.new_lt_hash_state(),
@@ -1031,10 +1032,10 @@ defmodule BaileysEx.Feature.AppState do
       "app-state"
   end
 
-  defp with_app_state_transaction(%SignalStore{} = store, key, fun),
+  defp with_app_state_transaction(%SignalStore{} = store, key, fun) when is_function(fun, 1),
     do: SignalStore.transaction(store, key, fun)
 
-  defp with_app_state_transaction(_store, _key, fun), do: fun.()
+  defp with_app_state_transaction(store, _key, fun) when is_function(fun, 1), do: fun.(store)
 
   defp fetch_creds(store, opts) do
     opts

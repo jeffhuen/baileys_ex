@@ -4,7 +4,7 @@ defmodule BaileysEx.Auth.KeyStore do
 
   This module wraps an auth persistence backend with the same `get/3`, `set/2`,
   and `transaction/3` shape used by the runtime `Signal.Store` contract. Reads
-  go through ETS, transaction work is cached in the caller process, and commit
+  go through ETS, transaction work is cached on an explicit transaction handle, and commit
   failures roll back to the previous persisted snapshot before surfacing an
   error to the caller. When a persistence backend exports context-aware
   callbacks such as `load_keys/3` or `save_keys/4`, the store passes the
@@ -17,6 +17,7 @@ defmodule BaileysEx.Auth.KeyStore do
   @behaviour BaileysEx.Signal.Store
 
   alias BaileysEx.Auth.NativeFilePersistence
+  alias BaileysEx.Signal.Store.TransactionBuffer
 
   @missing :"$missing"
 
@@ -41,6 +42,15 @@ defmodule BaileysEx.Auth.KeyStore do
 
     @typedoc "Opaque auth key store reference."
     @type t :: %__MODULE__{pid: pid(), table: :ets.tid()}
+  end
+
+  defmodule TxRef do
+    @moduledoc false
+
+    @enforce_keys [:pid, :table, :tx_table]
+    defstruct [:pid, :table, :tx_table]
+
+    @type t :: %__MODULE__{pid: pid(), table: :ets.tid(), tx_table: :ets.tid()}
   end
 
   @type state :: %{
@@ -83,46 +93,39 @@ defmodule BaileysEx.Auth.KeyStore do
   Fetches an array of identifiers for a given data type.
   """
   @impl true
-  @spec get(Ref.t(), BaileysEx.Signal.Store.data_type(), [String.t()]) ::
+  @spec get(Ref.t() | TxRef.t(), BaileysEx.Signal.Store.data_type(), [String.t()]) ::
           BaileysEx.Signal.Store.data_entries()
   def get(%Ref{} = ref, type, ids) when is_list(ids) do
-    case current_tx(ref) do
-      nil ->
-        {entries, missing_ids} = read_cached_entries(ref.table, type, ids)
-        merge_fetched_missing(entries, ref, type, missing_ids)
+    {entries, missing_ids} = read_cached_entries(ref.table, type, ids)
+    merge_fetched_missing(entries, ref, type, missing_ids)
+  end
 
-      context ->
-        read_entries_in_transaction(ref, context, type, ids)
-    end
+  def get(%TxRef{} = ref, type, ids) when is_list(ids) do
+    read_entries_in_transaction(ref, type, ids)
   end
 
   @doc """
   Sets arbitrary mutations into the persistence backend.
   """
   @impl true
-  @spec set(Ref.t(), BaileysEx.Signal.Store.data_set()) :: :ok
+  @spec set(Ref.t() | TxRef.t(), BaileysEx.Signal.Store.data_set()) :: :ok
   def set(%Ref{} = ref, data) when is_map(data) do
-    case current_tx(ref) do
-      nil ->
-        case GenServer.call(ref.pid, {:set, data}, :infinity) do
-          :ok -> :ok
-          {:error, reason} -> raise OperationError, action: :set, reason: reason
-        end
-
-      context ->
-        ref
-        |> merge_transaction_data(context, data)
-        |> then(&update_tx(ref, &1))
-
-        :ok
+    case GenServer.call(ref.pid, {:set, data}, :infinity) do
+      :ok -> :ok
+      {:error, reason} -> raise OperationError, action: :set, reason: reason
     end
+  end
+
+  def set(%TxRef{} = ref, data) when is_map(data) do
+    :ok = merge_transaction_data(ref, data)
+    :ok
   end
 
   @doc """
   Clears all keys from persistence.
   """
   @impl true
-  @spec clear(Ref.t()) :: :ok
+  @spec clear(Ref.t() | TxRef.t()) :: :ok
   def clear(%Ref{} = ref) do
     case GenServer.call(ref.pid, :clear, :infinity) do
       :ok -> :ok
@@ -130,41 +133,50 @@ defmodule BaileysEx.Auth.KeyStore do
     end
   end
 
+  def clear(%TxRef{} = ref) do
+    :ok = TransactionBuffer.clear(ref.tx_table)
+    :ok
+  end
+
   @doc """
   Acquires an exclusive lock tied to `key` before running the `fun`.
   Errors safely roll back changes if commit fails.
   """
   @impl true
-  @spec transaction(Ref.t(), String.t(), (-> result)) :: result when result: var
-  def transaction(%Ref{} = ref, key, fun) when is_binary(key) and is_function(fun, 0) do
-    case current_tx(ref) do
-      nil ->
-        :ok = GenServer.call(ref.pid, {:lock, key, self()}, :infinity)
-        update_tx(ref, %{cache: %{}, mutations: %{}})
+  @spec transaction(Ref.t() | TxRef.t(), String.t(), (TxRef.t() -> result)) :: result
+        when result: var
+  def transaction(%Ref{} = ref, key, fun) when is_binary(key) and is_function(fun, 1) do
+    :ok = GenServer.call(ref.pid, {:lock, key, self()}, :infinity)
+    tx_table = TransactionBuffer.new()
+    tx_ref = %TxRef{pid: ref.pid, table: ref.table, tx_table: tx_table}
 
-        try do
-          result = fun.()
+    try do
+      result = fun.(tx_ref)
 
-          case GenServer.call(ref.pid, {:set, current_tx(ref).mutations}, :infinity) do
-            :ok -> result
-            {:error, reason} -> raise OperationError, action: :transaction, reason: reason
-          end
-        after
-          clear_tx(ref)
-          :ok = GenServer.call(ref.pid, {:unlock, key, self()}, :infinity)
-        end
-
-      _existing ->
-        fun.()
+      case GenServer.call(
+             ref.pid,
+             {:commit_tx, TransactionBuffer.cleared?(tx_table),
+              TransactionBuffer.mutation_data(tx_table)},
+             :infinity
+           ) do
+        :ok -> result
+        {:error, reason} -> raise OperationError, action: :transaction, reason: reason
+      end
+    after
+      TransactionBuffer.delete(tx_table)
+      :ok = GenServer.call(ref.pid, {:unlock, key, self()}, :infinity)
     end
   end
+
+  def transaction(%TxRef{} = ref, _key, fun) when is_function(fun, 1), do: fun.(ref)
 
   @doc """
   Returns true if the current process is in an active transaction context.
   """
   @impl true
-  @spec in_transaction?(Ref.t()) :: boolean()
-  def in_transaction?(%Ref{} = ref), do: not is_nil(current_tx(ref))
+  @spec in_transaction?(Ref.t() | TxRef.t()) :: boolean()
+  def in_transaction?(%Ref{}), do: false
+  def in_transaction?(%TxRef{}), do: true
 
   @impl true
   def init(opts) do
@@ -195,6 +207,13 @@ defmodule BaileysEx.Auth.KeyStore do
 
   def handle_call({:set, data}, _from, state) do
     case commit_with_retry(state, data) do
+      {:ok, state} -> {:reply, :ok, state}
+      {:error, reason, state} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:commit_tx, clear?, data}, _from, state) do
+    case commit_with_retry(state, data, clear?) do
       {:ok, state} -> {:reply, :ok, state}
       {:error, reason, state} -> {:reply, {:error, reason}, state}
     end
@@ -234,93 +253,55 @@ defmodule BaileysEx.Auth.KeyStore do
     end
   end
 
-  defp current_tx(%Ref{pid: pid}), do: Process.get({__MODULE__, pid})
-  defp update_tx(%Ref{pid: pid}, context), do: Process.put({__MODULE__, pid}, context)
-  defp clear_tx(%Ref{pid: pid}), do: Process.delete({__MODULE__, pid})
+  defp read_entries_in_transaction(%TxRef{} = ref, type, ids) do
+    {_entries, missing_ids} = TransactionBuffer.cached_entries(ref.tx_table, type, ids)
 
-  defp read_entries_in_transaction(ref, context, type, ids) do
-    type_cache = Map.get(context.cache, type, %{})
-    missing_ids = Enum.reject(ids, &Map.has_key?(type_cache, &1))
+    if missing_ids != [] do
+      fetched = fetch_transaction_missing(ref, type, missing_ids)
+      :ok = TransactionBuffer.cache_fetched(ref.tx_table, type, missing_ids, fetched)
+    end
 
-    context =
-      case missing_ids do
-        [] ->
-          context
-
-        _ ->
-          fetched =
-            case GenServer.call(ref.pid, {:fetch_missing, type, missing_ids}, :infinity) do
-              {:ok, result} -> result
-              {:error, reason} -> raise OperationError, action: :get, reason: reason
-            end
-
-          cache_fetched(context, type, missing_ids, fetched)
-      end
-
-    update_tx(ref, context)
-
-    Enum.reduce(ids, %{}, fn id, acc ->
-      case Map.fetch(context.cache[type] || %{}, id) do
-        {:ok, nil} -> acc
-        {:ok, value} -> Map.put(acc, id, value)
-        :error -> acc
-      end
-    end)
+    ref.tx_table
+    |> TransactionBuffer.cached_entries(type, ids)
+    |> elem(0)
   end
 
-  defp cache_fetched(context, type, ids, fetched) do
-    type_cache =
-      Enum.reduce(ids, Map.get(context.cache, type, %{}), fn id, acc ->
-        Map.put(acc, id, Map.get(fetched, id))
-      end)
-
-    put_in(context, [:cache, type], type_cache)
+  defp fetch_transaction_missing(%TxRef{} = ref, type, missing_ids) do
+    if TransactionBuffer.cleared?(ref.tx_table) do
+      %{}
+    else
+      case GenServer.call(ref.pid, {:fetch_missing, type, missing_ids}, :infinity) do
+        {:ok, result} -> result
+        {:error, reason} -> raise OperationError, action: :get, reason: reason
+      end
+    end
   end
 
-  defp merge_transaction_data(ref, context, data) do
-    Enum.reduce(data, context, fn {type, entries}, acc ->
+  defp merge_transaction_data(ref, data) do
+    Enum.reduce(data, :ok, fn {type, entries}, :ok ->
       if type == :"pre-key" do
-        merge_transaction_prekeys(ref, acc, entries)
+        merge_transaction_prekeys(ref, entries)
       else
-        merge_transaction_entries(acc, type, entries)
+        merge_transaction_entries(ref, type, entries)
       end
     end)
   end
 
-  defp merge_transaction_entries(context, type, entries) do
-    Enum.reduce(entries, context, fn {id, value}, acc ->
-      acc
-      |> put_tx_cache(type, id, value)
-      |> put_tx_mutation(type, id, value)
-    end)
+  defp merge_transaction_entries(%TxRef{} = ref, type, entries) do
+    TransactionBuffer.put_entries(ref.tx_table, %{type => entries})
   end
 
-  defp merge_transaction_prekeys(_ref, context, entries) do
-    Enum.reduce(entries, context, fn
-      {id, nil}, acc ->
-        case Map.get(acc.cache, :"pre-key", %{}) do
-          %{^id => existing} when not is_nil(existing) ->
-            acc
-            |> put_tx_cache(:"pre-key", id, nil)
-            |> put_tx_mutation(:"pre-key", id, nil)
-
-          _ ->
-            acc
+  defp merge_transaction_prekeys(%TxRef{} = ref, entries) do
+    Enum.reduce(entries, :ok, fn
+      {id, nil}, :ok ->
+        case get(ref, :"pre-key", [id]) do
+          %{^id => _existing} -> TransactionBuffer.put_entry(ref.tx_table, :"pre-key", id, nil)
+          %{} -> :ok
         end
 
-      {id, value}, acc ->
-        acc
-        |> put_tx_cache(:"pre-key", id, value)
-        |> put_tx_mutation(:"pre-key", id, value)
+      {id, value}, :ok ->
+        TransactionBuffer.put_entry(ref.tx_table, :"pre-key", id, value)
     end)
-  end
-
-  defp put_tx_cache(context, type, id, value) do
-    update_in(context, [:cache, type], fn entries -> Map.put(entries || %{}, id, value) end)
-  end
-
-  defp put_tx_mutation(context, type, id, value) do
-    update_in(context, [:mutations, type], fn entries -> Map.put(entries || %{}, id, value) end)
   end
 
   defp read_cached_entries(table, type, ids) do
@@ -400,20 +381,23 @@ defmodule BaileysEx.Auth.KeyStore do
     end)
   end
 
-  defp commit_with_retry(state, data) when map_size(data) == 0, do: {:ok, state}
+  defp commit_with_retry(state, data), do: commit_with_retry(state, data, false)
 
-  defp commit_with_retry(state, data) do
-    commit_with_retry(state, data, state.max_commit_retries)
+  defp commit_with_retry(state, data, clear?) when not clear? and map_size(data) == 0,
+    do: {:ok, state}
+
+  defp commit_with_retry(state, data, clear?) do
+    commit_with_retry(state, data, clear?, state.max_commit_retries)
   end
 
-  defp commit_with_retry(state, _data, attempts_left) when attempts_left <= 0,
+  defp commit_with_retry(state, _data, _clear?, attempts_left) when attempts_left <= 0,
     do: {:error, :commit_retry_exhausted, state}
 
-  defp commit_with_retry(state, data, attempts_left) do
+  defp commit_with_retry(state, data, clear?, attempts_left) do
     data = normalize_data(data)
-    snapshot = snapshot_for(state, data)
+    snapshot = snapshot_for_commit(state, data, clear?)
 
-    case apply_mutations(state, data) do
+    case apply_commit(state, data, clear?) do
       {:ok, state} ->
         {:ok, state}
 
@@ -421,7 +405,7 @@ defmodule BaileysEx.Auth.KeyStore do
         case restore_snapshot(state, snapshot) do
           {:ok, restored_state} when attempts_left > 1 ->
             Process.sleep(restored_state.delay_between_tries_ms)
-            commit_with_retry(restored_state, data, attempts_left - 1)
+            commit_with_retry(restored_state, data, clear?, attempts_left - 1)
 
           {:ok, restored_state} ->
             {:error, reason, restored_state}
@@ -431,6 +415,9 @@ defmodule BaileysEx.Auth.KeyStore do
         end
     end
   end
+
+  defp snapshot_for_commit(state, data, false), do: snapshot_for(state, data)
+  defp snapshot_for_commit(state, data, true), do: snapshot_for_clear(state, data)
 
   defp normalize_data(data) do
     Enum.reduce(data, %{}, fn {type, entries}, acc ->
@@ -457,6 +444,15 @@ defmodule BaileysEx.Auth.KeyStore do
     |> case do
       {:error, reason, next_state} -> {:error, reason, next_state}
       next_state -> {:ok, next_state}
+    end
+  end
+
+  defp apply_commit(state, data, false), do: apply_mutations(state, data)
+
+  defp apply_commit(state, data, true) do
+    case clear_persisted_entries(state) do
+      {:ok, cleared_state} -> apply_mutations(cleared_state, data)
+      {:error, reason, cleared_state} -> {:error, reason, cleared_state}
     end
   end
 
@@ -522,6 +518,26 @@ defmodule BaileysEx.Auth.KeyStore do
   defp snapshot_for(state, data) do
     Enum.reduce(data, %{}, fn {type, entries}, acc ->
       Map.put(acc, type, snapshot_values_for_type(state, type, Map.keys(entries)))
+    end)
+  end
+
+  defp snapshot_for_clear(state, data) do
+    known_ids =
+      Enum.reduce(state.known_ids, %{}, fn {type, ids}, acc ->
+        Map.put(acc, type, MapSet.to_list(ids))
+      end)
+
+    ids_by_type =
+      Enum.reduce(data, known_ids, fn {type, entries}, acc ->
+        Map.update(acc, type, Map.keys(entries), fn existing_ids ->
+          existing_ids
+          |> Enum.concat(Map.keys(entries))
+          |> Enum.uniq()
+        end)
+      end)
+
+    Enum.reduce(ids_by_type, %{}, fn {type, ids}, acc ->
+      Map.put(acc, type, snapshot_values_for_type(state, type, ids))
     end)
   end
 

@@ -197,11 +197,13 @@ defmodule BaileysEx.Signal.PreKey do
   end
 
   defp generate_upload_node(context, auth_state, count) do
-    Store.transaction(context.store, transaction_key(auth_state), fn ->
-      {:ok, %{update: update, node: node}} =
-        next_pre_keys_node(context.store, auth_state, count, context.next_pre_keys_opts)
+    Store.transaction(context.store, transaction_key(auth_state), fn tx_store ->
+      tx_context = %{context | store: tx_store}
 
-      :ok = context.emit_creds_update.(update)
+      {:ok, %{update: update, node: node}} =
+        next_pre_keys_node(tx_context.store, auth_state, count, tx_context.next_pre_keys_opts)
+
+      :ok = tx_context.emit_creds_update.(update)
       {State.merge_updates(auth_state, update), node}
     end)
   end

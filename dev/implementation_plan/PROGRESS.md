@@ -27,7 +27,7 @@
 | 13 | Internal Parity Validation | 6 | COMPLETE | 12 | — |
 | 14 | Verified Behavior Parity Gaps | 5 | COMPLETE | 12 | — |
 | 15 | Persistence Architecture Alignment | 6 | COMPLETE | 7, 12 | — |
-| 16 | Signal Store Transaction Redesign | 6 | PLANNED | 5, 15 | — |
+| 16 | Signal Store Transaction Redesign | 6 | COMPLETE | 5, 15 | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -1061,7 +1061,7 @@ more than JS internals.
 
 ## Phase 16: Signal Store Transaction Redesign
 
-**Status:** PLANNED · **Depends on:** Phases 5, 15 · **Blocks:** —
+**Status:** COMPLETE · **Depends on:** Phases 5, 15 · **Blocks:** —
 
 This phase is a contract cleanup over the runtime Signal store seam, not a
 reopening of Signal protocol behavior. Phase 5 introduced the store boundary
@@ -1077,47 +1077,48 @@ migrate to the new contract.
 
 ### Tasks
 
-- [ ] 16.1 Reframe the Signal store contract in the plan/docs
-- [ ] 16.2 Redesign `BaileysEx.Signal.Store`
-- [ ] 16.3 Rewrite `Signal.Store.Memory` around explicit transaction state
-- [ ] 16.4 Rewrite `Auth.KeyStore` around explicit transaction state
-- [ ] 16.5 Migrate all internal store consumers in one pass
-- [ ] 16.6 Document the contract and verify standard-consumer neutrality
+- [x] 16.1 Reframe the Signal store contract in the plan/docs
+- [x] 16.2 Redesign `BaileysEx.Signal.Store`
+- [x] 16.3 Rewrite `Signal.Store.Memory` around explicit transaction state
+- [x] 16.4 Rewrite `Auth.KeyStore` around explicit transaction state
+- [x] 16.5 Migrate all internal store consumers in one pass
+- [x] 16.6 Document the contract and verify standard-consumer neutrality
 
 ### Acceptance Criteria
 
-- [ ] `BaileysEx.Signal.Store.transaction/3` uses an explicit transaction-scoped store handle and no longer relies on hidden caller-local state
-- [ ] `BaileysEx.Signal.Store.Memory` contains no process-dictionary transaction state and preserves current lock/commit behavior
-- [ ] `BaileysEx.Auth.KeyStore` contains no process-dictionary transaction state and preserves current rollback/retry/pre-key safeguards
-- [ ] All internal runtime consumers of `Store.transaction/3` are migrated in the same phase; no legacy zero-arg transaction closures remain in library code
-- [ ] Standard consumers using `BaileysEx.connect/2` and the built-in auth helpers remain behaviorally unchanged and do not need workflow or API changes
-- [ ] The docs explicitly call out that custom `signal_store_module` implementations must migrate to the new contract
-- [ ] `PROGRESS.md`, `00-overview.md`, and `05-signal-protocol.md` all describe the same post-Phase-16 Signal store architecture
-- [ ] Full store, auth, signal, feature, and public API tests cover the explicit transaction-store model and pass under the new contract
+- [x] `BaileysEx.Signal.Store.transaction/3` uses an explicit transaction-scoped store handle and no longer relies on hidden caller-local state
+- [x] `BaileysEx.Signal.Store.Memory` contains no process-dictionary transaction state and preserves current lock/commit behavior
+- [x] `BaileysEx.Auth.KeyStore` contains no process-dictionary transaction state and preserves current rollback/retry/pre-key safeguards
+- [x] All internal runtime consumers of `Store.transaction/3` are migrated in the same phase; no legacy zero-arg transaction closures remain in library code
+- [x] Standard consumers using `BaileysEx.connect/2` and the built-in auth helpers remain behaviorally unchanged and do not need workflow or API changes
+- [x] The docs explicitly call out that custom `signal_store_module` implementations must migrate to the new contract
+- [x] `PROGRESS.md`, `00-overview.md`, and `05-signal-protocol.md` all describe the same post-Phase-16 Signal store architecture
+- [x] Full store, auth, signal, feature, and public API tests cover the explicit transaction-store model and pass under the new contract
 
 ### Files
 
 | File | Status |
 |------|--------|
-| `dev/implementation_plan/16-signal-store-transaction-redesign.md` | ⬜ |
+| `dev/implementation_plan/16-signal-store-transaction-redesign.md` | ✅ |
 | `dev/implementation_plan/00-overview.md` | ✅ |
 | `dev/implementation_plan/05-signal-protocol.md` | ✅ |
 | `dev/implementation_plan/PROGRESS.md` | ✅ |
-| `lib/baileys_ex/signal/store.ex` | ⬜ |
-| `lib/baileys_ex/signal/store/memory.ex` | ⬜ |
-| `lib/baileys_ex/auth/key_store.ex` | ⬜ |
-| `lib/baileys_ex/signal/adapter/signal.ex` | ⬜ |
-| `lib/baileys_ex/signal/prekey.ex` | ⬜ |
-| `lib/baileys_ex/signal/identity.ex` | ⬜ |
-| `lib/baileys_ex/signal/lid_mapping_store.ex` | ⬜ |
-| `lib/baileys_ex/feature/app_state.ex` | ⬜ |
-| `lib/baileys_ex.ex` | ⬜ |
-| `README.md` | ⬜ |
-| `user_docs/reference/configuration.md` | ⬜ |
-| `user_docs/guides/authentication-and-persistence.md` | ⬜ |
-| `test/baileys_ex/signal/store_test.exs` | ⬜ |
-| `test/baileys_ex/auth/key_store_test.exs` | ⬜ |
-| `test/baileys_ex/public_api_test.exs` | ⬜ |
+| `lib/baileys_ex/signal/store.ex` | ✅ |
+| `lib/baileys_ex/signal/store/memory.ex` | ✅ |
+| `lib/baileys_ex/signal/store/transaction_buffer.ex` | ✅ |
+| `lib/baileys_ex/auth/key_store.ex` | ✅ |
+| `lib/baileys_ex/signal/adapter/signal.ex` | ✅ |
+| `lib/baileys_ex/signal/prekey.ex` | ✅ |
+| `lib/baileys_ex/signal/identity.ex` | ✅ |
+| `lib/baileys_ex/signal/lid_mapping_store.ex` | ✅ |
+| `lib/baileys_ex/feature/app_state.ex` | ✅ |
+| `lib/baileys_ex.ex` | ✅ |
+| `README.md` | ✅ |
+| `user_docs/reference/configuration.md` | ✅ |
+| `user_docs/guides/authentication-and-persistence.md` | ✅ |
+| `test/baileys_ex/signal/store_test.exs` | ✅ |
+| `test/baileys_ex/auth/key_store_test.exs` | ✅ |
+| `test/baileys_ex/public_api_test.exs` | ✅ |
 
 ---
 

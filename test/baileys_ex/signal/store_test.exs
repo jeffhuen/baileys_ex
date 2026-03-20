@@ -21,7 +21,7 @@ defmodule BaileysEx.Signal.StoreTest do
     assert %{"alice" => ["0", "2"]} = Store.get(store, :"device-list", ["alice"])
 
     assert :ok = Store.set(store, %{session: %{"alice.0" => nil}})
-    assert %{} = Store.get(store, :session, ["alice.0"])
+    assert Store.get(store, :session, ["alice.0"]) == %{}
   end
 
   test "keeps writes local until transaction commit", %{store: store} do
@@ -29,30 +29,34 @@ defmodule BaileysEx.Signal.StoreTest do
 
     task =
       Task.async(fn ->
-        Store.transaction(store, "session:alice", fn ->
-          assert Store.in_transaction?(store)
-          assert :ok = Store.set(store, %{:session => %{"alice.0" => <<7, 8, 9>>}})
+        Store.transaction(store, "session:alice", fn tx_store ->
+          refute Store.in_transaction?(store)
+          assert Store.in_transaction?(tx_store)
+          assert :ok = Store.set(tx_store, %{:session => %{"alice.0" => <<7, 8, 9>>}})
           send(parent, :written_in_transaction)
           Process.sleep(50)
-          assert %{"alice.0" => <<7, 8, 9>>} = Store.get(store, :session, ["alice.0"])
+          assert %{"alice.0" => <<7, 8, 9>>} = Store.get(tx_store, :session, ["alice.0"])
+          assert Store.get(store, :session, ["alice.0"]) == %{}
           :committed
         end)
       end)
 
     assert_receive :written_in_transaction
-    assert %{} = Store.get(store, :session, ["alice.0"])
+    assert Store.get(store, :session, ["alice.0"]) == %{}
     assert :committed = Task.await(task)
     assert %{"alice.0" => <<7, 8, 9>>} = Store.get(store, :session, ["alice.0"])
   end
 
   test "reuses nested transaction context", %{store: store} do
     assert :nested =
-             Store.transaction(store, "session:alice", fn ->
-               assert :ok = Store.set(store, %{:session => %{"alice.0" => <<1>>}})
+             Store.transaction(store, "session:alice", fn tx_store ->
+               assert :ok = Store.set(tx_store, %{:session => %{"alice.0" => <<1>>}})
 
-               Store.transaction(store, "session:bob", fn ->
-                 assert Store.in_transaction?(store)
-                 assert %{"alice.0" => <<1>>} = Store.get(store, :session, ["alice.0"])
+               Store.transaction(tx_store, "session:bob", fn nested_store ->
+                 assert tx_store == nested_store
+                 assert Store.in_transaction?(nested_store)
+                 refute Store.in_transaction?(store)
+                 assert %{"alice.0" => <<1>>} = Store.get(nested_store, :session, ["alice.0"])
                  :nested
                end)
              end)
@@ -65,10 +69,10 @@ defmodule BaileysEx.Signal.StoreTest do
 
     first =
       Task.async(fn ->
-        Store.transaction(store, "session:alice", fn ->
+        Store.transaction(store, "session:alice", fn tx_store ->
           send(parent, :first_transaction_entered)
           Process.sleep(75)
-          assert :ok = Store.set(store, %{:session => %{"alice.0" => <<1, 2, 3>>}})
+          assert :ok = Store.set(tx_store, %{:session => %{"alice.0" => <<1, 2, 3>>}})
           send(parent, :first_transaction_ready_to_commit)
           :first
         end)
@@ -78,8 +82,8 @@ defmodule BaileysEx.Signal.StoreTest do
 
     second =
       Task.async(fn ->
-        Store.transaction(store, "session:alice", fn ->
-          send(parent, {:second_transaction_loaded, Store.get(store, :session, ["alice.0"])})
+        Store.transaction(store, "session:alice", fn tx_store ->
+          send(parent, {:second_transaction_loaded, Store.get(tx_store, :session, ["alice.0"])})
           :second
         end)
       end)

@@ -45,11 +45,22 @@ defmodule BaileysEx.Auth.KeyStore do
   end
 
   defmodule TxRef do
-    @moduledoc false
+    @moduledoc """
+    Internal transaction-scoped KeyStore handle.
+
+    Callers receive this only inside `transaction/3` callbacks. It carries the
+    explicit transaction-local cache and mutation buffer used by the built-in
+    persistence-backed Signal store implementation.
+
+    This module exists to make the transaction contract and generated
+    documentation accurate for advanced custom store implementers. Application
+    code should not construct or persist these structs directly.
+    """
 
     @enforce_keys [:pid, :table, :tx_table]
     defstruct [:pid, :table, :tx_table]
 
+    @typedoc "Internal transaction-scoped auth key store reference."
     @type t :: %__MODULE__{pid: pid(), table: :ets.tid(), tx_table: :ets.tid()}
   end
 

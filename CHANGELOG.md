@@ -9,15 +9,24 @@
 
 ### Changed
 
+- Signal store internals redesigned: all consumers receive `tx_store` explicitly through closures
+
+### Fixed
+
+- Weak test assertions (`assert %{} =`) replaced with strict equality checks
+
+## [0.1.0-alpha.5] - 2026-03-20
+
+### Changed
+
 - Extracted shared crash-safe file IO into `PersistenceIO` and key-index merge into `PersistenceHelpers`
 - Replaced exception-driven `JSON.decode!` with explicit `JSON.decode` in compatibility backend
-- Signal store internals redesigned: all consumers receive `tx_store` explicitly through closures
 
 ### Fixed
 
 - Migration publish now uses backup-and-swap for both empty and existing targets
 - Nil propagation in compatibility JSON decoders for malformed input
-- Weak test assertions (`assert %{} =`) replaced with strict equality checks
+- Credo nesting depth violation in `read_data`
 
 ## [0.1.0-alpha.4] - 2026-03-19
 

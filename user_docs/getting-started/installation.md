@@ -55,12 +55,16 @@ You reuse the same auth path across restarts so you do not need to pair every ti
 Start `iex -S mix` and load credentials once:
 
 ```elixir
-alias BaileysEx.Auth.FilePersistence
+alias BaileysEx.Auth.NativeFilePersistence
 
-{:ok, auth_state} = FilePersistence.load_credentials("tmp/baileys_auth")
+{:ok, auth_state} = NativeFilePersistence.load_credentials("tmp/baileys_auth")
 ```
 
 You should get a `BaileysEx.Auth.State` struct back, even the first time.
+
+If you specifically need the Baileys-compatible JSON multi-file layout on disk,
+use `BaileysEx.Auth.FilePersistence` instead. For most Elixir applications, the
+native helper is the recommended default.
 
 ---
 

@@ -3,6 +3,7 @@ defmodule BaileysEx.Auth.KeyStoreTest do
 
   alias BaileysEx.Auth.FilePersistence
   alias BaileysEx.Auth.KeyStore
+  alias BaileysEx.Auth.NativeFilePersistence
   alias BaileysEx.Signal.Store
 
   defmodule TrackingPersistence do
@@ -85,48 +86,17 @@ defmodule BaileysEx.Auth.KeyStoreTest do
   end
 
   @tag :tmp_dir
-  test "persists supported signal datasets across store restarts", %{tmp_dir: tmp_dir} do
-    {:ok, store} = start_store(persistence_module: FilePersistence, persistence_context: tmp_dir)
-
-    assert :ok =
-             Store.set(store, %{
-               :"lid-mapping" => %{
-                 "5511999887766" => "12345",
-                 "12345_reverse" => "5511999887766"
-               },
-               :"device-list" => %{"5511999887766" => ["0", "2"]},
-               :"identity-key" => %{"alice.0" => <<1, 2, 3>>},
-               :"sender-key-memory" => %{"1203630@g.us" => %{"alice:0" => true}},
-               :tctoken => %{
-                 "15551234567@s.whatsapp.net" => %{token: <<9, 8, 7>>, timestamp: "1710000000"}
-               }
-             })
-
-    assert %{"5511999887766" => "12345", "12345_reverse" => "5511999887766"} =
-             Store.get(store, :"lid-mapping", ["5511999887766", "12345_reverse"])
-
-    assert %{"5511999887766" => ["0", "2"]} =
-             Store.get(store, :"device-list", ["5511999887766"])
-
-    assert %{"alice.0" => <<1, 2, 3>>} = Store.get(store, :"identity-key", ["alice.0"])
-
-    assert %{"1203630@g.us" => %{"alice:0" => true}} =
-             Store.get(store, :"sender-key-memory", ["1203630@g.us"])
-
-    assert %{
-             "15551234567@s.whatsapp.net" => %{token: <<9, 8, 7>>, timestamp: "1710000000"}
-           } = Store.get(store, :tctoken, ["15551234567@s.whatsapp.net"])
-
-    {:ok, reloaded} =
-      start_store(persistence_module: FilePersistence, persistence_context: tmp_dir)
-
-    assert %{"5511999887766" => "12345"} =
-             Store.get(reloaded, :"lid-mapping", ["5511999887766"])
-
-    assert %{"5511999887766" => ["0", "2"]} =
-             Store.get(reloaded, :"device-list", ["5511999887766"])
-
-    assert %{"alice.0" => <<1, 2, 3>>} = Store.get(reloaded, :"identity-key", ["alice.0"])
+  test "persists supported signal datasets across store restarts for built-in persistence backends",
+       %{tmp_dir: tmp_dir} do
+    Enum.each(
+      [
+        {FilePersistence, Path.join(tmp_dir, "compat")},
+        {NativeFilePersistence, Path.join(tmp_dir, "native")}
+      ],
+      fn {persistence_module, persistence_context} ->
+        assert_store_restart_roundtrip(persistence_module, persistence_context)
+      end
+    )
   end
 
   test "uses transaction cache and ETS read-through caching to avoid redundant persistence loads" do
@@ -269,5 +239,60 @@ defmodule BaileysEx.Auth.KeyStoreTest do
         opts
       )
     )
+  end
+
+  defp assert_store_restart_roundtrip(persistence_module, persistence_context) do
+    {:ok, store} =
+      start_store(
+        persistence_module: persistence_module,
+        persistence_context: persistence_context
+      )
+
+    assert :ok =
+             Store.set(store, %{
+               :"lid-mapping" => %{
+                 "5511999887766" => "12345",
+                 "12345_reverse" => "5511999887766"
+               },
+               :"device-list" => %{"5511999887766" => ["0", "2"]},
+               :"identity-key" => %{"alice.0" => <<1, 2, 3>>},
+               :"sender-key-memory" => %{"1203630@g.us" => %{"alice:0" => true}},
+               :tctoken => %{
+                 "15551234567@s.whatsapp.net" => %{token: <<9, 8, 7>>, timestamp: "1710000000"}
+               }
+             })
+
+    assert %{"5511999887766" => "12345", "12345_reverse" => "5511999887766"} =
+             Store.get(store, :"lid-mapping", ["5511999887766", "12345_reverse"])
+
+    assert %{"5511999887766" => ["0", "2"]} =
+             Store.get(store, :"device-list", ["5511999887766"])
+
+    assert %{"alice.0" => <<1, 2, 3>>} = Store.get(store, :"identity-key", ["alice.0"])
+
+    assert %{"1203630@g.us" => %{"alice:0" => true}} =
+             Store.get(store, :"sender-key-memory", ["1203630@g.us"])
+
+    assert %{
+             "15551234567@s.whatsapp.net" => %{token: <<9, 8, 7>>, timestamp: "1710000000"}
+           } = Store.get(store, :tctoken, ["15551234567@s.whatsapp.net"])
+
+    assert :ok = GenServer.stop(store.ref.pid)
+
+    {:ok, reloaded} =
+      start_store(
+        persistence_module: persistence_module,
+        persistence_context: persistence_context
+      )
+
+    assert %{"5511999887766" => "12345"} =
+             Store.get(reloaded, :"lid-mapping", ["5511999887766"])
+
+    assert %{"5511999887766" => ["0", "2"]} =
+             Store.get(reloaded, :"device-list", ["5511999887766"])
+
+    assert %{"alice.0" => <<1, 2, 3>>} = Store.get(reloaded, :"identity-key", ["alice.0"])
+
+    assert :ok = GenServer.stop(reloaded.ref.pid)
   end
 end

@@ -4,10 +4,11 @@ defmodule BaileysEx do
 
   ## Quick Start
 
-      alias BaileysEx.Auth.FilePersistence
+      alias BaileysEx.Auth.NativeFilePersistence
       alias BaileysEx.Connection.Transport.MintWebSocket
 
-      {:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state("tmp/baileys_auth")
+      {:ok, persisted_auth} =
+        NativeFilePersistence.use_native_file_auth_state("tmp/baileys_auth")
       parent = self()
 
       {:ok, connection} =
@@ -46,6 +47,18 @@ defmodule BaileysEx do
 
       unsubscribe.()
       :ok = BaileysEx.disconnect(connection)
+
+  ## Persistence Backends
+
+  Use `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1` for the
+  recommended durable file-backed setup in Elixir-first apps.
+
+  Use `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` when you need
+  the Baileys-compatible JSON multi-file auth layout and helper semantics.
+
+  Custom SQL/NoSQL backends remain supported through
+  `BaileysEx.Auth.Persistence`, `BaileysEx.Auth.KeyStore`, and a matching
+  `signal_store_module`.
 
   Advanced callers can obtain the raw socket transport tuple via `queryable/1`
   and pass it directly to the lower-level feature modules.
@@ -94,9 +107,14 @@ defmodule BaileysEx do
   when you want an actual WhatsApp connection. Without it, the default transport
   returns `{:error, :transport_not_configured}`.
 
+  Use `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1` for the
+  recommended durable built-in file setup.
+
   Use `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` when you want the
-  Baileys-style multi-file setup that pairs persisted credentials with the built-in
-  file-backed Signal store.
+  Baileys-compatible JSON multi-file helper instead.
+
+  Custom persistence backends remain supported through `BaileysEx.Auth.Persistence`
+  plus a compatible `signal_store_module`.
 
   Supported callback options:
   - `:on_connection` receives each `connection_update` payload

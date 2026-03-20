@@ -6,7 +6,10 @@ defmodule BaileysEx.Auth.KeyStore do
   and `transaction/3` shape used by the runtime `Signal.Store` contract. Reads
   go through ETS, transaction work is cached in the caller process, and commit
   failures roll back to the previous persisted snapshot before surfacing an
-  error to the caller.
+  error to the caller. When a persistence backend exports context-aware
+  callbacks such as `load_keys/3` or `save_keys/4`, the store passes the
+  configured `:persistence_context` as the first argument; otherwise it falls
+  back to the behaviour's context-free callbacks.
   """
 
   use GenServer
@@ -53,6 +56,12 @@ defmodule BaileysEx.Auth.KeyStore do
 
   @doc """
   Starts the transactional key store linked to the current process.
+
+  Options:
+
+  - `:persistence_module` - module implementing `BaileysEx.Auth.Persistence`
+  - `:persistence_context` - backend-specific context passed to the built-in
+    context-aware persistence callbacks when exported
   """
   @impl true
   @spec start_link(keyword()) :: GenServer.on_start()

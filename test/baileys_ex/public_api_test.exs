@@ -5,6 +5,7 @@ defmodule BaileysEx.PublicApiTest do
 
   alias BaileysEx.Auth.FilePersistence
   alias BaileysEx.Auth.KeyStore
+  alias BaileysEx.Auth.NativeFilePersistence
   alias BaileysEx.Auth.State, as: AuthState
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Config
@@ -297,41 +298,22 @@ defmodule BaileysEx.PublicApiTest do
   end
 
   @tag :tmp_dir
-  test "use_multi_file_auth_state/1 wires Auth.KeyStore into the runtime and saves creds", %{
-    tmp_dir: tmp_dir
-  } do
-    assert {:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state(tmp_dir)
-
-    assert {:ok, connection} =
-             BaileysEx.connect(
-               persisted_auth.state,
-               Keyword.merge(persisted_auth.connect_opts,
-                 config: Config.new(fire_init_queries: false),
-                 socket_module: FakeSocket,
-                 test_pid: self()
-               )
-             )
-
-    assert_receive :fake_socket_connect
-
-    assert {:ok, %Store{module: KeyStore} = signal_store} = BaileysEx.signal_store(connection)
-    assert :ok = Store.set(signal_store, %{:"device-list" => %{"15551234567" => ["0"]}})
-
-    assert {:ok, ["0"]} =
-             FilePersistence.load_keys(tmp_dir, :"device-list", "15551234567")
-
-    assert {:ok, emitter} = BaileysEx.event_emitter(connection)
-    assert :ok = EventEmitter.emit(emitter, :creds_update, %{me: %{name: "Persisted"}})
-
-    assert_eventually(fn ->
-      match?({:ok, %{me: %{name: "Persisted"}}}, BaileysEx.auth_state(connection))
-    end)
-
-    assert {:ok, latest_auth_state} = BaileysEx.auth_state(connection)
-    assert :ok = persisted_auth.save_creds.(latest_auth_state)
-    assert {:ok, %AuthState{me: %{name: "Persisted"}}} = FilePersistence.load_credentials(tmp_dir)
-
-    assert :ok = BaileysEx.disconnect(connection)
+  test "built-in persisted auth helpers wire Auth.KeyStore into the runtime across backends",
+       %{tmp_dir: tmp_dir} do
+    Enum.each(
+      [
+        {FilePersistence, :use_multi_file_auth_state, "compat", "Persisted"},
+        {NativeFilePersistence, :use_native_file_auth_state, "native", "Persisted Native"}
+      ],
+      fn {persistence_module, helper_fun, subdir, expected_name} ->
+        assert_runtime_persistence_contract(
+          persistence_module,
+          helper_fun,
+          Path.join(tmp_dir, subdir),
+          expected_name
+        )
+      end
+    )
   end
 
   test "auth_state/1 returns the live socket auth state during creds_update callbacks" do
@@ -1189,4 +1171,46 @@ defmodule BaileysEx.PublicApiTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition was not met in time")
+
+  defp assert_runtime_persistence_contract(
+         persistence_module,
+         helper_fun,
+         path,
+         expected_name
+       ) do
+    assert {:ok, persisted_auth} = apply(persistence_module, helper_fun, [path])
+
+    assert {:ok, connection} =
+             BaileysEx.connect(
+               persisted_auth.state,
+               Keyword.merge(persisted_auth.connect_opts,
+                 config: Config.new(fire_init_queries: false),
+                 socket_module: FakeSocket,
+                 test_pid: self()
+               )
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert {:ok, %Store{module: KeyStore} = signal_store} = BaileysEx.signal_store(connection)
+    assert :ok = Store.set(signal_store, %{:"device-list" => %{"15551234567" => ["0"]}})
+
+    assert {:ok, ["0"]} =
+             persistence_module.load_keys(path, :"device-list", "15551234567")
+
+    assert {:ok, emitter} = BaileysEx.event_emitter(connection)
+    assert :ok = EventEmitter.emit(emitter, :creds_update, %{me: %{name: expected_name}})
+
+    assert_eventually(fn ->
+      match?({:ok, %{me: %{name: ^expected_name}}}, BaileysEx.auth_state(connection))
+    end)
+
+    assert {:ok, latest_auth_state} = BaileysEx.auth_state(connection)
+    assert :ok = persisted_auth.save_creds.(latest_auth_state)
+
+    assert {:ok, %AuthState{me: %{name: ^expected_name}}} =
+             persistence_module.load_credentials(path)
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
 end

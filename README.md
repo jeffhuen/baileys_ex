@@ -109,14 +109,25 @@ end
 
 **Requirements:** Elixir 1.19+, OTP 28, Rust toolchain (for NIF compilation).
 
+### Choose a persistence backend
+
+- `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1` is the
+  recommended default for Elixir-first apps. It stores credentials and Signal
+  keys in durable ETF files with crash-safe writes.
+- `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` keeps the
+  Baileys-compatible multi-file JSON layout when you need that on-disk contract.
+- Custom SQL/NoSQL backends remain supported through
+  `BaileysEx.Auth.Persistence` and `BaileysEx.Signal.Store`.
+
 ### Connect and pair
 
 ```elixir
-alias BaileysEx.Auth.FilePersistence
+alias BaileysEx.Auth.NativeFilePersistence
 alias BaileysEx.Connection.Transport.MintWebSocket
 
 # Load or create auth state
-{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state("tmp/baileys_auth")
+{:ok, persisted_auth} =
+  NativeFilePersistence.use_native_file_auth_state("tmp/baileys_auth")
 
 parent = self()
 
@@ -146,6 +157,9 @@ after
   30_000 -> raise "timed out waiting for connection"
 end
 ```
+
+If you need Baileys-compatible JSON auth files instead, swap in
+`BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1`.
 
 ### Send a message
 

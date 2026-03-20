@@ -18,16 +18,36 @@ defmodule BaileysEx.Auth.FilePersistence do
   @buffer_tag "Buffer"
   @default_dir "baileys_auth_info"
 
-  # Persistence decoding is intentionally bounded to explicit atoms/modules instead of
-  # relying on generic atom reconstruction from disk. This keeps auth loading
-  # deterministic across fresh and warm VMs and avoids reopening unbounded atom
-  # creation from persisted files.
+  # ## Why bounded decode contexts exist
   #
-  # Top-level struct fields are derived from the owning structs so they track schema
-  # changes automatically. Nested map atoms still need explicit maintenance because
-  # they are persisted as atom keys without dedicated structs. When adding persisted
-  # nested fields, update the relevant decode context below and extend the fresh-VM
-  # regressions in `test/baileys_ex/auth/file_persistence_test.exs`.
+  # This module serializes Elixir terms (including atoms) to JSON on disk.
+  # JSON has no atom type, so atoms are tagged as {"__type__":"atom","value":"..."}.
+  # On load, we must reconstruct those atoms — but `String.to_atom/1` on untrusted
+  # disk data risks exhausting the BEAM's finite, non-GC'd atom table.
+  #
+  # We solve this with explicit allowlists per persistence family. Each decode
+  # context maps known atom strings to their atom values. Unknown atoms raise
+  # immediately — no fallback to `String.to_existing_atom` (which would make
+  # behavior depend on whether the VM has loaded certain modules yet).
+  #
+  # ## What tracks automatically vs. what needs manual updates
+  #
+  # - Top-level struct fields: derived from `__struct__()` — track schema changes
+  #   automatically when you add/remove a struct field.
+  # - Nested map atom keys and atom values: MANUAL. These are plain maps without
+  #   dedicated structs, so there is nothing to derive from.
+  #
+  # ## IMPORTANT: when you hit "unknown persisted atom" errors
+  #
+  # If code elsewhere starts persisting a new atom key or value in credential
+  # or session state (e.g. a new field in processed_history_messages, or a new
+  # enum value like :lid/:pn), you MUST:
+  #
+  # 1. Add the atom to the relevant @*_decode_context below
+  # 2. Extend the fresh-VM regression in file_persistence_test.exs to cover it
+  #
+  # The fresh-VM tests spawn a separate `elixir` process that hasn't pre-loaded
+  # any modules, proving the decode works without warm-VM atom table state.
   @empty_decode_context %{atoms: %{}, modules: %{}}
 
   @credential_decode_context %{

@@ -58,7 +58,9 @@ defmodule BaileysEx do
 
   Custom SQL/NoSQL backends remain supported through
   `BaileysEx.Auth.Persistence`, `BaileysEx.Auth.KeyStore`, and a matching
-  `signal_store_module`.
+  `signal_store_module`. Advanced custom store modules must implement the
+  explicit transaction-handle contract in `BaileysEx.Signal.Store`; the
+  built-in helpers already wire the correct store for you.
 
   Advanced callers can obtain the raw socket transport tuple via `queryable/1`
   and pass it directly to the lower-level feature modules.
@@ -114,7 +116,8 @@ defmodule BaileysEx do
   Baileys-compatible JSON multi-file helper instead.
 
   Custom persistence backends remain supported through `BaileysEx.Auth.Persistence`
-  plus a compatible `signal_store_module`.
+  plus a compatible `signal_store_module`. Advanced custom store modules must
+  follow the explicit transaction-handle contract in `BaileysEx.Signal.Store`.
 
   Supported callback options:
   - `:on_connection` receives each `connection_update` payload

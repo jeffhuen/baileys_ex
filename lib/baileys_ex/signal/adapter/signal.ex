@@ -42,8 +42,8 @@ defmodule BaileysEx.Signal.Adapter.Signal do
   def inject_e2e_session(state, %Address{} = address, session) do
     session_key = session_key(address)
 
-    case Store.transaction(state.store, "session:#{session_key}", fn ->
-           persist_outgoing_session(state, session_key, address, session)
+    case Store.transaction(state.store, "session:#{session_key}", fn tx_store ->
+           persist_outgoing_session(%{state | store: tx_store}, session_key, address, session)
          end) do
       :ok -> {:ok, state}
       {:error, _} = error -> error
@@ -67,12 +67,12 @@ defmodule BaileysEx.Signal.Adapter.Signal do
     session_key = session_key(address)
 
     result =
-      Store.transaction(state.store, "session:#{session_key}", fn ->
-        record = load_session_record(state.store, session_key)
+      Store.transaction(state.store, "session:#{session_key}", fn tx_store ->
+        record = load_session_record(tx_store, session_key)
 
         case SessionCipher.encrypt(record, plaintext, registration_id: state.registration_id) do
           {:ok, record, encrypted} ->
-            save_session_record(state.store, session_key, record)
+            save_session_record(tx_store, session_key, record)
             {:ok, encrypted}
 
           {:error, _} = error ->
@@ -91,9 +91,9 @@ defmodule BaileysEx.Signal.Adapter.Signal do
     session_key = session_key(address)
 
     result =
-      Store.transaction(state.store, "session:#{session_key}", fn ->
-        record = load_session_record(state.store, session_key)
-        do_decrypt(state, address, session_key, record, type, ciphertext)
+      Store.transaction(state.store, "session:#{session_key}", fn tx_store ->
+        record = load_session_record(tx_store, session_key)
+        do_decrypt(%{state | store: tx_store}, address, session_key, record, type, ciphertext)
       end)
 
     case result do
@@ -221,12 +221,12 @@ defmodule BaileysEx.Signal.Adapter.Signal do
     sk_key = SenderKeyName.serialize(sender_key_name)
 
     result =
-      Store.transaction(state.store, "sender-key:#{sk_key}", fn ->
-        record = load_sender_key_record(state.store, sk_key)
+      Store.transaction(state.store, "sender-key:#{sk_key}", fn tx_store ->
+        record = load_sender_key_record(tx_store, sk_key)
 
         with {:ok, record, distribution_message} <- GroupSessionBuilder.create(record),
              {:ok, record, ciphertext} <- GroupCipher.encrypt(record, plaintext) do
-          save_sender_key_record(state.store, sk_key, record)
+          save_sender_key_record(tx_store, sk_key, record)
 
           {:ok, %{ciphertext: ciphertext, sender_key_distribution_message: distribution_message}}
         end
@@ -246,12 +246,12 @@ defmodule BaileysEx.Signal.Adapter.Signal do
       ) do
     sk_key = SenderKeyName.serialize(sender_key_name)
 
-    Store.transaction(state.store, "sender-key:#{sk_key}", fn ->
-      record = load_sender_key_record(state.store, sk_key)
+    Store.transaction(state.store, "sender-key:#{sk_key}", fn tx_store ->
+      record = load_sender_key_record(tx_store, sk_key)
 
       case GroupSessionBuilder.process(record, distribution_message) do
         {:ok, record} ->
-          save_sender_key_record(state.store, sk_key, record)
+          save_sender_key_record(tx_store, sk_key, record)
           :ok
 
         {:error, _} = error ->
@@ -269,12 +269,12 @@ defmodule BaileysEx.Signal.Adapter.Signal do
     sk_key = SenderKeyName.serialize(sender_key_name)
 
     result =
-      Store.transaction(state.store, "sender-key:#{sk_key}", fn ->
-        record = load_sender_key_record(state.store, sk_key)
+      Store.transaction(state.store, "sender-key:#{sk_key}", fn tx_store ->
+        record = load_sender_key_record(tx_store, sk_key)
 
         case GroupCipher.decrypt(record, ciphertext) do
           {:ok, record, plaintext} ->
-            save_sender_key_record(state.store, sk_key, record)
+            save_sender_key_record(tx_store, sk_key, record)
             {:ok, plaintext}
 
           {:error, _} = error ->

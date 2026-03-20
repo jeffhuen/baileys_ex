@@ -109,11 +109,13 @@ defmodule BaileysEx.Auth.KeyStoreTest do
       )
 
     assert :ok =
-             Store.transaction(store, "session:alice", fn ->
-               assert %{"alice.0" => <<1, 2, 3>>} = Store.get(store, :session, ["alice.0"])
-               assert %{"alice.0" => <<1, 2, 3>>} = Store.get(store, :session, ["alice.0"])
-               assert %{} = Store.get(store, :session, ["missing.0"])
-               assert %{} = Store.get(store, :session, ["missing.0"])
+             Store.transaction(store, "session:alice", fn tx_store ->
+               refute Store.in_transaction?(store)
+               assert Store.in_transaction?(tx_store)
+               assert %{"alice.0" => <<1, 2, 3>>} = Store.get(tx_store, :session, ["alice.0"])
+               assert %{"alice.0" => <<1, 2, 3>>} = Store.get(tx_store, :session, ["alice.0"])
+               assert Store.get(tx_store, :session, ["missing.0"]) == %{}
+               assert Store.get(tx_store, :session, ["missing.0"]) == %{}
                :ok
              end)
 
@@ -121,7 +123,7 @@ defmodule BaileysEx.Auth.KeyStoreTest do
     assert 1 == TrackingPersistence.load_count(persistence, :session, "missing.0")
 
     assert %{"alice.0" => <<1, 2, 3>>} = Store.get(store, :session, ["alice.0"])
-    assert %{} = Store.get(store, :session, ["missing.0"])
+    assert Store.get(store, :session, ["missing.0"]) == %{}
 
     assert 1 == TrackingPersistence.load_count(persistence, :session, "alice.0")
     assert 1 == TrackingPersistence.load_count(persistence, :session, "missing.0")
@@ -137,10 +139,10 @@ defmodule BaileysEx.Auth.KeyStoreTest do
 
     first =
       Task.async(fn ->
-        Store.transaction(store, "session:alice", fn ->
+        Store.transaction(store, "session:alice", fn tx_store ->
           send(parent, :first_entered)
           Process.sleep(75)
-          assert :ok = Store.set(store, %{session: %{"alice.0" => <<1, 2, 3>>}})
+          assert :ok = Store.set(tx_store, %{session: %{"alice.0" => <<1, 2, 3>>}})
           send(parent, :first_ready_to_commit)
           :first
         end)
@@ -150,8 +152,8 @@ defmodule BaileysEx.Auth.KeyStoreTest do
 
     second =
       Task.async(fn ->
-        Store.transaction(store, "session:alice", fn ->
-          send(parent, {:second_loaded, Store.get(store, :session, ["alice.0"])})
+        Store.transaction(store, "session:alice", fn tx_store ->
+          send(parent, {:second_loaded, Store.get(tx_store, :session, ["alice.0"])})
           :second
         end)
       end)
@@ -181,9 +183,9 @@ defmodule BaileysEx.Auth.KeyStoreTest do
       )
 
     assert_raise KeyStore.OperationError, fn ->
-      Store.transaction(store, "session:alice", fn ->
+      Store.transaction(store, "session:alice", fn tx_store ->
         assert :ok =
-                 Store.set(store, %{
+                 Store.set(tx_store, %{
                    :"device-list" => %{"alice" => ["0", "2"]},
                    session: %{"alice.0" => <<1, 2, 3>>}
                  })
@@ -191,7 +193,7 @@ defmodule BaileysEx.Auth.KeyStoreTest do
     end
 
     assert %{"alice.0" => <<0>>} = Store.get(store, :session, ["alice.0"])
-    assert %{} = Store.get(store, :"device-list", ["alice"])
+    assert Store.get(store, :"device-list", ["alice"]) == %{}
   end
 
   test "applies Baileys-style pre-key deletion safeguards" do
@@ -211,19 +213,19 @@ defmodule BaileysEx.Auth.KeyStoreTest do
 
     assert :ok = Store.set(store, %{:"pre-key" => %{"missing" => nil, "1" => nil}})
 
-    assert %{} = Store.get(store, :"pre-key", ["1", "missing"])
+    assert Store.get(store, :"pre-key", ["1", "missing"]) == %{}
     assert 0 == TrackingPersistence.delete_count(persistence, :"pre-key", "missing")
     assert 1 == TrackingPersistence.delete_count(persistence, :"pre-key", "1")
 
     assert :ok =
-             Store.transaction(store, "pre-key", fn ->
+             Store.transaction(store, "pre-key", fn tx_store ->
                assert %{"2" => %{public: <<3>>, private: <<4>>}} =
-                        Store.get(store, :"pre-key", ["2"])
+                        Store.get(tx_store, :"pre-key", ["2"])
 
-               assert :ok = Store.set(store, %{:"pre-key" => %{"2" => nil, "3" => nil}})
+               assert :ok = Store.set(tx_store, %{:"pre-key" => %{"2" => nil, "3" => nil}})
              end)
 
-    assert %{} = Store.get(store, :"pre-key", ["2", "3"])
+    assert Store.get(store, :"pre-key", ["2", "3"]) == %{}
     assert 1 == TrackingPersistence.delete_count(persistence, :"pre-key", "2")
     assert 0 == TrackingPersistence.delete_count(persistence, :"pre-key", "3")
   end

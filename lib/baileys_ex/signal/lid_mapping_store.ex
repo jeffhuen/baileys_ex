@@ -40,8 +40,8 @@ defmodule BaileysEx.Signal.LIDMappingStore do
         :ok
 
       _count ->
-        Store.transaction(store, "lid-mapping", fn ->
-          Store.set(store, %{:"lid-mapping" => entries})
+        Store.transaction(store, "lid-mapping", fn tx_store ->
+          Store.set(tx_store, %{:"lid-mapping" => entries})
         end)
     end
   end
@@ -68,9 +68,9 @@ defmodule BaileysEx.Signal.LIDMappingStore do
     lookup = Keyword.get(opts, :lookup)
 
     mappings =
-      Store.transaction(store, "lid-mapping", fn ->
-        {resolved, pending} = resolve_pn_reads(store, pns)
-        resolve_pending_pns(store, resolved, pending, lookup)
+      Store.transaction(store, "lid-mapping", fn tx_store ->
+        {resolved, pending} = resolve_pn_reads(tx_store, pns)
+        resolve_pending_pns(tx_store, resolved, pending, lookup)
       end)
 
     {:ok, mappings}

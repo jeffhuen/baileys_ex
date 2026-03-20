@@ -119,7 +119,10 @@ end
   Treat it as a compatibility bridge for teams migrating off a Baileys JS
   sidecar, not as the long-term Elixir-first default.
 - Custom SQL/NoSQL backends remain supported through
-  `BaileysEx.Auth.Persistence` and `BaileysEx.Signal.Store`.
+  `BaileysEx.Auth.Persistence` and `BaileysEx.Signal.Store`. Advanced custom
+  store modules must implement `Signal.Store.transaction/3` with the explicit
+  transaction-scoped handle passed into the callback; built-in users do not
+  need to care about this.
 
 ### Connect and pair
 

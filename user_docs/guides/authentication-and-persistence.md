@@ -121,6 +121,9 @@ If you do not need to preserve the current linked session, the simpler path is:
 ```
 
 Your custom module needs to implement the `BaileysEx.Signal.Store` behaviour.
+That includes the explicit transaction-store contract introduced in Phase 16:
+`transaction/3` must pass a transaction-scoped handle into the callback, and
+transactional reads/writes must use that handle.
 
 ### Build your own auth persistence wrapper
 

@@ -28,8 +28,8 @@ defmodule BaileysEx.Signal.Identity do
       address_key = Address.to_string(address)
 
       result =
-        Store.transaction(store, "identity-key:#{address_key}", fn ->
-          persist_identity(store, address_key, normalized_identity_key)
+        Store.transaction(store, "identity-key:#{address_key}", fn tx_store ->
+          persist_identity(tx_store, address_key, normalized_identity_key)
         end)
 
       {:ok, result}

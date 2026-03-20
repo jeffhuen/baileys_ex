@@ -54,6 +54,11 @@ signal_store_module: MyApp.BaileysSignalStore
 
 Use this when the default in-memory Signal key store is not enough for your runtime.
 
+Advanced only. Custom `signal_store_module` implementations must follow the
+`BaileysEx.Signal.Store` contract, including the explicit transaction-scoped
+handle passed into `transaction/3` callbacks. If you use the built-in auth
+helpers, this is already handled for you.
+
 For the built-in persisted setup, prefer one of the auth helpers and pass the
 returned `connect_opts` into `BaileysEx.connect/2`:
 

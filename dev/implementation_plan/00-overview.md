@@ -47,8 +47,9 @@ WAM (WhatsApp Analytics/Metrics) is optional — see Phase 12.7.
 8. **Runtime Signal store boundary** — Phase 5's Signal store is a runtime
    contract (`get/set/transaction`) with ETS-backed reads and swappable
    implementations. Phase 7 owns durable persistence implementations that
-   satisfy that contract. Phase 16 revisits the transaction semantics to remove
-   hidden caller-local state while preserving the store boundary itself.
+   satisfy that contract. Phase 16 completed the transaction-contract cleanup:
+   built-in stores now use explicit transaction-scoped handles instead of
+   hidden caller-local state, while preserving the store boundary itself.
 
 ## Supervision Tree
 

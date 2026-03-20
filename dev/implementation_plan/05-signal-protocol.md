@@ -2,6 +2,12 @@
 
 **Status:** COMPLETE
 
+> **Phase 16 follow-up:** Phase 5's accepted behavior remains correct. Phase 16
+> intentionally revisits only the runtime store transaction contract introduced
+> in 5.6 so the library can remove hidden caller-local transaction state before
+> the project hardens. Signal protocol semantics and Baileys-visible behavior
+> are not being reopened.
+
 **Goal:** Provide a Baileys-compatible Signal boundary while keeping orchestration,
 addressing, mapping, and persistence-friendly state transitions in Elixir.
 
@@ -197,6 +203,9 @@ Explicit non-goal for 5.6:
 - file, ETS-backed durable persistence, or database-backed persistence selection
   is not being forced into Phase 5. The runtime contract is now stable; Phase 7
   owns auth persistence implementations that satisfy it.
+- removing the hidden caller-local transaction model. That is a deliberate
+  Phase 16 contract cleanup once the broader signal/runtime surfaces are in
+  place and test-covered.
 
 ### 5.7 Cross-validation
 

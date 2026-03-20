@@ -44,9 +44,11 @@ WAM (WhatsApp Analytics/Metrics) is optional — see Phase 12.7.
    They don't need their own processes.
 7. **Behaviours for extensibility** — Credential persistence, event handling, and store
    backends use behaviours so users can swap implementations.
-8. **Runtime Signal store boundary** — Phase 5's Signal store is a process-backed
-   runtime contract (`get/set/transaction`) with ETS-backed reads. Phase 7 owns
-   durable persistence implementations that satisfy that contract.
+8. **Runtime Signal store boundary** — Phase 5's Signal store is a runtime
+   contract (`get/set/transaction`) with ETS-backed reads and swappable
+   implementations. Phase 7 owns durable persistence implementations that
+   satisfy that contract. Phase 16 revisits the transaction semantics to remove
+   hidden caller-local state while preserving the store boundary itself.
 
 ## Supervision Tree
 
@@ -294,6 +296,13 @@ Phase 15: Persistence Architecture Alignment ───────────�
   durable Elixir-native persistence path, add migration/versioning, and align
   docs with the observable-parity rule
   Depends on: Phase 7 (Auth), Phase 12 (Polish)
+
+Phase 16: Signal Store Transaction Redesign ─────────────────────
+  Keep the runtime Signal store seam, but replace hidden caller-local
+  transaction state with explicit transaction-scoped store handles and update
+  all internal consumers in one pass, with no workflow/API change for
+  built-in-helper users
+  Depends on: Phase 5 (Signal), Phase 15 (Persistence Alignment)
 ```
 
 ## Parallelization Opportunities
@@ -327,6 +336,9 @@ Phase 15: Persistence Architecture Alignment ───────────�
          \        /
    Phase 15 (Persistence Alignment)
     [also grounded in Phase 7 Auth]
+            |
+   Phase 16 (Signal Store Redesign)
+    [contract cleanup over Phase 5]
 ```
 
 Phases 2, 3, and 4 can run in parallel after Phase 1.

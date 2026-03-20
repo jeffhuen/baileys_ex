@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-19
+> Last updated: 2026-03-20
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -27,6 +27,7 @@
 | 13 | Internal Parity Validation | 6 | COMPLETE | 12 | — |
 | 14 | Verified Behavior Parity Gaps | 5 | COMPLETE | 12 | — |
 | 15 | Persistence Architecture Alignment | 6 | COMPLETE | 7, 12 | — |
+| 16 | Signal Store Transaction Redesign | 6 | PLANNED | 5, 15 | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -1058,13 +1059,75 @@ more than JS internals.
 
 ---
 
+## Phase 16: Signal Store Transaction Redesign
+
+**Status:** PLANNED · **Depends on:** Phases 5, 15 · **Blocks:** —
+
+This phase is a contract cleanup over the runtime Signal store seam, not a
+reopening of Signal protocol behavior. Phase 5 introduced the store boundary
+and Phase 7/15 proved it across persisted backends, but the transaction shape
+still mirrors Baileys' hidden async-local style too literally: zero-argument
+closures plus caller-local transaction state. Phase 16 keeps the store seam,
+but rewrites it around explicit transaction-scoped store handles and updates
+all internal consumers in one pass. Standard consumers using `connect/2` and
+the built-in auth helpers should see no workflow, API, or behavior change.
+That includes downstream apps such as Let It Claw when they stay on the
+built-in store/auth path. Custom `signal_store_module` implementers must
+migrate to the new contract.
+
+### Tasks
+
+- [ ] 16.1 Reframe the Signal store contract in the plan/docs
+- [ ] 16.2 Redesign `BaileysEx.Signal.Store`
+- [ ] 16.3 Rewrite `Signal.Store.Memory` around explicit transaction state
+- [ ] 16.4 Rewrite `Auth.KeyStore` around explicit transaction state
+- [ ] 16.5 Migrate all internal store consumers in one pass
+- [ ] 16.6 Document the contract and verify standard-consumer neutrality
+
+### Acceptance Criteria
+
+- [ ] `BaileysEx.Signal.Store.transaction/3` uses an explicit transaction-scoped store handle and no longer relies on hidden caller-local state
+- [ ] `BaileysEx.Signal.Store.Memory` contains no process-dictionary transaction state and preserves current lock/commit behavior
+- [ ] `BaileysEx.Auth.KeyStore` contains no process-dictionary transaction state and preserves current rollback/retry/pre-key safeguards
+- [ ] All internal runtime consumers of `Store.transaction/3` are migrated in the same phase; no legacy zero-arg transaction closures remain in library code
+- [ ] Standard consumers using `BaileysEx.connect/2` and the built-in auth helpers remain behaviorally unchanged and do not need workflow or API changes
+- [ ] The docs explicitly call out that custom `signal_store_module` implementations must migrate to the new contract
+- [ ] `PROGRESS.md`, `00-overview.md`, and `05-signal-protocol.md` all describe the same post-Phase-16 Signal store architecture
+- [ ] Full store, auth, signal, feature, and public API tests cover the explicit transaction-store model and pass under the new contract
+
+### Files
+
+| File | Status |
+|------|--------|
+| `dev/implementation_plan/16-signal-store-transaction-redesign.md` | ⬜ |
+| `dev/implementation_plan/00-overview.md` | ✅ |
+| `dev/implementation_plan/05-signal-protocol.md` | ✅ |
+| `dev/implementation_plan/PROGRESS.md` | ✅ |
+| `lib/baileys_ex/signal/store.ex` | ⬜ |
+| `lib/baileys_ex/signal/store/memory.ex` | ⬜ |
+| `lib/baileys_ex/auth/key_store.ex` | ⬜ |
+| `lib/baileys_ex/signal/adapter/signal.ex` | ⬜ |
+| `lib/baileys_ex/signal/prekey.ex` | ⬜ |
+| `lib/baileys_ex/signal/identity.ex` | ⬜ |
+| `lib/baileys_ex/signal/lid_mapping_store.ex` | ⬜ |
+| `lib/baileys_ex/feature/app_state.ex` | ⬜ |
+| `lib/baileys_ex.ex` | ⬜ |
+| `README.md` | ⬜ |
+| `user_docs/reference/configuration.md` | ⬜ |
+| `user_docs/guides/authentication-and-persistence.md` | ⬜ |
+| `test/baileys_ex/signal/store_test.exs` | ⬜ |
+| `test/baileys_ex/auth/key_store_test.exs` | ⬜ |
+| `test/baileys_ex/public_api_test.exs` | ⬜ |
+
+---
+
 ## Totals
 
 | Metric | Count |
 |--------|-------|
-| Phases | 15 |
-| Tasks | 121 |
-| Acceptance Criteria | 216 |
+| Phases | 16 |
+| Tasks | 127 |
+| Acceptance Criteria | 224 |
 | Source Files | ~110 |
 | Test Files | ~45 |
 | GAP items resolved | 48/48 |

@@ -686,23 +686,28 @@ defmodule BaileysEx.Auth.FilePersistence do
     file_path = Path.join(path, sanitize_file_name(file_name))
 
     with_file_lock(file_path, fn ->
-      case File.read(file_path) do
-        {:ok, contents} ->
-          case JSON.decode(contents) do
-            {:ok, decoded} -> {:ok, decoder_fun.(decoded)}
-            {:error, error} -> {:error, error}
-          end
-
-        {:error, :enoent} ->
-          {:ok, nil}
-
-        {:error, reason} ->
-          {:error, reason}
+      with {:ok, contents} <- read_file_or_nil(file_path),
+           {:ok, decoded} when not is_nil(decoded) <- decode_json(contents) do
+        {:ok, decoder_fun.(decoded)}
+      else
+        {:ok, nil} -> {:ok, nil}
+        {:error, _} = error -> error
       end
     end)
   rescue
     error in [ArgumentError] -> {:error, error}
   end
+
+  defp read_file_or_nil(file_path) do
+    case File.read(file_path) do
+      {:ok, contents} -> {:ok, contents}
+      {:error, :enoent} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_json(nil), do: {:ok, nil}
+  defp decode_json(contents), do: JSON.decode(contents)
 
   defp write_data(path, file_name, data, encoder_fun) do
     file_path = Path.join(path, sanitize_file_name(file_name))

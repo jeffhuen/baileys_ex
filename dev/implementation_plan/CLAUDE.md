@@ -30,10 +30,16 @@ The branch name tells you which phase you are on. Cross-check it against the fir
 - If a task's phase file is not yet written, stop and report — do not invent scope.
 - **Baileys 7.00rc9 is the spec.** `dev/reference/Baileys-master/` is the authoritative
   reference for all wire behaviour, protocol semantics, message formats, handshake flows,
-  and feature scope. When unsure what to implement or how something should behave, **read
-  the Baileys source — do not ask, do not deliberate, do not design from scratch.** Port
-  the behaviour faithfully, implement idiomatically in Elixir. The goal is a drop-in
-  replacement for Elixir apps currently using Baileys (Node.js) as a sidecar.
+  feature scope, and public compatibility promises. When unsure what to implement or how
+  something should behave, **read the Baileys source — do not ask, do not deliberate, do
+  not design from scratch.** Port the behaviour faithfully, implement idiomatically in
+  Elixir. The goal is a drop-in replacement for Elixir apps currently using Baileys
+  (Node.js) as a sidecar.
+- **Match observable behaviour, not JS internals.** The parity target is what users and
+  peers can observe or depend on: wire behaviour, helper return shapes, event semantics,
+  config semantics, persisted formats we explicitly promise to mirror, and other
+  package-facing contracts. Do not preserve a JavaScript implementation detail just because
+  Baileys happens to use it internally.
 - **Sequential by default; parallel only when safe.** See § Task Dispatch Modes below.
 - **Deterministic by default.** Every function must produce identical output for
   identical input. All sources of non-determinism (random bytes, timestamps, UUIDs)
@@ -327,13 +333,20 @@ These can be worked on simultaneously (e.g., by worktree-isolated teammates):
 ### Native-First Decision Policy
 
 Before choosing any library, pattern, or approach:
-1. **Elixir/Erlang first** — Use stdlib, OTP, or battle-tested Hex packages
-2. **Prefer stdlib over deps** — `JSON` over Jason, `:crypto` over crypto NIFs,
+1. **Match Baileys on outcomes, not implementation trivia** — preserve observable
+   behaviour, protocol semantics, and public compatibility promises. Internal JS structure,
+   helper decomposition, mutex usage, or serialization tricks are not targets by themselves
+   unless users can observe or depend on them.
+2. **Elixir/Erlang first** — Use stdlib, OTP, or battle-tested Hex packages
+3. **Prefer stdlib over deps** — `JSON` over Jason, `:crypto` over crypto NIFs,
    `Logger` over custom logging
-3. **Rust NIF only when no native equivalent exists** — Noise protocol, XEdDSA
-4. **Check OTP 28 capabilities** — many things previously needing deps are now built-in
+4. **Rust NIF only when no native equivalent exists** — Noise protocol, XEdDSA
+5. **Check OTP 28 capabilities** — many things previously needing deps are now built-in
    (PBKDF2, Ed25519, X25519, ML-KEM post-quantum, etc.)
-5. Document WHY in the code if choosing a less obvious approach
+6. **Do not cargo-cult JS internals** — if an idiomatic Elixir/Erlang implementation
+   produces the same observable result, prefer it. Only mirror the JS internal shape when
+   the shape itself is part of the compatibility contract.
+7. Document WHY in the code if choosing a less obvious approach
 
 ### File Layout Convention
 

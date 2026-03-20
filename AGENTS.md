@@ -11,8 +11,8 @@ Reference source: `dev/reference/Baileys-master/` (pinned at 7.00rc9)
 
 **Do not deliberate about what to implement or how the protocol should behave.**
 Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
-all wire behaviour, protocol semantics, message formats, handshake flows, and feature
-scope. When you are unsure what to do:
+all wire behaviour, protocol semantics, message formats, handshake flows, feature
+scope, and public compatibility promises. When you are unsure what to do:
 
 1. **Read the Baileys source.** Find the corresponding TypeScript file and understand
    what it does.
@@ -23,6 +23,8 @@ scope. When you are unsure what to do:
    *what* comes from Baileys; the *how* is SOTA Elixir.
 4. **Do not invent new behaviour.** If Baileys doesn't do it, neither do we (yet).
    If Baileys does do it, we must too.
+5. **Do not cargo-cult JS internals.** Preserve JS implementation details only when
+   they are part of an observable contract users or peers can depend on.
 
 This means: no asking "should we support X?" — check Baileys. No asking "how should
 this handshake work?" — read the Baileys handshake code. No designing from scratch
@@ -201,6 +203,9 @@ This section adds behavioural expectations.
 
 - **Baileys is the spec.** When unsure what to build or how something should behave,
   read the Baileys source in `dev/reference/Baileys-master/`. Do not ask — look it up.
+- **Match observable behaviour, not JS internals.** Preserve wire behaviour, event
+  semantics, helper return shapes, config semantics, and any public compatibility
+  promise we explicitly make. Use the best Elixir/Erlang implementation underneath.
 - **Audit helper callsites, not just the obvious export.** When porting or fixing a
   Baileys helper or behavior detail, grep the reference for every current callsite
   of that helper/behavior and account for each one before signoff. If Baileys uses

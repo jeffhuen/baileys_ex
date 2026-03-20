@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-18
+> Last updated: 2026-03-19
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -16,16 +16,17 @@
 | 2 | Crypto | 3 | COMPLETE | 1 | 7, 9 |
 | 3 | Protocol Layer | 10 | COMPLETE | 1 | 6 |
 | 4 | Noise NIF | 6 | COMPLETE | 1 | 6 |
-| 5 | Signal Protocol | 8 | COMPLETE | 1, 2 | 7, 8 |
+| 5 | Signal Protocol | 7 | COMPLETE | 1, 2 | 7, 8 |
 | 6 | Connection | 7 | COMPLETE | 3, 4 | 7, 8 |
 | 7 | Authentication | 10 | COMPLETE | 5, 6 | 8 |
-| 8 | Messaging Core | 13 | COMPLETE | 5, 6, 7 | 9, 10 |
+| 8 | Messaging Core | 16 | COMPLETE | 5, 6, 7 | 9, 10 |
 | 9 | Media | 9 | COMPLETE | 2, 8 | 12 |
 | 10 | Features | 17 | COMPLETE | 8 | 11 |
 | 11 | Advanced Features | 5 | COMPLETE | 10 | 12 |
 | 12 | Polish | 7 | COMPLETE | All | 13 |
 | 13 | Internal Parity Validation | 6 | COMPLETE | 12 | — |
-| 14 | Verified Behavior Parity Gaps | 4 | COMPLETE | 12 | — |
+| 14 | Verified Behavior Parity Gaps | 5 | COMPLETE | 12 | — |
+| 15 | Persistence Architecture Alignment | 6 | PLANNED | 7, 12 | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -992,13 +993,77 @@ present in proto definitions but not exposed through the Baileys rc9
 
 ---
 
+## Phase 15: Persistence Architecture Alignment
+
+**Status:** PLANNED · **Depends on:** Phases 7, 12 · **Blocks:** —
+
+This phase is a planned architecture follow-up, not a reopening of Phase 7's
+accepted auth/runtime behaviour. Phase 7 delivered the swappable persistence
+behaviour and the Baileys-compatible multi-file helper. Phase 15 separates that
+compatibility surface from the recommended Elixir-native durable persistence
+path, removes the generic Elixir-term-over-JSON codec from the compatibility
+helper, and aligns the docs with the repo rule that observable behaviour matters
+more than JS internals.
+
+### Tasks
+
+- [ ] 15.1 Reframe persistence architecture and plan docs
+- [ ] 15.2 Add a durable native file backend
+- [ ] 15.3 Replace generic JSON term serialization in `FilePersistence`
+- [ ] 15.4 Add format versioning and migration tooling
+- [ ] 15.5 Expose backend selection and update public guidance
+- [ ] 15.6 Add cross-backend contract, survivability, and fresh-VM coverage
+
+### Acceptance Criteria
+
+- [ ] `BaileysEx.Auth.FilePersistence` remains the Baileys-compatible multi-file helper and no longer relies on generic Elixir-term-over-JSON serialization
+- [ ] `BaileysEx.Auth.NativeFilePersistence` provides a durable on-disk backend using OTP-native serialization and crash-safe file writes
+- [ ] Existing persisted JSON auth directories from the current shipped format continue to load or migrate without requiring re-pairing
+- [ ] The native backend is durable across restarts and partial-write failures; it is not an ETS-only or runtime-only solution
+- [ ] Backend choice is explicit in public docs and helper surfaces: compatibility JSON vs recommended native durable storage
+- [ ] `Auth.Persistence`, `Auth.KeyStore`, and the connection runtime continue to support custom persistence backends via behaviour
+- [ ] Shared contract tests prove both built-in backends yield the same logical auth state and key-store behaviour for the same datasets
+- [ ] Fresh-VM tests continue to cover compatibility persistence, and native persistence adds restart/recovery coverage
+- [ ] `README.md`, `user_docs`, `00-overview.md`, `07-authentication.md`, and `PROGRESS.md` all describe the same persistence architecture
+- [ ] The implementation plan no longer suggests that mirroring JS internals is a goal beyond observable behaviour and explicit compatibility promises
+
+### Files
+
+| File | Status |
+|------|--------|
+| `dev/implementation_plan/15-persistence-architecture.md` | 🟡 |
+| `dev/implementation_plan/00-overview.md` | 🟡 |
+| `dev/implementation_plan/07-authentication.md` | 🟡 |
+| `dev/implementation_plan/CLAUDE.md` | 🟡 |
+| `dev/implementation_plan/PROGRESS.md` | 🟡 |
+| `lib/baileys_ex/auth/persistence.ex` | ⬜ |
+| `lib/baileys_ex/auth/file_persistence.ex` | ⬜ |
+| `lib/baileys_ex/auth/native_file_persistence.ex` | ⬜ |
+| `lib/baileys_ex/auth/persistence_migration.ex` | ⬜ |
+| `lib/baileys_ex/auth/key_store.ex` | ⬜ |
+| `lib/baileys_ex.ex` | ⬜ |
+| `README.md` | ⬜ |
+| `user_docs/guides/authentication-and-persistence.md` | ⬜ |
+| `user_docs/getting-started/first-connection.md` | ⬜ |
+| `user_docs/reference/configuration.md` | ⬜ |
+| `user_docs/troubleshooting/authentication-issues.md` | ⬜ |
+| `test/baileys_ex/auth/file_persistence_test.exs` | ⬜ |
+| `test/baileys_ex/auth/file_persistence_compat_test.exs` | ⬜ |
+| `test/baileys_ex/auth/native_file_persistence_test.exs` | ⬜ |
+| `test/baileys_ex/auth/persistence_migration_test.exs` | ⬜ |
+| `test/baileys_ex/auth/persistence_contract_test.exs` | ⬜ |
+| `test/baileys_ex/auth/key_store_test.exs` | ⬜ |
+| `test/baileys_ex/public_api_test.exs` | ⬜ |
+
+---
+
 ## Totals
 
 | Metric | Count |
 |--------|-------|
-| Phases | 14 |
-| Tasks | 111 |
-| Acceptance Criteria | 164 |
-| Source Files | ~100 |
-| Test Files | ~40 |
+| Phases | 15 |
+| Tasks | 121 |
+| Acceptance Criteria | 216 |
+| Source Files | ~110 |
+| Test Files | ~45 |
 | GAP items resolved | 48/48 |

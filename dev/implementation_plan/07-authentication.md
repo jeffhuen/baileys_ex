@@ -19,6 +19,12 @@ upload flow.
 > socket boundary. Phase 7 still owns the remaining auth surface: the auth
 > state struct, persistence backends, phone pairing code flow, and pre-key
 > upload / key-store transaction work.
+>
+> **Phase 15 note:** Phase 7 remains the phase that delivered the swappable
+> persistence behaviour and the Baileys-compatible multi-file helper. Later
+> persistence architecture work may add a recommended native durable backend
+> and simplify the compatibility codec, but that follow-up should not be
+> treated as reopening the auth/runtime behaviour accepted here.
 
 ---
 

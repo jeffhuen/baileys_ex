@@ -7,8 +7,9 @@
 Same wire behaviour, same protocol semantics, idiomatic Elixir implementation.
 
 Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
-all wire behaviour, protocol semantics, message formats, handshake flows, and feature
-scope. The *what* comes from Baileys; the *how* is SOTA Elixir.
+all wire behaviour, protocol semantics, message formats, handshake flows, feature
+scope, and compatibility-facing behaviour. The *what* comes from Baileys; the *how*
+is SOTA Elixir.
 
 The current architectural direction is to keep connection management, state machines,
 concurrency, and business logic in Elixir, while exposing battle-tested native crypto
@@ -28,18 +29,22 @@ WAM (WhatsApp Analytics/Metrics) is optional — see Phase 12.7.
    from OTP. The higher-level Noise choreography stays in Elixir so it can match
    `dev/reference/Baileys-master/src/Utils/noise-handler.ts`, and the Phase 5 Signal
    boundary should stay adapter-driven until a broader native surface is proven needed.
-2. **No process without a runtime reason** — Modules organize code; processes manage
+2. **Observable parity, idiomatic internals** — Match Baileys on user-visible behaviour,
+   protocol semantics, package-facing contracts, and any compatibility promise we
+   explicitly make. Do not preserve a JS implementation detail unless consumers can
+   observe or depend on it.
+3. **No process without a runtime reason** — Modules organize code; processes manage
    runtime state, concurrency, or fault isolation.
-3. **GenServer is a bottleneck by design** — Use ETS for concurrent reads, GenServer
+4. **GenServer is a bottleneck by design** — Use ETS for concurrent reads, GenServer
    only for serialized writes. Avoid single-process throughput bottlenecks.
-4. **`:gen_statem` for explicit state machines** — Connection lifecycle has clear states;
+5. **`:gen_statem` for explicit state machines** — Connection lifecycle has clear states;
    use `:gen_statem` directly rather than overloading GenServer.
-5. **Functions over processes for feature layers** — Groups, chats, presence, etc. are
+6. **Functions over processes for feature layers** — Groups, chats, presence, etc. are
    stateless function modules that construct binary nodes and send through the socket.
    They don't need their own processes.
-6. **Behaviours for extensibility** — Credential persistence, event handling, and store
+7. **Behaviours for extensibility** — Credential persistence, event handling, and store
    backends use behaviours so users can swap implementations.
-7. **Runtime Signal store boundary** — Phase 5's Signal store is a process-backed
+8. **Runtime Signal store boundary** — Phase 5's Signal store is a process-backed
    runtime contract (`get/set/transaction`) with ETS-backed reads. Phase 7 owns
    durable persistence implementations that satisfy that contract.
 
@@ -277,6 +282,18 @@ Phase 13: Internal Parity Validation ──────────────�
   Non-shipping internal contributor tooling only
   Current state: complete
   Depends on: Phase 12 (Polish)
+
+Phase 14: Verified Behavior Parity Gaps ─────────────────────────
+  Source-verified behaviour/facade parity follow-up over already-implemented
+  lower-level features
+  Current state: complete
+  Depends on: Phase 12 (Polish)
+
+Phase 15: Persistence Architecture Alignment ────────────────────
+  Separate the Baileys-compatible JSON auth helper from the recommended
+  durable Elixir-native persistence path, add migration/versioning, and align
+  docs with the observable-parity rule
+  Depends on: Phase 7 (Auth), Phase 12 (Polish)
 ```
 
 ## Parallelization Opportunities
@@ -304,8 +321,12 @@ Phase 13: Internal Parity Validation ──────────────�
        Phase 11 (Advanced)
             |
        Phase 12 (Polish)
-            |
-  Phase 13 (Internal Parity)
+         /        \
+  Phase 13      Phase 14
+ (Internal)    (Parity Gaps)
+         \        /
+   Phase 15 (Persistence Alignment)
+    [also grounded in Phase 7 Auth]
 ```
 
 Phases 2, 3, and 4 can run in parallel after Phase 1.

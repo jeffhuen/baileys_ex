@@ -2,6 +2,19 @@
 
 This page covers the public connection options for `BaileysEx.connect/2` and every key in `BaileysEx.Connection.Config`.
 
+For most applications, start from
+`BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1` and merge
+the returned `connect_opts` into `BaileysEx.connect/2`. Use
+`BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` only when you need
+the Baileys-compatible JSON multi-file helper. Custom SQL/NoSQL backends remain
+supported through `BaileysEx.Auth.Persistence` and a matching
+`signal_store_module`.
+
+Changing auth helpers or persistence backends is a saved-data migration concern,
+not a `connect/2` option. If you move an existing linked device between the
+built-in JSON and native backends, migrate once with
+`BaileysEx.Auth.PersistenceMigration` or re-pair on the new backend.
+
 ## `connect/2` options
 
 ### `transport`
@@ -40,9 +53,13 @@ signal_store_module: MyApp.BaileysSignalStore
 
 Use this when the default in-memory Signal key store is not enough for your runtime.
 
-For the built-in Baileys-style persisted setup, prefer
-`BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` and pass the returned
-`connect_opts` into `BaileysEx.connect/2`.
+For the built-in persisted setup, prefer one of the auth helpers and pass the
+returned `connect_opts` into `BaileysEx.connect/2`:
+
+- `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1`
+  (recommended durable backend)
+- `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1`
+  (Baileys-compatible JSON backend)
 
 The callback options below are connection-lifetime subscriptions managed by `connect/2`.
 If you need to remove a handler without disconnecting, use `BaileysEx.subscribe/2` or

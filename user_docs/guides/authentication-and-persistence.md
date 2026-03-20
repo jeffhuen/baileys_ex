@@ -2,16 +2,28 @@
 
 Use this guide when you need a session that survives restarts, or when you want to swap the default runtime key store for your own implementation.
 
+## Choose a backend
+
+- `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1` is the
+  recommended durable backend for Elixir-first applications.
+- `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` keeps the
+  Baileys-compatible JSON multi-file layout when you need that helper contract.
+- Custom SQL/NoSQL backends remain supported through
+  `BaileysEx.Auth.Persistence` and a matching `BaileysEx.Signal.Store`
+  implementation.
+
 ## Quick start
 
-Load the saved auth state before connecting, wire in the built-in file-backed Signal store, then persist updates whenever the runtime emits `:creds_update`.
+For most Elixir apps, load the durable native auth state before connecting,
+wire in the built-in file-backed Signal store, then persist updates whenever
+the runtime emits `:creds_update`.
 
 ```elixir
-alias BaileysEx.Auth.FilePersistence
+alias BaileysEx.Auth.NativeFilePersistence
 alias BaileysEx.Connection.Transport.MintWebSocket
 
 auth_path = "tmp/baileys_auth"
-{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state(auth_path)
+{:ok, persisted_auth} = NativeFilePersistence.use_native_file_auth_state(auth_path)
 
 {:ok, connection} =
   BaileysEx.connect(
@@ -35,8 +47,8 @@ unsubscribe =
 
 These options matter most for auth and runtime persistence:
 
-- `BaileysEx.Auth.FilePersistence` gives you the default multi-file auth storage
-- `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` mirrors Baileys' helper path and returns the matching `connect/2` options for the built-in file-backed Signal store
+- `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1` gives you the recommended durable built-in file storage
+- `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` mirrors Baileys' JSON helper path and returns the matching `connect/2` options for the built-in file-backed Signal store
 - `BaileysEx.auth_state/1` returns the current auth-state snapshot from the running connection
 - `signal_store_module:` replaces the default in-memory Signal key store when you are not using the built-in multi-file helper
 - `signal_store_opts:` passes options to that Signal store module
@@ -49,10 +61,50 @@ These options matter most for auth and runtime persistence:
 
 ```elixir
 auth_path = Path.expand("tmp/baileys_auth", File.cwd!())
-{:ok, persisted_auth} = BaileysEx.Auth.FilePersistence.use_multi_file_auth_state(auth_path)
+{:ok, persisted_auth} =
+  BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state(auth_path)
 ```
 
 The same directory must be used for every restart of the same linked account.
+
+### Keep the Baileys-compatible JSON helper
+
+```elixir
+auth_path = Path.expand("tmp/baileys_auth_json", File.cwd!())
+{:ok, persisted_auth} = BaileysEx.Auth.FilePersistence.use_multi_file_auth_state(auth_path)
+```
+
+Use this helper when you need the Baileys-shaped JSON file layout on disk, for
+example during compatibility testing or when mirroring an existing Baileys
+multi-file auth directory.
+
+### Switch from compatibility JSON to the native backend
+
+Backend switching is explicit. `connect/2` and the built-in helpers do not
+migrate saved auth state automatically.
+
+If you want to preserve the current linked session, migrate once into a new
+native directory:
+
+```elixir
+source_path = Path.expand("tmp/baileys_auth_json", File.cwd!())
+target_path = Path.expand("tmp/baileys_auth_native", File.cwd!())
+
+{:ok, _summary} =
+  BaileysEx.Auth.PersistenceMigration.migrate_compat_json_to_native(
+    source_path,
+    target_path
+  )
+
+{:ok, persisted_auth} =
+  BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state(target_path)
+```
+
+If you do not need to preserve the current linked session, the simpler path is:
+
+1. Log out or stop using the old auth directory.
+2. Switch your app to `NativeFilePersistence.use_native_file_auth_state/1`.
+3. Pair again and keep using that same native directory afterward.
 
 ### Replace the default Signal key store
 
@@ -71,25 +123,36 @@ Your custom module needs to implement the `BaileysEx.Signal.Store` behaviour.
 
 ```elixir
 defmodule MyApp.BaileysAuth do
+  alias BaileysEx.Auth.NativeFilePersistence
+
   def load!(path) do
-    {:ok, state} = BaileysEx.Auth.FilePersistence.load_credentials(path)
+    {:ok, state} = NativeFilePersistence.load_credentials(path)
     state
   end
 
   def persist!(connection, path) do
     {:ok, auth_state} = BaileysEx.auth_state(connection)
-    :ok = BaileysEx.Auth.FilePersistence.save_credentials(path, struct(BaileysEx.Auth.State, auth_state))
+    :ok =
+      NativeFilePersistence.save_credentials(
+        path,
+        struct(BaileysEx.Auth.State, auth_state)
+      )
   end
 end
 ```
 
 This keeps the public connection lifecycle simple while you integrate persistence into your own supervision tree.
 
+For fully custom SQL/NoSQL storage, keep the same `connect/2` lifecycle and
+replace the built-in helper with your own `BaileysEx.Auth.Persistence` backend
+plus a `signal_store_module` that reads and writes through it.
+
 ## Limitations
 
 - The runtime updates auth state in memory automatically, but it does not write files for you. Persist `:creds_update` yourself.
-- `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` wires the built-in file-backed Signal store for you, but custom stores still need explicit `signal_store_module:` / `signal_store_opts:` overrides.
-- If you change the auth directory or Signal store without migrating the saved data, WhatsApp usually treats the next connection as a new device.
+- Both built-in helpers wire the built-in file-backed Signal store for you, but custom stores still need explicit `signal_store_module:` / `signal_store_opts:` overrides.
+- If you change the auth directory, switch backends, or swap the Signal store without migrating the saved data, WhatsApp usually treats the next connection as a new device.
+- Backend migration is explicit, not automatic. Preserve the current session with `BaileysEx.Auth.PersistenceMigration`, or re-pair on the new backend.
 
 ---
 

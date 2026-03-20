@@ -71,13 +71,16 @@ Use the public connection and message helpers unless you specifically need the l
 **Fix:**
 
 ```elixir
-alias BaileysEx.Auth.FilePersistence
+alias BaileysEx.Auth.NativeFilePersistence
 
 auth_path = Path.expand("tmp/baileys_auth", File.cwd!())
-{:ok, auth_state} = FilePersistence.load_credentials(auth_path)
+{:ok, auth_state} = NativeFilePersistence.load_credentials(auth_path)
 ```
 
 Make sure the same auth directory and Signal store are reused together. If the saved state is already corrupted or mixed between sessions, remove it and pair again.
+
+If you intentionally use the Baileys-compatible JSON helper, the same rule
+applies with `BaileysEx.Auth.FilePersistence`.
 
 ---
 

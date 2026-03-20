@@ -1,6 +1,12 @@
 defmodule BaileysEx.Auth.State do
   @moduledoc """
   Authentication credential state matching the Baileys rc.9 auth envelope.
+
+  Most fields roundtrip across both built-in persistence backends. The
+  `:additional_data` field is backend-dependent:
+
+  - `BaileysEx.Auth.NativeFilePersistence` roundtrips general BEAM terms
+  - `BaileysEx.Auth.FilePersistence` accepts JSON-safe values only
   """
 
   alias BaileysEx.Crypto
@@ -20,14 +26,6 @@ defmodule BaileysEx.Auth.State do
           unarchive_chats: boolean(),
           default_disappearing_mode: map() | nil
         }
-
-  @type json_safe ::
-          nil
-          | boolean()
-          | number()
-          | binary()
-          | [json_safe()]
-          | %{optional(binary()) => json_safe()}
 
   @type t :: %__MODULE__{
           noise_key: key_pair(),
@@ -49,7 +47,7 @@ defmodule BaileysEx.Auth.State do
           last_prop_hash: binary() | nil,
           routing_info: binary() | nil,
           my_app_state_key_id: binary() | nil,
-          additional_data: json_safe() | nil
+          additional_data: term() | nil
         }
 
   defstruct [

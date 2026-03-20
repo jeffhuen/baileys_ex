@@ -13,16 +13,28 @@ You will finish this page with a live BaileysEx connection that can pair by QR c
 
 ### 1. Load or create auth state
 
-Load the saved auth state and the matching file-backed Signal store options before every connection attempt.
+For most Elixir apps, load the saved auth state from the durable native backend
+and reuse the matching file-backed Signal store options on every connection
+attempt.
 
 ```elixir
-alias BaileysEx.Auth.FilePersistence
+alias BaileysEx.Auth.NativeFilePersistence
 
 auth_path = "tmp/baileys_auth"
-{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state(auth_path)
+{:ok, persisted_auth} = NativeFilePersistence.use_native_file_auth_state(auth_path)
 ```
 
-If the directory is empty, `use_multi_file_auth_state/1` returns a fresh state for a new pairing flow and the `connect/2` options needed to persist Signal keys in the same directory.
+If the directory is empty, `use_native_file_auth_state/1` returns a fresh state
+for a new pairing flow and the `connect/2` options needed to persist Signal
+keys in the same directory.
+
+If you need the Baileys-compatible JSON multi-file layout instead, use
+`BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` with the same
+connection flow.
+
+Switching between those backends later is not automatic. If you move an
+existing linked device from compatibility JSON to the native backend, either
+migrate the saved auth directory once or re-pair on the native backend.
 
 ### 2. Start the connection with a real transport
 

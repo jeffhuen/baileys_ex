@@ -32,9 +32,10 @@ You have two main subscription surfaces:
 ### Persist credentials when they change
 
 ```elixir
-alias BaileysEx.Auth.FilePersistence
+alias BaileysEx.Auth.NativeFilePersistence
 
-{:ok, persisted_auth} = FilePersistence.use_multi_file_auth_state("tmp/baileys_auth")
+{:ok, persisted_auth} =
+  NativeFilePersistence.use_native_file_auth_state("tmp/baileys_auth")
 
 unsubscribe =
   BaileysEx.subscribe_raw(connection, fn events ->
@@ -44,6 +45,10 @@ unsubscribe =
     end
   end)
 ```
+
+If you intentionally use the Baileys-compatible JSON helper, the same
+subscription pattern works with
+`BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1`.
 
 ### Offload work from the event emitter
 

@@ -147,7 +147,16 @@ defmodule BaileysEx.Auth.FilePersistenceTest do
       DeterministicAuth.state(90)
       |> Map.put(:me, %{id: "15551234567@s.whatsapp.net", lid: "12345678901234@lid", name: "~"})
       |> Map.put(:processed_history_messages, [
-        %{key: %{id: "hist-1"}, message_timestamp: 1_710_000_600}
+        %{
+          key: %{
+            id: "hist-1",
+            remote_jid: "15559999999@s.whatsapp.net",
+            from_me: false,
+            participant: nil,
+            addressing_mode: :pn
+          },
+          message_timestamp: 1_710_000_600
+        }
       ])
 
     assert :ok = FilePersistence.save_credentials(tmp_dir, state)

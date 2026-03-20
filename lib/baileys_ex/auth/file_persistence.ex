@@ -59,7 +59,19 @@ defmodule BaileysEx.Auth.FilePersistence do
         :key,
         :message_timestamp,
         :unarchive_chats,
-        :default_disappearing_mode
+        :default_disappearing_mode,
+        # processed_history_messages message key atoms
+        :id,
+        :remote_jid,
+        :remote_jid_alt,
+        :participant,
+        :participant_alt,
+        :from_me,
+        :addressing_mode,
+        :server_id,
+        # addressing_mode atom values
+        :pn,
+        :lid
       ])
       |> Enum.uniq()
       |> Map.new(&{Atom.to_string(&1), &1}),

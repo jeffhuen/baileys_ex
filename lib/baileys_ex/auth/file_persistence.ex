@@ -25,6 +25,7 @@ defmodule BaileysEx.Auth.FilePersistence do
   @behaviour BaileysEx.Auth.Persistence
 
   alias BaileysEx.Auth.KeyStore
+  alias BaileysEx.Auth.PersistenceHelpers
   alias BaileysEx.Auth.PersistenceIO
   alias BaileysEx.Auth.State
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
@@ -375,7 +376,7 @@ defmodule BaileysEx.Auth.FilePersistence do
     with :ok <- ensure_directory(path),
          {:ok, manifest} <- read_manifest(path),
          {:ok, scanned} <- scan_persisted_keys(path) do
-      {:ok, merge_key_indexes(manifest_key_index(manifest), scanned)}
+      {:ok, PersistenceHelpers.merge_key_indexes(manifest_key_index(manifest), scanned)}
     end
   end
 
@@ -530,9 +531,13 @@ defmodule BaileysEx.Auth.FilePersistence do
   end
 
   defp decode_manifest_json(contents) do
-    contents
-    |> JSON.decode!()
-    |> normalize_manifest()
+    case JSON.decode(contents) do
+      {:ok, decoded} ->
+        normalize_manifest(decoded)
+
+      {:error, error} ->
+        {:error, {:invalid_persistence_metadata, __MODULE__, error}}
+    end
   rescue
     error in [ArgumentError] -> {:error, {:invalid_persistence_metadata, __MODULE__, error}}
   end
@@ -662,15 +667,6 @@ defmodule BaileysEx.Auth.FilePersistence do
 
   defp restore_legacy_id(encoded_id, _type), do: String.replace(encoded_id, "__", "/")
 
-  defp merge_key_indexes(left, right) do
-    Map.merge(left, right, fn _type, left_ids, right_ids ->
-      left_ids
-      |> Kernel.++(right_ids)
-      |> Enum.uniq()
-      |> Enum.sort()
-    end)
-  end
-
   defp key_type_from_string(type) when is_binary(type) do
     case Enum.find(@persisted_key_types, &(Atom.to_string(&1) == type)) do
       nil -> :error
@@ -692,7 +688,10 @@ defmodule BaileysEx.Auth.FilePersistence do
     with_file_lock(file_path, fn ->
       case File.read(file_path) do
         {:ok, contents} ->
-          {:ok, contents |> JSON.decode!() |> decoder_fun.()}
+          case JSON.decode(contents) do
+            {:ok, decoded} -> {:ok, decoder_fun.(decoded)}
+            {:error, error} -> {:error, error}
+          end
 
         {:error, :enoent} ->
           {:ok, nil}

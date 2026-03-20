@@ -19,6 +19,7 @@ defmodule BaileysEx.Auth.NativeFilePersistence do
 
   alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.Persistence
+  alias BaileysEx.Auth.PersistenceHelpers
   alias BaileysEx.Auth.PersistenceIO
   alias BaileysEx.Auth.State
 
@@ -176,7 +177,7 @@ defmodule BaileysEx.Auth.NativeFilePersistence do
     with :ok <- ensure_directory(path),
          {:ok, manifest} <- read_manifest(path),
          {:ok, scanned} <- scan_persisted_keys(path) do
-      {:ok, merge_key_indexes(manifest_key_index(manifest), scanned)}
+      {:ok, PersistenceHelpers.merge_key_indexes(manifest_key_index(manifest), scanned)}
     end
   end
 
@@ -406,15 +407,6 @@ defmodule BaileysEx.Auth.NativeFilePersistence do
   end
 
   defp restore_legacy_id(encoded_id, _type), do: String.replace(encoded_id, "__", "/")
-
-  defp merge_key_indexes(left, right) do
-    Map.merge(left, right, fn _type, left_ids, right_ids ->
-      left_ids
-      |> Kernel.++(right_ids)
-      |> Enum.uniq()
-      |> Enum.sort()
-    end)
-  end
 
   defp key_type_from_string(type) when is_binary(type) do
     case Enum.find(@persisted_key_types, &(Atom.to_string(&1) == type)) do

@@ -7,9 +7,157 @@ defmodule BaileysEx.Auth.FilePersistence do
 
   alias BaileysEx.Auth.KeyStore
   alias BaileysEx.Auth.State
+  alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
+  alias BaileysEx.Protocol.Proto.MessageKey
+  alias BaileysEx.Signal.Group.SenderChainKey
+  alias BaileysEx.Signal.Group.SenderKeyRecord
+  alias BaileysEx.Signal.Group.SenderKeyState
+  alias BaileysEx.Signal.Group.SenderMessageKey
+  alias BaileysEx.Signal.SessionRecord
 
   @buffer_tag "Buffer"
   @default_dir "baileys_auth_info"
+
+  # Persistence decoding is intentionally bounded to explicit atoms/modules instead of
+  # relying on generic atom reconstruction from disk. This keeps auth loading
+  # deterministic across fresh and warm VMs and avoids reopening unbounded atom
+  # creation from persisted files.
+  #
+  # Top-level struct fields are derived from the owning structs so they track schema
+  # changes automatically. Nested map atoms still need explicit maintenance because
+  # they are persisted as atom keys without dedicated structs. When adding persisted
+  # nested fields, update the relevant decode context below and extend the fresh-VM
+  # regressions in `test/baileys_ex/auth/file_persistence_test.exs`.
+  @empty_decode_context %{atoms: %{}, modules: %{}}
+
+  @credential_decode_context %{
+    atoms:
+      State.__struct__()
+      |> Map.keys()
+      |> Enum.reject(&(&1 == :__struct__))
+      |> Kernel.++(
+        ADVSignedDeviceIdentity.__struct__()
+        |> Map.keys()
+        |> Enum.reject(&(&1 == :__struct__))
+      )
+      |> Kernel.++(
+        MessageKey.__struct__()
+        |> Map.keys()
+        |> Enum.reject(&(&1 == :__struct__))
+      )
+      |> Kernel.++([
+        :public,
+        :private,
+        :key_pair,
+        :key_id,
+        :signature,
+        :identifier,
+        :identifier_key,
+        :name,
+        :device_id,
+        :lid,
+        :key,
+        :message_timestamp,
+        :unarchive_chats,
+        :default_disappearing_mode
+      ])
+      |> Enum.uniq()
+      |> Map.new(&{Atom.to_string(&1), &1}),
+    modules:
+      [State, ADVSignedDeviceIdentity, MessageKey]
+      |> Map.new(&{Atom.to_string(&1), &1})
+  }
+
+  @session_decode_context %{
+    atoms:
+      SessionRecord.__struct__()
+      |> Map.keys()
+      |> Enum.reject(&(&1 == :__struct__))
+      |> Kernel.++([
+        :current_ratchet,
+        :root_key,
+        :ephemeral_key_pair,
+        :public,
+        :private,
+        :last_remote_ephemeral,
+        :previous_counter,
+        :index_info,
+        :remote_identity_key,
+        :local_identity_key,
+        :base_key,
+        :base_key_type,
+        :closed,
+        :chains,
+        :pending_pre_key,
+        :registration_id,
+        :chain_key,
+        :counter,
+        :key,
+        :chain_type,
+        :message_keys,
+        :pre_key_id,
+        :signed_pre_key_id,
+        :sending,
+        :receiving
+      ])
+      |> Enum.uniq()
+      |> Map.new(&{Atom.to_string(&1), &1}),
+    modules:
+      [SessionRecord]
+      |> Map.new(&{Atom.to_string(&1), &1})
+  }
+
+  @sender_key_decode_context %{
+    atoms:
+      SenderKeyRecord.__struct__()
+      |> Map.keys()
+      |> Enum.reject(&(&1 == :__struct__))
+      |> Kernel.++(
+        SenderKeyState.__struct__()
+        |> Map.keys()
+        |> Enum.reject(&(&1 == :__struct__))
+      )
+      |> Kernel.++(
+        SenderChainKey.__struct__()
+        |> Map.keys()
+        |> Enum.reject(&(&1 == :__struct__))
+      )
+      |> Kernel.++(
+        SenderMessageKey.__struct__()
+        |> Map.keys()
+        |> Enum.reject(&(&1 == :__struct__))
+      )
+      |> Kernel.++([:public, :private])
+      |> Enum.uniq()
+      |> Map.new(&{Atom.to_string(&1), &1}),
+    modules:
+      [SenderKeyRecord, SenderKeyState, SenderChainKey, SenderMessageKey]
+      |> Map.new(&{Atom.to_string(&1), &1})
+  }
+
+  @pre_key_decode_context %{
+    atoms: %{Atom.to_string(:public) => :public, Atom.to_string(:private) => :private},
+    modules: %{}
+  }
+
+  @app_state_sync_key_decode_context %{
+    atoms: %{Atom.to_string(:key_data) => :key_data},
+    modules: %{}
+  }
+
+  @app_state_sync_version_decode_context %{
+    atoms:
+      [:version, :hash, :index_value_map, :value_mac]
+      |> Map.new(&{Atom.to_string(&1), &1}),
+    modules: %{}
+  }
+
+  @tc_token_decode_context %{
+    atoms:
+      [:token, :timestamp]
+      |> Map.new(&{Atom.to_string(&1), &1}),
+    modules: %{}
+  }
 
   @type multi_file_auth_state :: %{
           required(:state) => State.t(),
@@ -49,7 +197,7 @@ defmodule BaileysEx.Auth.FilePersistence do
   @spec load_credentials(Path.t()) :: {:ok, State.t()} | {:error, term()}
   def load_credentials(path) when is_binary(path) do
     with :ok <- ensure_directory(path) do
-      case read_data(path, "creds.json") do
+      case read_data(path, "creds.json", &decode_credentials/1) do
         {:ok, nil} ->
           {:ok, State.new()}
 
@@ -76,7 +224,8 @@ defmodule BaileysEx.Auth.FilePersistence do
   """
   @spec save_credentials(Path.t(), State.t()) :: :ok | {:error, term()}
   def save_credentials(path, %State{} = state) when is_binary(path) do
-    with :ok <- ensure_directory(path) do
+    with :ok <- validate_additional_data(state.additional_data),
+         :ok <- ensure_directory(path) do
       write_data(path, "creds.json", state)
     end
   end
@@ -95,7 +244,7 @@ defmodule BaileysEx.Auth.FilePersistence do
     with :ok <- ensure_directory(path) do
       file_name = data_file_name(type, id)
 
-      case read_data(path, file_name) do
+      case read_data(path, file_name, &decode_key_data(type, &1)) do
         {:ok, nil} -> {:error, :not_found}
         {:ok, value} -> {:ok, value}
         {:error, _reason} = error -> error
@@ -135,6 +284,59 @@ defmodule BaileysEx.Auth.FilePersistence do
     end
   end
 
+  defp validate_additional_data(nil), do: :ok
+  defp validate_additional_data(data), do: validate_json_safe(data, [:additional_data])
+
+  defp validate_json_safe(nil, _path), do: :ok
+  defp validate_json_safe(value, _path) when is_binary(value), do: :ok
+  defp validate_json_safe(value, _path) when is_number(value), do: :ok
+  defp validate_json_safe(value, _path) when is_boolean(value), do: :ok
+
+  defp validate_json_safe(list, path) when is_list(list) do
+    list
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {item, i}, :ok ->
+      case validate_json_safe(item, [i | path]) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_json_safe(map, path) when is_map(map) do
+    Enum.reduce_while(map, :ok, fn {key, value}, :ok ->
+      with :ok <- validate_json_safe_key(key, path),
+           :ok <- validate_json_safe(value, [key | path]) do
+        {:cont, :ok}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_json_safe(value, path) do
+    {:error,
+     {:invalid_additional_data,
+      "additional_data contains a #{type_name(value)} at path #{inspect(Enum.reverse(path))}; " <>
+        "only strings, numbers, booleans, lists, and string-keyed maps are supported"}}
+  end
+
+  defp validate_json_safe_key(key, _path) when is_binary(key), do: :ok
+
+  defp validate_json_safe_key(key, path) do
+    {:error,
+     {:invalid_additional_data,
+      "additional_data contains a #{type_name(key)} map key at path #{inspect(Enum.reverse(path))}; " <>
+        "only string keys are supported"}}
+  end
+
+  defp type_name(value) when is_atom(value), do: "atom (#{inspect(value)})"
+  defp type_name(value) when is_tuple(value), do: "tuple"
+  defp type_name(value) when is_pid(value), do: "pid"
+  defp type_name(value) when is_reference(value), do: "reference"
+  defp type_name(value) when is_function(value), do: "function"
+  defp type_name(_value), do: "unsupported term"
+
   defp default_path do
     Application.get_env(:baileys_ex, __MODULE__, [])
     |> Keyword.get(:path, Path.join(File.cwd!(), @default_dir))
@@ -158,13 +360,13 @@ defmodule BaileysEx.Auth.FilePersistence do
     |> String.replace(":", "-")
   end
 
-  defp read_data(path, file_name) do
+  defp read_data(path, file_name, decoder_fun) do
     file_path = Path.join(path, sanitize_file_name(file_name))
 
     with_file_lock(file_path, fn ->
       case File.read(file_path) do
         {:ok, contents} ->
-          {:ok, JSON.decode!(contents) |> decode_term()}
+          {:ok, contents |> JSON.decode!() |> decoder_fun.()}
 
         {:error, :enoent} ->
           {:ok, nil}
@@ -271,33 +473,65 @@ defmodule BaileysEx.Auth.FilePersistence do
 
   defp encode_term(other), do: other
 
-  defp decode_term(%{"__type__" => "struct", "module" => module_name, "value" => value}) do
-    module = String.to_existing_atom(module_name)
-    fields = decode_term(value)
+  defp decode_credentials(value) do
+    case decode_term(value, @credential_decode_context) do
+      %State{} = state -> state
+      %{} = fields -> struct(State, fields)
+      other -> other
+    end
+  end
+
+  defp decode_key_data(:session, value), do: decode_term(value, @session_decode_context)
+  defp decode_key_data(:"pre-key", value), do: decode_term(value, @pre_key_decode_context)
+  defp decode_key_data(:"sender-key", value), do: decode_term(value, @sender_key_decode_context)
+  defp decode_key_data(:"sender-key-memory", value), do: decode_term(value, @empty_decode_context)
+
+  defp decode_key_data(:"app-state-sync-key", value),
+    do: decode_term(value, @app_state_sync_key_decode_context)
+
+  defp decode_key_data(:"app-state-sync-version", value),
+    do: decode_term(value, @app_state_sync_version_decode_context)
+
+  defp decode_key_data(:"lid-mapping", value), do: decode_term(value, @empty_decode_context)
+  defp decode_key_data(:"device-list", value), do: decode_term(value, @empty_decode_context)
+  defp decode_key_data(:tctoken, value), do: decode_term(value, @tc_token_decode_context)
+  defp decode_key_data(:"identity-key", value), do: decode_term(value, @empty_decode_context)
+  defp decode_key_data(_type, value), do: decode_term(value)
+
+  defp decode_term(value), do: decode_term(value, @empty_decode_context)
+
+  defp decode_term(
+         %{"__type__" => "struct", "module" => module_name, "value" => value},
+         decode_context
+       ) do
+    module = decode_module(module_name, decode_context)
+    fields = decode_term(value, decode_context)
     struct(module, fields)
   end
 
-  defp decode_term(%{"__type__" => "map", "entries" => entries}) do
+  defp decode_term(%{"__type__" => "map", "entries" => entries}, decode_context) do
     entries
-    |> Enum.map(fn [key, value] -> {decode_term(key), decode_term(value)} end)
+    |> Enum.map(fn [key, value] ->
+      {decode_term(key, decode_context), decode_term(value, decode_context)}
+    end)
     |> Map.new()
   end
 
-  defp decode_term(%{"__type__" => "tuple", "items" => items}) do
+  defp decode_term(%{"__type__" => "tuple", "items" => items}, decode_context) do
     items
-    |> Enum.map(&decode_term/1)
+    |> Enum.map(&decode_term(&1, decode_context))
     |> List.to_tuple()
   end
 
-  defp decode_term(%{"__type__" => "atom", "value" => value}) when is_binary(value) do
-    String.to_existing_atom(value)
+  defp decode_term(%{"__type__" => "atom", "value" => value}, decode_context)
+       when is_binary(value) do
+    decode_atom(value, decode_context)
   end
 
-  defp decode_term(%{"type" => @buffer_tag, "data" => data}) when is_list(data) do
-    :erlang.list_to_binary(data)
-  end
+  defp decode_term(%{"type" => @buffer_tag, "data" => data}, _decode_context) when is_list(data),
+    do: :erlang.list_to_binary(data)
 
-  defp decode_term(%{} = map) do
+  defp decode_term(%{} = map, decode_context) do
     atom_keys = Map.get(map, "__atom_keys__", [])
 
     map
@@ -305,18 +539,44 @@ defmodule BaileysEx.Auth.FilePersistence do
     |> Enum.map(fn {key, value} ->
       decoded_key =
         if key in atom_keys do
-          String.to_existing_atom(key)
+          decode_atom(key, decode_context)
         else
           key
         end
 
-      {decoded_key, decode_term(value)}
+      {decoded_key, decode_term(value, decode_context)}
     end)
     |> Map.new()
   end
 
-  defp decode_term(list) when is_list(list), do: Enum.map(list, &decode_term/1)
-  defp decode_term(other), do: other
+  defp decode_term(list, decode_context) when is_list(list),
+    do: Enum.map(list, &decode_term(&1, decode_context))
+
+  defp decode_term(other, _decode_context), do: other
+
+  defp decode_atom(value, %{atoms: atoms}) do
+    case Map.fetch(atoms, value) do
+      {:ok, atom} ->
+        atom
+
+      :error ->
+        raise ArgumentError,
+              "unknown persisted atom #{inspect(value)}; " <>
+                "add it to the relevant decode context in #{inspect(__MODULE__)}"
+    end
+  end
+
+  defp decode_module(module_name, %{modules: modules}) do
+    case Map.fetch(modules, module_name) do
+      {:ok, module} ->
+        module
+
+      :error ->
+        raise ArgumentError,
+              "unknown persisted module #{inspect(module_name)}; " <>
+                "add it to the relevant decode context in #{inspect(__MODULE__)}"
+    end
+  end
 
   defp normalize_credentials_state(%State{} = state), do: state
 

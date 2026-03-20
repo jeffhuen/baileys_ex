@@ -21,6 +21,14 @@ defmodule BaileysEx.Auth.State do
           default_disappearing_mode: map() | nil
         }
 
+  @type json_safe ::
+          nil
+          | boolean()
+          | number()
+          | binary()
+          | [json_safe()]
+          | %{optional(binary()) => json_safe()}
+
   @type t :: %__MODULE__{
           noise_key: key_pair(),
           pairing_ephemeral_key: key_pair() | nil,
@@ -41,7 +49,7 @@ defmodule BaileysEx.Auth.State do
           last_prop_hash: binary() | nil,
           routing_info: binary() | nil,
           my_app_state_key_id: binary() | nil,
-          additional_data: term() | nil
+          additional_data: json_safe() | nil
         }
 
   defstruct [

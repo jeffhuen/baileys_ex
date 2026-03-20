@@ -2,9 +2,17 @@
 
 ## [0.1.0-alpha.6] - 2026-03-20
 
+Eliminates the last JS-shaped design pattern in the codebase. Signal store
+transactions previously used a zero-argument closure with hidden state in
+the process dictionary — a literal port of Baileys' `keys.transaction(async
+() => ...)`. Transactions now pass an explicit handle through the closure,
+matching the Ecto `Repo.transaction(fn repo -> ... end)` convention. This
+makes transaction state visible, testable, and composable without hidden
+coupling to the calling process.
+
 ### Added
 
-- `Signal.Store.transaction/3` now passes explicit transaction handles — no more hidden process dictionary state
+- `Signal.Store.transaction/3` now passes explicit transaction handles
 - `TransactionBuffer` module extracts reusable ETS-based transaction caching
 
 ### Changed
@@ -16,6 +24,10 @@
 - Weak test assertions (`assert %{} =`) replaced with strict equality checks
 
 ## [0.1.0-alpha.5] - 2026-03-20
+
+Post-merge hardening of the persistence architecture from alpha.4. Shared
+write primitives extracted, exception-driven JSON parsing replaced with
+explicit error handling, and migration edge cases closed.
 
 ### Changed
 
@@ -29,6 +41,14 @@
 - Credo nesting depth violation in `read_data`
 
 ## [0.1.0-alpha.4] - 2026-03-19
+
+Major persistence architecture overhaul. The library previously used a
+generic Elixir term serializer on top of JSON — encoding atoms, structs,
+and tuples with custom tags — which caused fresh-VM crashes, atom table
+exhaustion risks, and ongoing allowlist maintenance. This release separates
+persistence into two backends: a durable ETF-based native backend
+(recommended) and a Baileys-compatible JSON backend rewritten with explicit
+codecs. Also fixes several Elixir antipatterns across the codebase.
 
 ### Added
 

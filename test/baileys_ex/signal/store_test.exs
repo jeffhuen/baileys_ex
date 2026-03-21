@@ -95,4 +95,37 @@ defmodule BaileysEx.Signal.StoreTest do
     assert_receive {:second_transaction_loaded, %{"alice.0" => <<1, 2, 3>>}}
     assert :second = Task.await(second)
   end
+
+  test "releases the lock when a transaction owner dies", %{store: store} do
+    parent = self()
+
+    owner =
+      spawn(fn ->
+        Store.transaction(store, "session:alice", fn _tx_store ->
+          send(parent, :owner_entered)
+          Process.sleep(:infinity)
+        end)
+      end)
+
+    owner_ref = Process.monitor(owner)
+
+    assert_receive :owner_entered
+
+    waiter =
+      Task.async(fn ->
+        Store.transaction(store, "session:alice", fn tx_store ->
+          assert :ok = Store.set(tx_store, %{session: %{"alice.0" => <<4, 5, 6>>}})
+          send(parent, {:waiter_entered, Store.get(tx_store, :session, ["alice.0"])})
+          :waiter_committed
+        end)
+      end)
+
+    refute_receive {:waiter_entered, _}, 20
+
+    Process.exit(owner, :kill)
+    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :killed}
+    assert_receive {:waiter_entered, %{"alice.0" => <<4, 5, 6>>}}
+    assert :waiter_committed = Task.await(waiter)
+    assert %{"alice.0" => <<4, 5, 6>>} = Store.get(store, :session, ["alice.0"])
+  end
 end

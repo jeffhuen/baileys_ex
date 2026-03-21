@@ -15,6 +15,31 @@ defmodule BaileysEx.Signal.CurveTest do
     assert {:error, :invalid_public_key} = Curve.generate_signal_pub_key(<<1, 2, 3>>)
   end
 
+  test "ensure_signal helpers normalize raw and prefixed public keys" do
+    raw_public_key =
+      <<27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4,
+        3, 2, 1, 0, 31, 30, 29, 28>>
+
+    prefixed_public_key = <<5, raw_public_key::binary>>
+    key_pair = %{public: raw_public_key, private: <<28::256>>}
+
+    assert %{public: ^prefixed_public_key, private: <<28::256>>} =
+             Curve.ensure_signal_key_pair!(key_pair)
+
+    assert prefixed_public_key == Curve.ensure_signal_public_key!(raw_public_key)
+    assert prefixed_public_key == Curve.ensure_signal_public_key!(prefixed_public_key)
+  end
+
+  test "ensure_signal helpers raise on invalid public keys" do
+    assert_raise MatchError, fn ->
+      Curve.ensure_signal_public_key!(<<1, 2, 3>>)
+    end
+
+    assert_raise MatchError, fn ->
+      Curve.ensure_signal_key_pair!(%{public: <<1, 2, 3>>, private: <<29::256>>})
+    end
+  end
+
   test "sign and verify accept raw and prefixed public keys" do
     key_pair = Curve.generate_key_pair(private_key: <<14::256>>)
     message = "adv account signature payload"

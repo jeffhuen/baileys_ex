@@ -11,6 +11,7 @@ defmodule BaileysEx.Signal.Store.Memory do
 
   @behaviour BaileysEx.Signal.Store
 
+  alias BaileysEx.Signal.Store.LockManager
   alias BaileysEx.Signal.Store.TransactionBuffer
 
   defmodule Ref do
@@ -118,30 +119,22 @@ defmodule BaileysEx.Signal.Store.Memory do
   end
 
   def handle_call({:lock, key, owner}, from, state) do
-    case Map.get(state.locks, key) do
-      nil ->
-        {updated_state, _lock} = put_lock(state, key, owner)
+    case LockManager.acquire(state, key, from, owner) do
+      {:acquired, updated_state} ->
         {:reply, :ok, updated_state}
 
-      _lock ->
-        {:noreply, enqueue_waiter(state, key, from, owner)}
+      {:queued, updated_state} ->
+        {:noreply, updated_state}
     end
   end
 
   def handle_call({:unlock, key, owner}, _from, state) do
-    {:reply, :ok, release_lock(state, key, owner)}
+    {:reply, :ok, LockManager.release(state, key, owner)}
   end
 
   @impl true
   def handle_info({:DOWN, monitor_ref, :process, owner, _reason}, state) do
-    case Map.pop(state.monitor_keys, monitor_ref) do
-      {nil, _monitor_keys} ->
-        {:noreply, state}
-
-      {key, monitor_keys} ->
-        updated_state = %{state | monitor_keys: monitor_keys}
-        {:noreply, release_lock(updated_state, key, owner, monitor_ref)}
-    end
+    {:noreply, LockManager.handle_owner_down(state, monitor_ref, owner)}
   end
 
   defp read_entries_in_transaction(%TxRef{} = ref, type, ids) do
@@ -194,52 +187,5 @@ defmodule BaileysEx.Signal.Store.Memory do
     end)
 
     :ok
-  end
-
-  defp put_lock(state, key, owner) do
-    monitor_ref = Process.monitor(owner)
-    lock = %{owner: owner, monitor_ref: monitor_ref, queue: :queue.new()}
-
-    updated_state = %{
-      state
-      | locks: Map.put(state.locks, key, lock),
-        monitor_keys: Map.put(state.monitor_keys, monitor_ref, key)
-    }
-
-    {updated_state, lock}
-  end
-
-  defp enqueue_waiter(state, key, from, owner) do
-    update_in(state, [:locks, key, :queue], fn queue ->
-      :queue.in({from, owner}, queue || :queue.new())
-    end)
-  end
-
-  defp release_lock(state, key, owner, monitor_ref \\ nil) do
-    case Map.get(state.locks, key) do
-      %{owner: ^owner, monitor_ref: lock_monitor_ref, queue: queue} ->
-        demonitor_ref = monitor_ref || lock_monitor_ref
-        Process.demonitor(demonitor_ref, [:flush])
-
-        state
-        |> update_in([:monitor_keys], &Map.delete(&1, demonitor_ref))
-        |> promote_next_waiter(key, queue)
-
-      _other ->
-        state
-    end
-  end
-
-  defp promote_next_waiter(state, key, queue) do
-    case :queue.out(queue) do
-      {{:value, {from, owner}}, remaining} ->
-        {updated_state, lock} = put_lock(state, key, owner)
-        next_state = put_in(updated_state, [:locks, key, :queue], remaining)
-        GenServer.reply(from, :ok)
-        put_in(next_state, [:locks, key], %{lock | queue: remaining})
-
-      {:empty, _queue} ->
-        %{state | locks: Map.delete(state.locks, key)}
-    end
   end
 end

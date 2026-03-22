@@ -267,6 +267,9 @@ defmodule BaileysEx.Connection.EventEmitter do
     end
   end
 
+  # The in-flight dispatch (queue head) may have been partially delivered before the
+  # dispatcher died. Restarting replays it, giving at-least-once delivery semantics
+  # under worker failure — subscribers should be idempotent or tolerant of duplicates.
   def handle_info(
         {:DOWN, dispatcher_ref, :process, dispatcher_pid, _reason},
         %State{dispatcher_ref: dispatcher_ref, dispatcher_pid: dispatcher_pid} = state

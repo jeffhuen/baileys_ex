@@ -29,7 +29,7 @@ cleanup work is visible in-repo instead of being stranded in terminal history.
 
 ## Remaining High-Value Clusters
 
-- [ ] Feature transport adapter wrappers are duplicated across feature modules and `Media.Upload`.
+- [x] Feature transport adapter wrappers — extracted to `Connection.TransportAdapter` (alpha.7).
   - Representative callsites:
     - `lib/baileys_ex/feature/business.ex`
     - `lib/baileys_ex/feature/bot_directory.ex`

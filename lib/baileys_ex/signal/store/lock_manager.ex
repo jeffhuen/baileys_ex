@@ -66,9 +66,8 @@ defmodule BaileysEx.Signal.Store.LockManager do
     case :queue.out(queue) do
       {{:value, {from, owner}}, remaining} ->
         {updated_state, lock} = put_lock(state, key, owner)
-        next_state = put_in(updated_state, [:locks, key, :queue], remaining)
         GenServer.reply(from, :ok)
-        put_in(next_state, [:locks, key], %{lock | queue: remaining})
+        put_in(updated_state, [:locks, key], %{lock | queue: remaining})
 
       {:empty, _queue} ->
         %{state | locks: Map.delete(state.locks, key)}

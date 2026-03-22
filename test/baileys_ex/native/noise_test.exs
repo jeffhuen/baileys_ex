@@ -1,4 +1,8 @@
 defmodule BaileysEx.Native.NoiseTest do
+  # async: false — the ResourceArc leak-detection test asserts on a global
+  # Rust atomic counter (LIVE_SESSION_COUNT). Other async test modules that
+  # create Noise sessions pollute the baseline, causing intermittent failures.
+  # Do not change to async: true without removing or isolating that test.
   use ExUnit.Case, async: false
 
   alias BaileysEx.Native.Noise

@@ -66,5 +66,4 @@ defmodule BaileysEx.Feature.PhoneValidation do
          |> List.first())
     end
   end
-
 end

@@ -280,5 +280,4 @@ defmodule BaileysEx.Feature.Profile do
       _ -> nil
     end
   end
-
 end

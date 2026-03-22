@@ -259,5 +259,4 @@ defmodule BaileysEx.Feature.Privacy do
 
   defp maybe_put_store(nil, _key, _value), do: :ok
   defp maybe_put_store(store, key, value), do: Store.put(store, key, value)
-
 end

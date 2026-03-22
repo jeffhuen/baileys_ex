@@ -253,5 +253,4 @@ defmodule BaileysEx.Feature.Call do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
 end

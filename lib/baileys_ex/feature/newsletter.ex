@@ -417,5 +417,4 @@ defmodule BaileysEx.Feature.Newsletter do
       _ -> Integer.to_string(System.unique_integer([:positive, :monotonic]))
     end
   end
-
 end

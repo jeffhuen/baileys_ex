@@ -665,5 +665,4 @@ defmodule BaileysEx.Feature.Business do
       _ -> nil
     end
   end
-
 end

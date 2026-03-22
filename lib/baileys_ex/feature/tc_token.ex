@@ -178,5 +178,4 @@ defmodule BaileysEx.Feature.TcToken do
       _ -> System.os_time(:second)
     end
   end
-
 end

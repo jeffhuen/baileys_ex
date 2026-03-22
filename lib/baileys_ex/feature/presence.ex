@@ -214,5 +214,4 @@ defmodule BaileysEx.Feature.Presence do
 
   defp send_presence_update(server, type) when type in [:available, :unavailable],
     do: Socket.send_presence_update(server, type)
-
 end

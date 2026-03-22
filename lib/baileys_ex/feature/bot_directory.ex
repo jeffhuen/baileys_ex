@@ -45,5 +45,4 @@ defmodule BaileysEx.Feature.BotDirectory do
         acc
     end)
   end
-
 end

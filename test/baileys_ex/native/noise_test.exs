@@ -1,5 +1,5 @@
 defmodule BaileysEx.Native.NoiseTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias BaileysEx.Native.Noise
   alias BaileysEx.Protocol.Noise, as: ProtocolNoise

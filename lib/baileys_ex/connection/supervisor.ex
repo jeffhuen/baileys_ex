@@ -10,6 +10,7 @@ defmodule BaileysEx.Connection.Supervisor do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  alias BaileysEx.Signal.Store, as: SignalStore
   alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
   alias BaileysEx.Telemetry
 
@@ -120,9 +121,7 @@ defmodule BaileysEx.Connection.Supervisor do
           [id | List.wrap(modules)]
           |> Enum.find(&signal_store_module?/1)
 
-        if is_atom(module) and not is_nil(module) do
-          %BaileysEx.Signal.Store{module: module, ref: module.wrap(pid)}
-        end
+        if is_atom(module) and not is_nil(module), do: SignalStore.wrap_running({module, pid})
 
       _ ->
         nil

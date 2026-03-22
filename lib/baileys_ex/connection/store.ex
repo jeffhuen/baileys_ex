@@ -65,7 +65,15 @@ defmodule BaileysEx.Connection.Store do
   """
   @spec put(GenServer.server() | Ref.t(), key(), term()) :: :ok
   def put(%Ref{pid: pid}, key, value), do: put(pid, key, value)
+  def put(server, key, nil), do: delete(server, key)
   def put(server, key, value), do: GenServer.call(server, {:put, key, value})
+
+  @doc """
+  Deletes a key from the connection store.
+  """
+  @spec delete(GenServer.server() | Ref.t(), key()) :: :ok
+  def delete(%Ref{pid: pid}, key), do: delete(pid, key)
+  def delete(server, key), do: GenServer.call(server, {:delete, key})
 
   @doc """
   Merges map updates into the connection's `:auth_state`, automatically computing 
@@ -133,6 +141,10 @@ defmodule BaileysEx.Connection.Store do
   Persist the LTHash sync version state for a collection.
   """
   @spec put_app_state_sync_version(GenServer.server() | Ref.t(), atom(), map() | nil) :: :ok
+  def put_app_state_sync_version(server_or_ref, collection_name, nil) do
+    delete(server_or_ref, {:app_state_sync_version, collection_name})
+  end
+
   def put_app_state_sync_version(server_or_ref, collection_name, state) do
     put(server_or_ref, {:app_state_sync_version, collection_name}, state)
   end
@@ -168,8 +180,18 @@ defmodule BaileysEx.Connection.Store do
   @impl true
   def handle_call(:table, _from, state), do: {:reply, state.table, state}
 
+  def handle_call({:put, key, nil}, _from, state) do
+    true = :ets.delete(state.table, key)
+    {:reply, :ok, state}
+  end
+
   def handle_call({:put, key, value}, _from, state) do
     persist_entries(state.table, %{key => value})
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:delete, key}, _from, state) do
+    true = :ets.delete(state.table, key)
     {:reply, :ok, state}
   end
 

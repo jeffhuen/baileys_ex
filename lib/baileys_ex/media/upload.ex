@@ -4,8 +4,8 @@ defmodule BaileysEx.Media.Upload do
   """
 
   alias BaileysEx.BinaryNode
-  alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  import BaileysEx.Connection.TransportAdapter, only: [query: 3]
   alias BaileysEx.Media.HTTP
   alias BaileysEx.Media.Types
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
@@ -127,15 +127,6 @@ defmodule BaileysEx.Media.Upload do
       }
     end)
   end
-
-  defp query(queryable, %BinaryNode{} = node, timeout) when is_function(queryable, 2),
-    do: queryable.(node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, _timeout) when is_function(queryable, 1),
-    do: queryable.(node)
-
-  defp query(queryable, %BinaryNode{} = node, timeout),
-    do: Socket.query(queryable, node, timeout)
 
   defp encoded_sha256_token(file_enc_sha256) when is_binary(file_enc_sha256) do
     {:ok, file_enc_sha256 |> Base.encode64() |> encode_token()}

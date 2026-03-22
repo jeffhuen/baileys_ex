@@ -36,7 +36,6 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store, as: SignalStore
-  alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
   alias BaileysEx.Syncd.Codec, as: SyncdCodec
   alias BaileysEx.Telemetry
 
@@ -142,7 +141,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
     coordinator_pid = self()
 
-    wrapped_signal_store = wrap_signal_store(state.signal_store)
+    wrapped_signal_store = SignalStore.wrap_running(state.signal_store)
     store_ref = Store.wrap(state.store)
 
     unsubscribe =
@@ -1119,23 +1118,6 @@ defmodule BaileysEx.Connection.Coordinator do
       {^socket_module, pid, _type, _modules} when is_pid(pid) -> pid
       _ -> nil
     end)
-  end
-
-  defp wrap_signal_store(nil), do: nil
-  defp wrap_signal_store(%SignalStore{} = signal_store), do: signal_store
-
-  defp wrap_signal_store({module, server}) when is_atom(module) do
-    pid = GenServer.whereis(server)
-
-    if is_pid(pid) and function_exported?(module, :wrap, 1) do
-      %SignalStore{module: module, ref: module.wrap(pid)}
-    else
-      nil
-    end
-  end
-
-  defp wrap_signal_store(server) do
-    wrap_signal_store({SignalStoreMemory, server})
   end
 
   defp build_signal_repository(

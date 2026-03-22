@@ -75,4 +75,28 @@ defmodule BaileysEx.Connection.StoreTest do
       :sys.resume(store)
     end
   end
+
+  test "put_app_state_sync_version/3 deletes an existing version when passed nil" do
+    assert {:ok, store} = Store.start_link(auth_state: %{})
+    ref = Store.wrap(store)
+
+    state = %{version: 5, hash: <<1, 2, 3>>, index_value_map: %{}}
+
+    assert :ok = Store.put_app_state_sync_version(store, :regular_high, state)
+    assert Store.get_app_state_sync_version(ref, :regular_high) == state
+
+    assert :ok = Store.put_app_state_sync_version(store, :regular_high, nil)
+    assert Store.get_app_state_sync_version(ref, :regular_high) == nil
+  end
+
+  test "put/3 deletes an existing value when passed nil" do
+    assert {:ok, store} = Store.start_link(auth_state: %{})
+    ref = Store.wrap(store)
+
+    assert :ok = Store.put(store, :props, %{version: 1})
+    assert Store.get(ref, :props) == %{version: 1}
+
+    assert :ok = Store.put(store, :props, nil)
+    assert Store.get(ref, :props) == nil
+  end
 end

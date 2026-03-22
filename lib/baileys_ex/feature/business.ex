@@ -4,7 +4,7 @@ defmodule BaileysEx.Feature.Business do
   """
 
   alias BaileysEx.BinaryNode
-  alias BaileysEx.Connection.Socket
+  import BaileysEx.Connection.TransportAdapter, only: [query: 3]
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID
 
@@ -666,15 +666,4 @@ defmodule BaileysEx.Feature.Business do
     end
   end
 
-  defp query(queryable, %BinaryNode{} = node, timeout) when is_function(queryable, 2),
-    do: queryable.(node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, _timeout) when is_function(queryable, 1),
-    do: queryable.(node)
-
-  defp query({module, server}, %BinaryNode{} = node, timeout) when is_atom(module),
-    do: module.query(server, node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, timeout),
-    do: Socket.query(queryable, node, timeout)
 end

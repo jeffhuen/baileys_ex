@@ -106,4 +106,24 @@ defmodule BaileysEx.Signal.Store do
   @doc "Examines if identical transaction processes cover the ongoing context stack."
   @spec in_transaction?(t()) :: boolean()
   def in_transaction?(%__MODULE__{} = store), do: store.module.in_transaction?(store.ref)
+
+  @doc """
+  Resolve a running store process or `{module, server}` tuple into a wrapped
+  `BaileysEx.Signal.Store` handle.
+  """
+  @spec wrap_running(t() | {module(), term()} | term() | nil) :: t() | nil
+  def wrap_running(nil), do: nil
+  def wrap_running(%__MODULE__{} = store), do: store
+
+  def wrap_running({module, server}) when is_atom(module) do
+    pid = GenServer.whereis(server)
+
+    if is_pid(pid) and function_exported?(module, :wrap, 1) do
+      %__MODULE__{module: module, ref: module.wrap(pid)}
+    else
+      nil
+    end
+  end
+
+  def wrap_running(server), do: wrap_running({Memory, server})
 end

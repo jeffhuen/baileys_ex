@@ -313,7 +313,7 @@ defmodule BaileysEx.Syncd.RuntimeTest do
           )
         end)
 
-      assert_receive {:patch_query, 1, "0", first_caller}
+      assert_receive {:patch_query, 1, "0", first_caller}, 1_000
 
       task_2 =
         Task.async(fn ->
@@ -323,12 +323,12 @@ defmodule BaileysEx.Syncd.RuntimeTest do
           )
         end)
 
-      refute_receive {:patch_query, 2, _version, _caller}, 50
+      wait_for_lock_queue(signal_store, "app-state", 1)
 
       send(first_caller, :release_first_patch)
 
       assert :ok = Task.await(task_1)
-      assert_receive {:patch_query, 2, "1", second_caller}
+      assert_receive {:patch_query, 2, "1", second_caller}, 1_000
       send(second_caller, :release_first_patch)
       assert :ok = Task.await(task_2)
     end
@@ -679,6 +679,37 @@ defmodule BaileysEx.Syncd.RuntimeTest do
       assert patch.index == ["mute", "user@s.whatsapp.net"]
       assert patch.operation == :set
       assert patch.api_version == 2
+    end
+  end
+
+  defp wait_for_lock_queue(signal_store, key, expected_length, timeout_ms \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_lock_queue(signal_store, key, expected_length, deadline)
+  end
+
+  defp do_wait_for_lock_queue(signal_store, key, expected_length, deadline) do
+    current_length = lock_queue_length(signal_store, key)
+
+    cond do
+      current_length == expected_length ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk(
+          "expected lock queue #{inspect(key)} to reach length #{expected_length}, " <>
+            "got #{current_length}"
+        )
+
+      true ->
+        Process.sleep(10)
+        do_wait_for_lock_queue(signal_store, key, expected_length, deadline)
+    end
+  end
+
+  defp lock_queue_length(%{ref: %{pid: pid}}, key) do
+    case :sys.get_state(pid) do
+      %{locks: %{^key => %{queue: queue}}} -> :queue.len(queue)
+      _ -> 0
     end
   end
 end

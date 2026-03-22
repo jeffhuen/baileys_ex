@@ -4,8 +4,8 @@ defmodule BaileysEx.Feature.Privacy do
   """
 
   alias BaileysEx.BinaryNode
-  alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  import BaileysEx.Connection.TransportAdapter, only: [query: 3]
   alias BaileysEx.Feature.Chat
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.USync
@@ -260,15 +260,4 @@ defmodule BaileysEx.Feature.Privacy do
   defp maybe_put_store(nil, _key, _value), do: :ok
   defp maybe_put_store(store, key, value), do: Store.put(store, key, value)
 
-  defp query(queryable, %BinaryNode{} = node, timeout) when is_function(queryable, 2),
-    do: queryable.(node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, _timeout) when is_function(queryable, 1),
-    do: queryable.(node)
-
-  defp query({module, server}, %BinaryNode{} = node, timeout) when is_atom(module),
-    do: module.query(server, node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, timeout),
-    do: Socket.query(queryable, node, timeout)
 end

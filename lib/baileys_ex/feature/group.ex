@@ -5,7 +5,7 @@ defmodule BaileysEx.Feature.Group do
 
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
-  alias BaileysEx.Connection.Socket
+  import BaileysEx.Connection.TransportAdapter, only: [query: 3, send_node: 2]
   alias BaileysEx.Message.Sender
   alias BaileysEx.Message.Wire
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
@@ -758,26 +758,6 @@ defmodule BaileysEx.Feature.Group do
         end
     end
   end
-
-  defp query(queryable, %BinaryNode{} = node, timeout) when is_function(queryable, 2),
-    do: queryable.(node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, _timeout) when is_function(queryable, 1),
-    do: queryable.(node)
-
-  defp query({module, server}, %BinaryNode{} = node, timeout) when is_atom(module),
-    do: module.query(server, node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, timeout),
-    do: Socket.query(queryable, node, timeout)
-
-  defp send_node(sendable, %BinaryNode{} = node) when is_function(sendable, 1),
-    do: sendable.(node)
-
-  defp send_node({module, server}, %BinaryNode{} = node) when is_atom(module),
-    do: module.send_node(server, node)
-
-  defp send_node(sendable, %BinaryNode{} = node), do: Socket.send_node(sendable, node)
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

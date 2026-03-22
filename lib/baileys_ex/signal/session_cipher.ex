@@ -185,7 +185,7 @@ defmodule BaileysEx.Signal.SessionCipher do
   end
 
   defp do_decrypt(session, whisper_msg, opts) do
-    their_ephemeral = ensure_signal_public_key!(whisper_msg.ratchet_key)
+    their_ephemeral = Curve.ensure_signal_public_key!(whisper_msg.ratchet_key)
     their_ephemeral_b64 = Base.encode64(their_ephemeral)
 
     session =
@@ -302,7 +302,7 @@ defmodule BaileysEx.Signal.SessionCipher do
     new_ephemeral =
       opts
       |> Keyword.get_lazy(:ratchet_key_pair, &Curve.generate_key_pair/0)
-      |> ensure_signal_key_pair!()
+      |> Curve.ensure_signal_key_pair!()
 
     {:ok, sending_secret} = Curve.shared_key(new_ephemeral.private, their_new_ephemeral)
     {:ok, sending_derived} = Crypto.hkdf(sending_secret, @whisper_ratchet, 64, root_key_1)
@@ -416,15 +416,5 @@ defmodule BaileysEx.Signal.SessionCipher do
 
   defp maybe_drop_sending_chain(session, %{public: public}) do
     update_in(session.chains, &Map.delete(&1, Base.encode64(public)))
-  end
-
-  defp ensure_signal_key_pair!(%{public: public_key} = key_pair) do
-    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
-    %{key_pair | public: signal_public_key}
-  end
-
-  defp ensure_signal_public_key!(public_key) do
-    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
-    signal_public_key
   end
 end

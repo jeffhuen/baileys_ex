@@ -25,6 +25,10 @@ defmodule BaileysEx.Connection.EventEmitter do
 
     defstruct subscribers: %{},
               taps: %{},
+              dispatcher_pid: nil,
+              dispatcher_ref: nil,
+              dispatch_queue: :queue.new(),
+              dispatching?: false,
               ref_fun: nil,
               buffer_timeout_ms: 30_000,
               buffer_timer: nil,
@@ -153,8 +157,12 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   @impl true
   def init(opts) do
+    {dispatcher_pid, dispatcher_ref} = start_dispatcher(self())
+
     state = %State{
       buffer_timeout_ms: Keyword.get(opts, :buffer_timeout_ms, 30_000),
+      dispatcher_pid: dispatcher_pid,
+      dispatcher_ref: dispatcher_ref,
       ref_fun: Keyword.get(opts, :ref_fun, &make_ref/0)
     }
 
@@ -174,8 +182,7 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   def handle_call({:emit, event, data}, _from, %State{} = state) do
     {state, deliveries} = emit_event(state, event, data)
-    dispatch_async(state.taps, [%{event => data}], state.subscribers, deliveries)
-    {:reply, :ok, state}
+    {:reply, :ok, enqueue_dispatch(state, [%{event => data}], deliveries)}
   end
 
   def handle_call(:buffer, _from, %State{} = state) do
@@ -202,8 +209,7 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   def handle_call(:flush, _from, %State{} = state) do
     {state, deliveries} = flush_buffer(state, :stop)
-    dispatch_async(%{}, [], state.subscribers, deliveries)
-    {:reply, true, state}
+    {:reply, true, enqueue_dispatch(state, [], deliveries)}
   end
 
   def handle_call(:buffering?, _from, %State{} = state) do
@@ -230,24 +236,54 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   def handle_info(:buffer_timeout, %State{} = state) do
     {state, deliveries} = flush_buffer(state, :stop)
-    dispatch_async(%{}, [], state.subscribers, deliveries)
-    {:noreply, state}
+    {:noreply, enqueue_dispatch(state, [], deliveries)}
   end
 
   def handle_info(:flush_pending, %State{buffering?: true, buffer_count: 0} = state) do
     {state, deliveries} = flush_buffer(state, :stop)
-    dispatch_async(%{}, [], state.subscribers, deliveries)
-    {:noreply, state}
-  end
-
-  def handle_info({:dispatch, taps, tap_deliveries, subscribers, deliveries}, %State{} = state) do
-    dispatch(taps, tap_deliveries)
-    dispatch(subscribers, deliveries)
-    {:noreply, state}
+    {:noreply, enqueue_dispatch(state, [], deliveries)}
   end
 
   def handle_info(:flush_pending, %State{} = state) do
     {:noreply, %{state | flush_pending_timer: nil}}
+  end
+
+  def handle_info(
+        {:dispatch_complete, dispatcher_pid, dispatch_id},
+        %State{dispatcher_pid: dispatcher_pid, dispatching?: true} = state
+      ) do
+    case :queue.out(state.dispatch_queue) do
+      {{:value, {^dispatch_id, _taps, _tap_deliveries, _subscribers, _deliveries}}, remaining} ->
+        state =
+          state
+          |> Map.put(:dispatch_queue, remaining)
+          |> Map.put(:dispatching?, false)
+          |> maybe_dispatch_next()
+
+        {:noreply, state}
+
+      _other ->
+        {:noreply, state}
+    end
+  end
+
+  # The in-flight dispatch (queue head) may have been partially delivered before the
+  # dispatcher died. Restarting replays it, giving at-least-once delivery semantics
+  # under worker failure — subscribers should be idempotent or tolerant of duplicates.
+  def handle_info(
+        {:DOWN, dispatcher_ref, :process, dispatcher_pid, _reason},
+        %State{dispatcher_ref: dispatcher_ref, dispatcher_pid: dispatcher_pid} = state
+      ) do
+    {new_dispatcher_pid, new_dispatcher_ref} = start_dispatcher(self())
+
+    state =
+      state
+      |> Map.put(:dispatcher_pid, new_dispatcher_pid)
+      |> Map.put(:dispatcher_ref, new_dispatcher_ref)
+      |> Map.put(:dispatching?, false)
+      |> maybe_dispatch_next()
+
+    {:noreply, state}
   end
 
   def handle_info(_message, %State{} = state), do: {:noreply, state}
@@ -413,12 +449,66 @@ defmodule BaileysEx.Connection.EventEmitter do
     %{state | flush_pending_timer: nil}
   end
 
-  defp dispatch_async(taps, tap_deliveries, subscribers, deliveries) do
-    if tap_deliveries != [] or deliveries != [] do
-      send(self(), {:dispatch, taps, tap_deliveries, subscribers, deliveries})
-    end
+  defp enqueue_dispatch(%State{} = state, tap_deliveries, deliveries) do
+    if tap_deliveries == [] and deliveries == [] do
+      state
+    else
+      dispatch_entry = {
+        state.ref_fun.(),
+        state.taps,
+        tap_deliveries,
+        state.subscribers,
+        deliveries
+      }
 
-    :ok
+      state
+      |> Map.update!(:dispatch_queue, &:queue.in(dispatch_entry, &1))
+      |> maybe_dispatch_next()
+    end
+  end
+
+  defp start_dispatcher(owner_pid) when is_pid(owner_pid) do
+    spawn_monitor(fn ->
+      Process.flag(:trap_exit, true)
+      owner_ref = Process.monitor(owner_pid)
+      dispatch_loop(owner_pid, owner_ref)
+    end)
+  end
+
+  defp maybe_dispatch_next(%State{dispatching?: true} = state), do: state
+
+  defp maybe_dispatch_next(%State{} = state) do
+    case :queue.out(state.dispatch_queue) do
+      {{:value, {dispatch_id, taps, tap_deliveries, subscribers, deliveries}}, _remaining} ->
+        send(
+          state.dispatcher_pid,
+          {:dispatch, self(), dispatch_id, taps, tap_deliveries, subscribers, deliveries}
+        )
+
+        %{state | dispatching?: true}
+
+      {:empty, _queue} ->
+        state
+    end
+  end
+
+  defp dispatch_loop(owner_pid, owner_ref) do
+    receive do
+      {:dispatch, ^owner_pid, dispatch_id, taps, tap_deliveries, subscribers, deliveries} ->
+        dispatch(taps, tap_deliveries)
+        dispatch(subscribers, deliveries)
+        send(owner_pid, {:dispatch_complete, self(), dispatch_id})
+        dispatch_loop(owner_pid, owner_ref)
+
+      {:DOWN, ^owner_ref, :process, ^owner_pid, _reason} ->
+        :ok
+
+      {:EXIT, _pid, _reason} ->
+        dispatch_loop(owner_pid, owner_ref)
+
+      _other ->
+        dispatch_loop(owner_pid, owner_ref)
+    end
   end
 
   defp dispatch(_subscribers, []), do: :ok
@@ -434,6 +524,12 @@ defmodule BaileysEx.Connection.EventEmitter do
           error ->
             Logger.error(
               "[EventEmitter] subscriber #{inspect(ref)} crashed: #{Exception.message(error)}"
+            )
+        catch
+          kind, reason ->
+            Logger.error(
+              "[EventEmitter] subscriber #{inspect(ref)} crashed: " <>
+                Exception.format_banner(kind, reason)
             )
         end
       end)

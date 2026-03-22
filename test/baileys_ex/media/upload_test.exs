@@ -6,6 +6,29 @@ defmodule BaileysEx.Media.UploadTest do
   alias BaileysEx.Media.Upload
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
+  defmodule QueryableTupleAdapter do
+    @moduledoc false
+
+    alias BaileysEx.BinaryNode
+
+    def query(pid, %BinaryNode{} = node, timeout) do
+      send(pid, {:query, node, timeout})
+
+      {:ok,
+       %BinaryNode{
+         tag: "iq",
+         attrs: %{"type" => "result"},
+         content: [
+           %BinaryNode{
+             tag: "media_conn",
+             attrs: %{"auth" => "tuple-auth", "ttl" => "3600"},
+             content: [%BinaryNode{tag: "host", attrs: %{"hostname" => "tuple.example.com"}}]
+           }
+         ]
+       }}
+    end
+  end
+
   test "refresh_media_conn/2 issues the w:m media_conn iq and parses the response" do
     parent = self()
 
@@ -78,6 +101,29 @@ defmodule BaileysEx.Media.UploadTest do
                store_ref: store_ref,
                now_fun: fn -> ~U[2026-03-13 00:10:00Z] end
              )
+  end
+
+  test "refresh_media_conn/2 accepts the {module, pid} queryable shape used by runtime APIs" do
+    assert {:ok, media_conn} =
+             Upload.refresh_media_conn({QueryableTupleAdapter, self()},
+               now_fun: fn -> ~U[2026-03-13 00:00:00Z] end
+             )
+
+    assert_receive {:query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{
+                        "type" => "set",
+                        "xmlns" => "w:m",
+                        "to" => "s.whatsapp.net"
+                      }
+                    }, 60_000}
+
+    assert %{
+             auth: "tuple-auth",
+             ttl: 3600,
+             hosts: [%{hostname: "tuple.example.com", max_content_length_bytes: nil}]
+           } = media_conn
   end
 
   @tag :tmp_dir

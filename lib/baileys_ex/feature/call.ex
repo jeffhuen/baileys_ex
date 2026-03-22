@@ -6,8 +6,8 @@ defmodule BaileysEx.Feature.Call do
 
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
-  alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  import BaileysEx.Connection.TransportAdapter, only: [query: 3]
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   @timeout 60_000
   @terminal_statuses [:reject, :accept, :timeout, :terminate]
@@ -254,15 +254,4 @@ defmodule BaileysEx.Feature.Call do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp query(queryable, %BinaryNode{} = node, timeout) when is_function(queryable, 2),
-    do: queryable.(node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, _timeout) when is_function(queryable, 1),
-    do: queryable.(node)
-
-  defp query({module, server}, %BinaryNode{} = node, timeout) when is_atom(module),
-    do: module.query(server, node, timeout)
-
-  defp query(queryable, %BinaryNode{} = node, timeout),
-    do: Socket.query(queryable, node, timeout)
 end

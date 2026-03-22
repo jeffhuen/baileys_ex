@@ -6,6 +6,7 @@ defmodule BaileysEx.Feature.Presence do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
+  import BaileysEx.Connection.TransportAdapter, only: [send_node: 2]
   alias BaileysEx.Feature.TcToken
   alias BaileysEx.Protocol.JID
 
@@ -214,11 +215,4 @@ defmodule BaileysEx.Feature.Presence do
   defp send_presence_update(server, type) when type in [:available, :unavailable],
     do: Socket.send_presence_update(server, type)
 
-  defp send_node(sendable, %BinaryNode{} = node) when is_function(sendable, 1),
-    do: sendable.(node)
-
-  defp send_node({module, server}, %BinaryNode{} = node) when is_atom(module),
-    do: module.send_node(server, node)
-
-  defp send_node(sendable, %BinaryNode{} = node), do: Socket.send_node(sendable, node)
 end

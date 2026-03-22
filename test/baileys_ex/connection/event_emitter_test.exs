@@ -252,4 +252,134 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     assert_receive {:subscriber_started, %{connection_update: %{connection: :connecting}}}
     assert_receive {:processed_events, %{connection_update: %{connection: :connecting}}}, 300
   end
+
+  test "subscriber exits do not crash the emitter" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+    initial_dispatcher = :sys.get_state(emitter).dispatcher_pid
+
+    _bad_unsubscribe =
+      EventEmitter.process(emitter, fn _events ->
+        exit(:boom)
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :connecting})
+    Process.sleep(50)
+
+    assert Process.alive?(emitter)
+    assert Process.alive?(initial_dispatcher)
+    assert :sys.get_state(emitter).dispatcher_pid == initial_dispatcher
+
+    _good_unsubscribe =
+      EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :open})
+    assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
+  end
+
+  test "subscriber throws do not kill the dispatcher" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+    initial_dispatcher = :sys.get_state(emitter).dispatcher_pid
+
+    _bad_unsubscribe =
+      EventEmitter.process(emitter, fn _events ->
+        throw(:boom)
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :connecting})
+    Process.sleep(50)
+
+    assert Process.alive?(initial_dispatcher)
+    assert :sys.get_state(emitter).dispatcher_pid == initial_dispatcher
+
+    _good_unsubscribe =
+      EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :open})
+    assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
+  end
+
+  test "in-flight subscribers do not block later emits" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:subscriber_started, events})
+        Process.sleep(200)
+        send(test_pid, {:processed_events, events})
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 1})
+    assert_receive {:subscriber_started, %{connection_update: %{n: 1}}}
+
+    start = System.monotonic_time(:millisecond)
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 2})
+    elapsed = System.monotonic_time(:millisecond) - start
+
+    assert elapsed < 100
+    assert_receive {:subscriber_started, %{connection_update: %{n: 2}}}, 300
+  end
+
+  test "later emits preserve subscriber delivery order" do
+    test_pid = self()
+    gate = make_ref()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:subscriber_started, self(), events})
+
+        case events do
+          %{connection_update: %{n: 1}} ->
+            receive do
+              {:continue, ^gate} -> :ok
+            after
+              500 -> exit(:timed_out_waiting_for_continue)
+            end
+
+          _ ->
+            :ok
+        end
+
+        send(test_pid, {:processed_events, events})
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 1})
+    assert_receive {:subscriber_started, first_handler, %{connection_update: %{n: 1}}}
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 2})
+    refute_receive {:subscriber_started, _second_handler, %{connection_update: %{n: 2}}}, 50
+
+    send(first_handler, {:continue, gate})
+
+    assert_receive {:processed_events, %{connection_update: %{n: 1}}}, 300
+    assert_receive {:subscriber_started, _second_handler, %{connection_update: %{n: 2}}}, 300
+    assert_receive {:processed_events, %{connection_update: %{n: 2}}}, 300
+  end
+
+  test "dispatcher restarts after unexpected death and continues delivering events" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    dispatcher = :sys.get_state(emitter).dispatcher_pid
+    ref = Process.monitor(dispatcher)
+    Process.exit(dispatcher, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^dispatcher, :killed}
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :open})
+    assert_receive {:processed_events, %{connection_update: %{connection: :open}}}, 300
+  end
+
+  test "dispatcher exits when the emitter stops" do
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+    dispatcher = :sys.get_state(emitter).dispatcher_pid
+    dispatcher_ref = Process.monitor(dispatcher)
+
+    GenServer.stop(emitter)
+
+    assert_receive {:DOWN, ^dispatcher_ref, :process, ^dispatcher, _reason}, 300
+  end
 end

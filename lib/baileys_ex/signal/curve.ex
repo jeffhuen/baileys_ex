@@ -54,6 +54,20 @@ defmodule BaileysEx.Signal.Curve do
 
   def generate_signal_pub_key(_public_key), do: {:error, :invalid_public_key}
 
+  @doc false
+  @spec ensure_signal_key_pair!(key_pair()) :: key_pair()
+  def ensure_signal_key_pair!(%{public: public_key} = key_pair) do
+    {:ok, signal_public_key} = generate_signal_pub_key(public_key)
+    %{key_pair | public: signal_public_key}
+  end
+
+  @doc false
+  @spec ensure_signal_public_key!(binary()) :: binary()
+  def ensure_signal_public_key!(public_key) do
+    {:ok, signal_public_key} = generate_signal_pub_key(public_key)
+    signal_public_key
+  end
+
   @doc """
   Sign a payload with a Curve25519 private key using XEdDSA.
   """

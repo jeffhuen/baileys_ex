@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.0-alpha.7] - 2026-03-21
+
+DRY audit and bug-fix pass. Duplicated transport wrappers across feature
+and media modules had diverged silently, producing a runtime crash path.
+
+### Added
+
+- `Connection.TransportAdapter` — shared transport dispatch replacing diverged copies across 12 modules
+- `Signal.Store.wrap_running/1` — centralized signal store resolution
+
+### Fixed
+
+- `Media.Upload` crash when given `{module, pid}` queryable tuples from runtime APIs
+- `Store.put/3` with `nil` silently preserving old values instead of deleting
+- Stale LTHash state on Syncd retry-from-scratch due to nil writes being dropped
+- EventEmitter silently losing events after dispatcher process death
+
+### Changed
+
+- EventEmitter dispatch hardened with queue-based delivery, monitor/restart, and `throw`/`exit`/`raise` isolation
+
 ## [0.1.0-alpha.6] - 2026-03-20
 
 Eliminates the last JS-shaped design pattern in the codebase. Signal store

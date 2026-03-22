@@ -1205,7 +1205,7 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp maybe_upload_post_auth_prekeys(%__MODULE__{} = data, socket_pid) do
-    case resolve_signal_store(data.signal_store) do
+    case SignalStore.wrap_running(data.signal_store) do
       %SignalStore{} = signal_store ->
         with {:ok, response} <-
                query(
@@ -1226,7 +1226,7 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp maybe_digest_post_auth_prekeys(%__MODULE__{} = data, socket_pid) do
-    case resolve_signal_store(data.signal_store) do
+    case SignalStore.wrap_running(data.signal_store) do
       %SignalStore{} = signal_store ->
         PreKey.digest_key_bundle(prekey_runtime_opts(data, signal_store, socket_pid))
 
@@ -1246,7 +1246,7 @@ defmodule BaileysEx.Connection.Socket do
        when is_integer(count) and count >= 0 do
     socket_pid = self()
 
-    case resolve_signal_store(data.signal_store) do
+    case SignalStore.wrap_running(data.signal_store) do
       %SignalStore{} = signal_store ->
         start_socket_task(data, fn ->
           _ =
@@ -1308,21 +1308,6 @@ defmodule BaileysEx.Connection.Socket do
       upload_timeout_ms: 30_000
     ]
   end
-
-  defp resolve_signal_store(nil), do: nil
-  defp resolve_signal_store(%SignalStore{} = signal_store), do: signal_store
-
-  defp resolve_signal_store({module, server}) when is_atom(module) do
-    pid = GenServer.whereis(server)
-
-    if is_pid(pid) and function_exported?(module, :wrap, 1) do
-      %SignalStore{module: module, ref: module.wrap(pid)}
-    else
-      nil
-    end
-  end
-
-  defp resolve_signal_store(_signal_store), do: nil
 
   defp encrypt_notification_count(%BinaryNode{attrs: %{"from" => @s_whatsapp_net}} = node) do
     case BinaryNodeUtil.child(node, "encrypt") |> BinaryNodeUtil.child("count") do

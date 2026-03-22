@@ -38,7 +38,7 @@ defmodule BaileysEx.Signal.SessionBuilder do
     base_key_pair =
       opts
       |> Keyword.get_lazy(:base_key_pair, &Curve.generate_key_pair/0)
-      |> ensure_signal_key_pair!()
+      |> Curve.ensure_signal_key_pair!()
 
     with {:ok, shared_secret} <-
            compute_alice_shared_secret(
@@ -55,7 +55,7 @@ defmodule BaileysEx.Signal.SessionBuilder do
       sending_ratchet_pair =
         opts
         |> Keyword.get_lazy(:sending_ratchet_pair, &Curve.generate_key_pair/0)
-        |> ensure_signal_key_pair!()
+        |> Curve.ensure_signal_key_pair!()
 
       {:ok, sending_secret} = Curve.shared_key(sending_ratchet_pair.private, their_signed_pre_key)
       {:ok, sending_derived} = Crypto.hkdf(sending_secret, @whisper_ratchet, 64, root_key)
@@ -68,7 +68,7 @@ defmodule BaileysEx.Signal.SessionBuilder do
         current_ratchet: %{
           root_key: new_root_key,
           ephemeral_key_pair: sending_ratchet_pair,
-          last_remote_ephemeral: ensure_signal_public_key!(their_signed_pre_key),
+          last_remote_ephemeral: Curve.ensure_signal_public_key!(their_signed_pre_key),
           previous_counter: 0
         },
         index_info: %{
@@ -121,10 +121,10 @@ defmodule BaileysEx.Signal.SessionBuilder do
 
   defp do_init_incoming(record, their_identity_key, their_base_key, our_keys, opts) do
     our_identity_key = Keyword.fetch!(opts, :identity_key_pair)
-    our_signed_pre_key = our_keys.signed_pre_key |> ensure_signal_key_pair!()
+    our_signed_pre_key = our_keys.signed_pre_key |> Curve.ensure_signal_key_pair!()
     our_pre_key = our_keys |> Map.get(:pre_key) |> maybe_ensure_signal_key_pair()
     registration_id = Keyword.get(opts, :registration_id, 0)
-    their_base_key = ensure_signal_public_key!(their_base_key)
+    their_base_key = Curve.ensure_signal_public_key!(their_base_key)
 
     with {:ok, shared_secret} <-
            compute_bob_shared_secret(
@@ -223,15 +223,5 @@ defmodule BaileysEx.Signal.SessionBuilder do
   end
 
   defp maybe_ensure_signal_key_pair(nil), do: nil
-  defp maybe_ensure_signal_key_pair(key_pair), do: ensure_signal_key_pair!(key_pair)
-
-  defp ensure_signal_key_pair!(%{public: public_key} = key_pair) do
-    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
-    %{key_pair | public: signal_public_key}
-  end
-
-  defp ensure_signal_public_key!(public_key) do
-    {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
-    signal_public_key
-  end
+  defp maybe_ensure_signal_key_pair(key_pair), do: Curve.ensure_signal_key_pair!(key_pair)
 end

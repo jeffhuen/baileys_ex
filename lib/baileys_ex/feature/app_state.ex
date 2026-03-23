@@ -112,7 +112,8 @@ defmodule BaileysEx.Feature.AppState do
             final_mutation_order,
             me,
             initial_sync: is_initial_sync,
-            account_settings: get_in(fetch_creds(store, opts), [:account_settings])
+            account_settings:
+              normalize_account_settings(get_in(fetch_creds(store, opts), [:account_settings]))
           )
 
         {:error, _} = err ->
@@ -1017,12 +1018,22 @@ defmodule BaileysEx.Feature.AppState do
   defp update_mutation_opts(opts, events) do
     Enum.reduce(events, opts, fn
       {:creds_update, %{account_settings: account_settings}}, acc when is_map(account_settings) ->
-        current = Keyword.get(acc, :account_settings, %{})
+        current =
+          acc
+          |> Keyword.get(:account_settings)
+          |> normalize_account_settings()
+
         Keyword.put(acc, :account_settings, Map.merge(current, account_settings))
 
       _event, acc ->
         acc
     end)
+  end
+
+  defp normalize_account_settings(%{} = account_settings), do: account_settings
+
+  defp normalize_account_settings(_account_settings) do
+    %{unarchive_chats: false, default_disappearing_mode: nil}
   end
 
   defp app_state_store(store, opts), do: Keyword.get(opts, :signal_store, store)

@@ -666,6 +666,134 @@ defmodule BaileysEx.Syncd.RuntimeTest do
                       }},
                      300
     end
+
+    test "initial sync tolerates nil account_settings when unarchive_chats arrives" do
+      store =
+        start_store(%{
+          creds: %{
+            my_app_state_key_id: @key_id_b64,
+            account_settings: nil
+          }
+        })
+
+      {:ok, emitter} = EventEmitter.start_link()
+      parent = self()
+      _unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+      :ok =
+        EventEmitter.seed(emitter, %{
+          historySets: %{chats: %{"chat-1@s.whatsapp.net" => %{last_message_recv_timestamp: 150}}},
+          chatUpserts: %{}
+        })
+
+      get_key = fn _kid -> {:ok, %{key_data: @key_data}} end
+
+      {:ok, %{patch: setting_patch}} =
+        Codec.encode_syncd_patch(
+          %{
+            type: :regular,
+            index: ["setting_unarchiveChats"],
+            sync_action: %Syncd.SyncActionValue{
+              timestamp: 1_710_000_000,
+              unarchive_chats_setting: %Syncd.UnarchiveChatsSetting{unarchive_chats: false}
+            },
+            api_version: 5,
+            operation: :set
+          },
+          @key_id_b64,
+          Codec.new_lt_hash_state(),
+          get_key,
+          iv: :binary.copy(<<0x33>>, 16)
+        )
+
+      {:ok, %{patch: archive_patch}} =
+        Codec.encode_syncd_patch(
+          %{
+            type: :regular_high,
+            index: ["archive", "chat-1@s.whatsapp.net"],
+            sync_action: %Syncd.SyncActionValue{
+              timestamp: 1_710_000_001,
+              archive_chat_action: %Syncd.ArchiveChatAction{
+                archived: true,
+                message_range: %Syncd.SyncActionMessageRange{last_message_timestamp: 100}
+              }
+            },
+            api_version: 3,
+            operation: :set
+          },
+          @key_id_b64,
+          Codec.new_lt_hash_state(),
+          get_key,
+          iv: :binary.copy(<<0x44>>, 16)
+        )
+
+      queryable = fn _node ->
+        {:ok,
+         %{
+           tag: "iq",
+           attrs: %{},
+           content: [
+             %{
+               tag: "sync",
+               attrs: %{},
+               content: [
+                 %{
+                   tag: "collection",
+                   attrs: %{
+                     "name" => "regular",
+                     "version" => "1",
+                     "has_more_patches" => "false"
+                   },
+                   content: [
+                     %{
+                       tag: "patch",
+                       attrs: %{},
+                       content:
+                         Syncd.SyncdPatch.encode(%{
+                           setting_patch
+                           | version: %Syncd.SyncdVersion{version: 0},
+                             snapshot_mac: <<0::256>>,
+                             patch_mac: <<0::256>>
+                         })
+                     },
+                     %{
+                       tag: "patch",
+                       attrs: %{},
+                       content:
+                         Syncd.SyncdPatch.encode(%{
+                           archive_patch
+                           | version: %Syncd.SyncdVersion{version: 1},
+                             snapshot_mac: <<0::256>>,
+                             patch_mac: <<0::256>>
+                         })
+                     }
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+      end
+
+      assert :ok =
+               AppState.resync_app_state(queryable, store, [:regular],
+                 event_emitter: emitter,
+                 is_initial_sync: true,
+                 validate_snapshot_macs: false,
+                 validate_patch_macs: false
+               )
+
+      assert_receive {:events, %{creds_update: %{account_settings: %{unarchive_chats: false}}}},
+                     300
+
+      assert_receive {:events,
+                      %{
+                        chats_update: [
+                          %{id: "chat-1@s.whatsapp.net", archived: true}
+                        ]
+                      }},
+                     300
+    end
   end
 
   describe "build_patch/4 (existing patch builder)" do

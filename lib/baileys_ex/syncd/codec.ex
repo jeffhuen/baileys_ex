@@ -164,27 +164,26 @@ defmodule BaileysEx.Syncd.Codec do
     index_mac_b64 = Base.encode64(index_mac)
     prev_op = Map.get(gen.index_value_map, index_mac_b64)
 
-    gen =
-      if operation == :remove do
-        if is_nil(prev_op) do
-          raise "tried remove, but no previous op for index #{index_mac_b64}"
+    # The JS Baileys mix() also throws on this case (chat-utils.ts:88), but the
+    # caller in chats.ts:559-620 catches it, nulls the collection state, and retries.
+    # The Coordinator lacks equivalent error handling, so we skip the no-op remove
+    # instead of raising. See: https://github.com/jeffhuen/baileys_ex/issues/14
+    if operation == :remove and is_nil(prev_op) do
+      gen
+    else
+      gen =
+        if operation == :remove do
+          %{gen | index_value_map: Map.delete(gen.index_value_map, index_mac_b64)}
+        else
+          gen = %{gen | add_buffs: [value_mac | gen.add_buffs]}
+          %{gen | index_value_map: Map.put(gen.index_value_map, index_mac_b64, %{value_mac: value_mac})}
         end
 
-        %{gen | index_value_map: Map.delete(gen.index_value_map, index_mac_b64)}
+      if prev_op do
+        %{gen | sub_buffs: [prev_op.value_mac | gen.sub_buffs]}
       else
-        gen =
-          %{gen | add_buffs: [value_mac | gen.add_buffs]}
-
-        %{
-          gen
-          | index_value_map: Map.put(gen.index_value_map, index_mac_b64, %{value_mac: value_mac})
-        }
+        gen
       end
-
-    if prev_op do
-      %{gen | sub_buffs: [prev_op.value_mac | gen.sub_buffs]}
-    else
-      gen
     end
   end
 

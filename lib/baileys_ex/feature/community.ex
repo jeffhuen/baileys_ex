@@ -377,8 +377,8 @@ defmodule BaileysEx.Feature.Community do
            ]) do
       communities =
         result
-        |> BinaryNodeUtil.child("communities")
-        |> BinaryNodeUtil.children("community")
+        |> then(&(BinaryNodeUtil.child(&1, "communities") || BinaryNodeUtil.child(&1, "groups")))
+        |> then(&(BinaryNodeUtil.children(&1, "community") ++ BinaryNodeUtil.children(&1, "group")))
         |> Enum.reduce(%{}, fn community_node, acc ->
           metadata =
             extract_metadata(%BinaryNode{
@@ -387,7 +387,11 @@ defmodule BaileysEx.Feature.Community do
               content: [community_node]
             })
 
-          Map.put(acc, metadata.id, metadata)
+          if metadata.is_community do
+            Map.put(acc, metadata.id, metadata)
+          else
+            acc
+          end
         end)
 
       emit_groups_update(opts, Map.values(communities))
@@ -419,7 +423,7 @@ defmodule BaileysEx.Feature.Community do
   @doc "Extract Baileys-aligned community metadata from a community IQ result node."
   @spec extract_metadata(BinaryNode.t()) :: map()
   def extract_metadata(%BinaryNode{} = result) do
-    community = BinaryNodeUtil.child(result, "community")
+    community = BinaryNodeUtil.child(result, "community") || BinaryNodeUtil.child(result, "group")
     desc_child = BinaryNodeUtil.child(community, "description")
 
     %{

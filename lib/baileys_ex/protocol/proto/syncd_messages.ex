@@ -176,7 +176,7 @@ defmodule BaileysEx.Protocol.Proto.Syncd do
     @encode_specs [
       version: {:message, 1, SyncdVersion},
       mutations: {:repeated_message, 2, SyncdMutation},
-      external_mutations: {:message, 3, ExternalBlobReference},
+      external_mutations: {:message, 3, BaileysEx.Protocol.Proto.Syncd.ExternalBlobReference},
       snapshot_mac: {:bytes, 4},
       patch_mac: {:bytes, 5},
       key_id: {:message, 6, KeyId},
@@ -188,7 +188,7 @@ defmodule BaileysEx.Protocol.Proto.Syncd do
     @decode_specs [
       version: {:message, 1, SyncdVersion},
       mutations: {:repeated_message, 2, SyncdMutation},
-      external_mutations: {:message, 3, ExternalBlobReference},
+      external_mutations: {:message, 3, BaileysEx.Protocol.Proto.Syncd.ExternalBlobReference},
       snapshot_mac: {:bytes, 4},
       patch_mac: {:bytes, 5},
       key_id: {:message, 6, KeyId},

@@ -667,7 +667,8 @@ defmodule BaileysEx.Feature.GroupTest do
                   }
                 }
               }
-            }, %{signal_repository: %Repository{}}} =
+            },
+            %{signal_repository: %Repository{}}} =
              Group.update_member_label(
                context,
                "120363001234567890@g.us",

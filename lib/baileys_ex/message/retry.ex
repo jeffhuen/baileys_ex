@@ -20,8 +20,11 @@ defmodule BaileysEx.Message.Retry do
   @recent_message_cache_ttl_ms 300_000
   @session_recreate_cooldown_ms 3_600_000
   @phone_request_delay_ms 3_000
+  @phone_request_jitter_ms 1_000
   @placeholder_request_timeout_ms 8_000
   @max_retry_count 5
+  @max_placeholder_resend_retries 2
+  @max_phone_request_retries 2
 
   @retry_reason_values %{
     UNKNOWN_ERROR: 0,
@@ -140,7 +143,11 @@ defmodule BaileysEx.Message.Retry do
   @spec schedule_phone_request(Store.Ref.t(), String.t(), (-> term()), keyword()) :: :ok
   def schedule_phone_request(%Store.Ref{} = store_ref, message_id, callback, opts \\ [])
       when is_binary(message_id) and is_function(callback, 0) do
-    delay_ms = Keyword.get(opts, :delay_ms, @phone_request_delay_ms)
+    base_delay = Keyword.get(opts, :delay_ms, @phone_request_delay_ms)
+    # Add jitter to avoid predictable timing patterns
+    delay_ms =
+      base_delay + :rand.uniform(@phone_request_jitter_ms) - div(@phone_request_jitter_ms, 2)
+
     cancel_phone_request(store_ref, message_id)
 
     {:ok, timer_ref} =
@@ -184,10 +191,11 @@ defmodule BaileysEx.Message.Retry do
   end
 
   @doc """
-  Idempotently queues a placeholder resend command, stalling slightly to await in-flight messages.
+  Idempotently queues a placeholder resend command, returning immediately while
+  the actual resend is scheduled asynchronously via message passing.
   """
   @spec request_placeholder_resend(Store.Ref.t(), map(), map() | boolean() | nil, keyword()) ::
-          {:ok, String.t() | nil} | {:error, term()}
+          {:ok, :pending | String.t() | nil} | {:error, term()}
   def request_placeholder_resend(
         %Store.Ref{} = store_ref,
         message_key,
@@ -196,33 +204,112 @@ defmodule BaileysEx.Message.Retry do
       )
       when is_map(message_key) do
     message_id = Map.fetch!(message_key, :id)
-    delay_ms = Keyword.get(opts, :delay_ms, 2_000)
+    delay_ms = Keyword.get(opts, :delay_ms, @placeholder_request_delay_ms)
     timeout_ms = Keyword.get(opts, :timeout_ms, @placeholder_request_timeout_ms)
+    retry_count = Keyword.get(opts, :retry_count, 0)
 
     if get_placeholder_resend(store_ref, message_id) do
       {:ok, nil}
     else
-      :ok = put_placeholder_resend(store_ref, message_id, msg_data || true, opts)
-      Process.sleep(delay_ms)
+      :ok = put_placeholder_resend(store_ref, message_id, msg_data || true, retry_count, opts)
 
-      if get_placeholder_resend(store_ref, message_id) do
-        issue_placeholder_resend_request(store_ref, message_key, message_id, timeout_ms, opts)
-      else
+      # Schedule async check via timer to avoid blocking
+      {:ok, _timer_ref} =
+        :timer.apply_after(delay_ms, __MODULE__, :run_placeholder_resend, [
+          store_ref,
+          message_id,
+          message_key,
+          timeout_ms,
+          opts
+        ])
+
+      {:ok, :pending}
+    end
+  end
+
+  @doc """
+  Handles the async placeholder resend check triggered by the scheduled timer.
+  """
+  @spec run_placeholder_resend(Store.Ref.t(), String.t(), map(), pos_integer(), keyword()) ::
+          {:ok, String.t() | nil} | {:error, term()}
+  def run_placeholder_resend(
+        %Store.Ref{} = store_ref,
+        message_id,
+        message_key,
+        timeout_ms,
+        opts \\ []
+      )
+      when is_binary(message_id) and is_map(message_key) and is_integer(timeout_ms) and
+             timeout_ms > 0 do
+    case get_placeholder_resend_entry(store_ref, message_id) do
+      %{retry_count: retry_count} when retry_count >= @max_placeholder_resend_retries ->
+        resolve_placeholder_resend(store_ref, message_id)
+        {:ok, "MAX_RETRIES_EXCEEDED"}
+
+      %{retry_count: retry_count} = placeholder ->
+        case issue_placeholder_resend_request(
+               store_ref,
+               message_key,
+               message_id,
+               timeout_ms,
+               opts
+             ) do
+          {:ok, _request_id} ->
+            updated_retry_count = retry_count + 1
+
+            put_placeholder_resend(
+              store_ref,
+              message_id,
+              placeholder.data,
+              updated_retry_count,
+              []
+            )
+
+            {:ok, _request_id}
+
+          {:error, _reason} = error ->
+            updated_retry_count = retry_count + 1
+
+            put_placeholder_resend(
+              store_ref,
+              message_id,
+              placeholder.data,
+              updated_retry_count,
+              []
+            )
+
+            error
+        end
+
+      _ ->
         {:ok, "RESOLVED"}
-      end
     end
   end
 
   @doc """
   Records an active placeholder awaiting server response.
   """
-  @spec put_placeholder_resend(Store.Ref.t(), String.t(), map() | boolean(), keyword()) :: :ok
-  def put_placeholder_resend(%Store.Ref{} = store_ref, message_id, data, opts \\ [])
-      when is_binary(message_id) and is_list(opts) do
+  @spec put_placeholder_resend(
+          Store.Ref.t(),
+          String.t(),
+          map() | boolean(),
+          non_neg_integer(),
+          keyword()
+        ) :: :ok
+  def put_placeholder_resend(
+        %Store.Ref{} = store_ref,
+        message_id,
+        data,
+        retry_count \\ 0,
+        opts \\ []
+      )
+      when is_binary(message_id) and is_integer(retry_count) and retry_count >= 0 and
+             is_list(opts) do
     cache =
       Store.get(store_ref, @placeholder_cache_key, %{})
       |> Map.put(message_id, %{
         data: data,
+        retry_count: retry_count,
         timer_ref: nil,
         inserted_at: now_ms(opts)
       })
@@ -232,11 +319,31 @@ defmodule BaileysEx.Message.Retry do
 
   @doc """
   Looks up a placeholder that actively blocking resolution of a message.
+  Returns just the data field for backward compatibility.
   """
   @spec get_placeholder_resend(Store.Ref.t(), String.t()) :: map() | boolean() | nil
   def get_placeholder_resend(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
     case Store.get(store_ref, @placeholder_cache_key, %{}) do
       %{^message_id => %{data: data}} -> data
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Looks up the full placeholder entry including retry count.
+  """
+  @spec get_placeholder_resend_entry(Store.Ref.t(), String.t()) ::
+          %{
+            data: term(),
+            retry_count: non_neg_integer(),
+            timer_ref: term(),
+            inserted_at: integer()
+          }
+          | nil
+  def get_placeholder_resend_entry(%Store.Ref{} = store_ref, message_id)
+      when is_binary(message_id) do
+    case Store.get(store_ref, @placeholder_cache_key, %{}) do
+      %{^message_id => entry} -> entry
       _ -> nil
     end
   end

@@ -36,7 +36,8 @@ defmodule BaileysEx.Connection.EventEmitter do
               buffering?: false,
               buffer_count: 0,
               seed: %{},
-              buffered_events: %{}
+              buffered_events: %{},
+              inflight_events: MapSet.new()
   end
 
   @type event ::
@@ -181,8 +182,13 @@ defmodule BaileysEx.Connection.EventEmitter do
   end
 
   def handle_call({:emit, event, data}, _from, %State{} = state) do
-    {state, deliveries} = emit_event(state, event, data)
-    {:reply, :ok, enqueue_dispatch(state, [%{event => data}], deliveries)}
+    if MapSet.member?(state.inflight_events, event) do
+      Logger.warning("[EventEmitter] dropped re-emission of in-flight event #{inspect(event)}")
+      {:reply, :ok, state}
+    else
+      {state, deliveries} = emit_event(state, event, data)
+      {:reply, :ok, enqueue_dispatch(state, [%{event => data}], deliveries)}
+    end
   end
 
   def handle_call(:buffer, _from, %State{} = state) do
@@ -253,11 +259,21 @@ defmodule BaileysEx.Connection.EventEmitter do
         %State{dispatcher_pid: dispatcher_pid, dispatching?: true} = state
       ) do
     case :queue.out(state.dispatch_queue) do
-      {{:value, {^dispatch_id, _taps, _tap_deliveries, _subscribers, _deliveries}}, remaining} ->
+      {{:value, {^dispatch_id, _taps, _tap_deliveries, _subscribers, deliveries}}, remaining} ->
+        # Extract and remove event types from inflight_events
+        completed_events =
+          Enum.reduce(deliveries, MapSet.new(), fn
+            delivery, acc when is_map(delivery) ->
+              Enum.reduce(delivery, acc, fn {event, _data}, acc ->
+                MapSet.put(acc, event)
+              end)
+          end)
+
         state =
           state
           |> Map.put(:dispatch_queue, remaining)
           |> Map.put(:dispatching?, false)
+          |> Map.update!(:inflight_events, &MapSet.subtract(&1, completed_events))
           |> maybe_dispatch_next()
 
         {:noreply, state}
@@ -453,6 +469,15 @@ defmodule BaileysEx.Connection.EventEmitter do
     if tap_deliveries == [] and deliveries == [] do
       state
     else
+      # Extract event types from deliveries to track as in-flight
+      inflight_events =
+        Enum.reduce(deliveries, state.inflight_events, fn
+          delivery, acc when is_map(delivery) ->
+            Enum.reduce(delivery, acc, fn {event, _data}, acc ->
+              MapSet.put(acc, event)
+            end)
+        end)
+
       dispatch_entry = {
         state.ref_fun.(),
         state.taps,
@@ -462,6 +487,7 @@ defmodule BaileysEx.Connection.EventEmitter do
       }
 
       state
+      |> Map.put(:inflight_events, inflight_events)
       |> Map.update!(:dispatch_queue, &:queue.in(dispatch_entry, &1))
       |> maybe_dispatch_next()
     end

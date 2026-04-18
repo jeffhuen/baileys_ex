@@ -653,19 +653,30 @@ defmodule BaileysEx.Connection.Coordinator do
   defp schedule_reconnect(%State{reconnect_timer: nil} = state, reason) do
     attempt = state.reconnect_attempts + 1
 
+    # Exponential backoff with jitter
+    base_delay = state.config.base_retry_delay_ms
+    max_delay = state.config.max_retry_delay_ms
+    jitter_factor = state.config.retry_delay_random_factor
+
+    delay = min(base_delay * attempt, max_delay)
+    jittered_delay = delay * (1 + jitter_factor * (:rand.uniform() - 0.5))
+    actual_delay = trunc(jittered_delay)
+
     Telemetry.execute(
       [:connection, :reconnect],
       %{count: 1},
       %{
         reason: reason,
-        retry_delay_ms: state.config.retry_delay_ms,
+        retry_delay_ms: actual_delay,
+        base_delay_ms: base_delay,
+        max_delay_ms: max_delay,
         attempt: attempt,
         max_retries: state.config.max_retries,
         reconnect_policy: state.config.reconnect_policy
       }
     )
 
-    timer = Process.send_after(self(), :reconnect_socket, state.config.retry_delay_ms)
+    timer = Process.send_after(self(), :reconnect_socket, actual_delay)
     %{state | reconnect_timer: timer, reconnect_attempts: attempt}
   end
 

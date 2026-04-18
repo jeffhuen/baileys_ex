@@ -477,7 +477,8 @@ defmodule BaileysEx.Message.ReceiverTest do
                   group_id: ^group_jid
                 }
               }
-            }, %{signal_repository: recipient_repo}} =
+            },
+            %{signal_repository: recipient_repo}} =
              Receiver.process_node(distribution_node, context)
 
     group_node = %BinaryNode{
@@ -500,7 +501,8 @@ defmodule BaileysEx.Message.ReceiverTest do
                   text: "hello after distribution"
                 }
               }
-            }, %{signal_repository: %Repository{}}} =
+            },
+            %{signal_repository: %Repository{}}} =
              Receiver.process_node(group_node, %{context | signal_repository: recipient_repo})
   end
 

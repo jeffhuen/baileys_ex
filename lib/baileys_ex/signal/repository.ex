@@ -374,7 +374,8 @@ defmodule BaileysEx.Signal.Repository do
           {:ok, t(), migration_result()} | {:error, adapter_error()}
   def migrate_session(%__MODULE__{} = repository, from_jid, to_jid)
       when is_binary(from_jid) and is_binary(to_jid) do
-    with {:ok, user, lid_user, lid_server, source_device} <- normalize_migration(from_jid, to_jid),
+    with {:ok, user, lid_user, lid_server, source_device} <-
+           normalize_migration(from_jid, to_jid),
          device_list <- load_device_list(repository.store, user),
          {:ok, operations} <-
            build_migration_operations(user, lid_user, lid_server, device_list, source_device),

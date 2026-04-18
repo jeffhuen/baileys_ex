@@ -22,6 +22,7 @@ defmodule BaileysEx.Message.Sender do
   alias BaileysEx.Telemetry
 
   @status_broadcast %JID{user: "status", server: "broadcast"}
+  @max_retry_participant_retries 5
 
   @type context :: %{
           required(:signal_repository) => Repository.t(),
@@ -508,7 +509,8 @@ defmodule BaileysEx.Message.Sender do
   defp do_send_retry_resend(%{} = context, %JID{} = jid, %Message{} = message, message_id, opts) do
     participant = opts[:participant]
     participant_jid = participant[:jid]
-    count = participant[:count] || 1
+    raw_count = participant[:count] || 1
+    count = min(raw_count, @max_retry_participant_retries)
     destination_jid = JIDUtil.to_string(jid)
     participant_message = retry_resend_message(context, message, destination_jid, participant_jid)
     bytes = Wire.encode(participant_message)

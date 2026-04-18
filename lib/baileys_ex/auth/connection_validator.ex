@@ -109,12 +109,12 @@ defmodule BaileysEx.Auth.ConnectionValidator do
       },
       platform: @user_agent_platform_web,
       release_channel: @user_agent_release_channel_release,
-      os_version: "0.1",
+      os_version: config.device_os_version,
       device: "Desktop",
-      os_build_number: "0.1",
+      os_build_number: config.device_os_build_number,
       locale_language_iso6391: "en",
-      mnc: "000",
-      mcc: "000",
+      mnc: config.device_mnc,
+      mcc: config.device_mcc,
       locale_country_iso31661_alpha2: config.country_code
     }
   end
@@ -125,6 +125,7 @@ defmodule BaileysEx.Auth.ConnectionValidator do
 
   defp companion_device_props(%Config{} = config) do
     {platform_name, browser_name, _platform_version} = config.browser
+    [primary, secondary, tertiary | _] = config.version
 
     %DeviceProps{
       os: platform_name,
@@ -143,7 +144,7 @@ defmodule BaileysEx.Auth.ConnectionValidator do
         support_message_association: true,
         support_group_history: false
       },
-      version: %DevicePropsAppVersion{primary: 10, secondary: 15, tertiary: 7}
+      version: %DevicePropsAppVersion{primary: primary, secondary: secondary, tertiary: tertiary}
     }
   end
 

@@ -52,7 +52,8 @@ defmodule BaileysEx.Signal.Session do
            {:ok, jid} <- fetch_attr(user_node, "jid"),
            {:ok, registration_id} <- child_uint(user_node, "registration"),
            {:ok, identity_key} <- child_signal_public_key(user_node, "identity"),
-           {:ok, signed_pre_key} <- decode_signed_pre_key(BinaryNodeUtil.child(user_node, "skey")),
+           {:ok, signed_pre_key} <-
+             decode_signed_pre_key(BinaryNodeUtil.child(user_node, "skey")),
            {:ok, pre_key} <- decode_pre_key(BinaryNodeUtil.child(user_node, "key")),
            {:ok, next_repo} <-
              Repository.inject_e2e_session(acc_repo, %{

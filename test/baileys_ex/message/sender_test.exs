@@ -66,7 +66,8 @@ defmodule BaileysEx.Message.SenderTest do
                 extended_text_message: %Message.ExtendedTextMessage{text: "hello"}
               },
               timestamp: 1_710_000_000_000
-            }, %{signal_repository: updated_repo}} =
+            },
+            %{signal_repository: updated_repo}} =
              Sender.send(context, jid, %{text: "hello"},
                message_id_fun: fn _me_id -> "3EB0FIXEDID" end,
                timestamp_fun: fn -> 1_710_000_000_000 end

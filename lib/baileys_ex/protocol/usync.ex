@@ -148,7 +148,8 @@ defmodule BaileysEx.Protocol.USync do
   @spec parse_result(t(), BinaryNode.t()) :: {:ok, result()} | {:error, term()}
   def parse_result(%__MODULE__{} = query, %BinaryNode{attrs: %{"type" => "result"}} = response) do
     with %BinaryNode{} = usync_node <- BinaryNodeUtil.child(response, "usync"),
-         {:ok, list} <- parse_user_list(BinaryNodeUtil.child(usync_node, "list"), query.protocols),
+         {:ok, list} <-
+           parse_user_list(BinaryNodeUtil.child(usync_node, "list"), query.protocols),
          {:ok, side_list} <-
            parse_user_list(BinaryNodeUtil.child(usync_node, "side_list"), query.protocols) do
       {:ok, %{list: list, side_list: side_list}}

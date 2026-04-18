@@ -27,6 +27,7 @@ defmodule BaileysEx.Connection.Config do
   @type t :: %__MODULE__{
           ws_url: String.t(),
           keep_alive_interval_ms: pos_integer(),
+          keep_alive_jitter_ms: non_neg_integer(),
           default_query_timeout_ms: pos_integer(),
           initial_sync_timeout_ms: pos_integer(),
           pairing_qr_timeout_ms: pos_integer() | nil,
@@ -35,6 +36,9 @@ defmodule BaileysEx.Connection.Config do
           retry_request_delay_ms: pos_integer(),
           max_msg_retry_count: pos_integer(),
           retry_delay_ms: pos_integer(),
+          base_retry_delay_ms: pos_integer(),
+          max_retry_delay_ms: pos_integer(),
+          retry_delay_random_factor: float(),
           reconnect_policy: reconnect_policy(),
           max_retries: non_neg_integer(),
           connect_timeout_ms: pos_integer(),
@@ -50,7 +54,12 @@ defmodule BaileysEx.Connection.Config do
           should_sync_history_message: should_sync_history_message_fun(),
           validate_snapshot_macs: boolean(),
           validate_patch_macs: boolean(),
-          print_qr_in_terminal: boolean()
+          print_qr_in_terminal: boolean(),
+          # Device fingerprint fields
+          device_os_version: String.t(),
+          device_os_build_number: String.t(),
+          device_mnc: String.t(),
+          device_mcc: String.t()
         }
 
   @platforms %{
@@ -82,6 +91,7 @@ defmodule BaileysEx.Connection.Config do
 
   defstruct ws_url: "wss://web.whatsapp.com/ws/chat",
             keep_alive_interval_ms: 25_000,
+            keep_alive_jitter_ms: 2_500,
             default_query_timeout_ms: 60_000,
             initial_sync_timeout_ms: 20_000,
             pairing_qr_timeout_ms: nil,
@@ -90,6 +100,9 @@ defmodule BaileysEx.Connection.Config do
             retry_request_delay_ms: 250,
             max_msg_retry_count: 5,
             retry_delay_ms: 2_000,
+            base_retry_delay_ms: 2_000,
+            max_retry_delay_ms: 60_000,
+            retry_delay_random_factor: 0.3,
             reconnect_policy: :disabled,
             max_retries: 5,
             connect_timeout_ms: 20_000,
@@ -105,7 +118,12 @@ defmodule BaileysEx.Connection.Config do
             should_sync_history_message: &__MODULE__.default_should_sync_history_message/1,
             validate_snapshot_macs: false,
             validate_patch_macs: false,
-            print_qr_in_terminal: false
+            print_qr_in_terminal: false,
+            # Device fingerprint fields - realistic desktop values
+            device_os_version: "23.0.0",
+            device_os_build_number: "24A335",
+            device_mnc: "XXX",
+            device_mcc: "XXX"
 
   @doc """
   Create a new `Config` with default options.

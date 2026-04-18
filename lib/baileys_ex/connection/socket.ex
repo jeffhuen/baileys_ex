@@ -836,10 +836,14 @@ defmodule BaileysEx.Connection.Socket do
 
   defp send_keep_alive(%__MODULE__{} = data) do
     interval = data.config.keep_alive_interval_ms
+    jitter = data.config.keep_alive_jitter_ms
     last_date_recv_at = data.last_date_recv_at || monotonic_ms(data)
     diff = monotonic_ms(data) - last_date_recv_at
 
-    if diff > interval + 5_000 do
+    # Tolerance accounts for jitter in keep-alive schedule plus network latency
+    tolerance = interval + jitter + 5_000
+
+    if diff > tolerance do
       connection_failure(%{data | last_date_recv_at: last_date_recv_at}, :connection_lost)
     else
       case send_keep_alive_ping(%{data | keep_alive_timer: nil}) do
@@ -853,11 +857,16 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp schedule_keep_alive(%__MODULE__{} = data) do
+    interval = data.config.keep_alive_interval_ms
+    jitter = data.config.keep_alive_jitter_ms
+    # Add jitter to avoid predictable keep-alive pattern: interval ± jitter
+    actual_interval = max(1, interval - jitter) + :rand.uniform(jitter * 2)
+
     data
     |> cancel_keep_alive_timer()
     |> Map.put(
       :keep_alive_timer,
-      Process.send_after(self(), :keep_alive, data.config.keep_alive_interval_ms)
+      Process.send_after(self(), :keep_alive, actual_interval)
     )
   end
 

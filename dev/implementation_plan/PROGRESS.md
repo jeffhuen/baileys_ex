@@ -40,8 +40,8 @@
 ### Tasks
 
 - [x] 1.1 Update mix.exs with dependencies
-- [x] 1.2 Update application.ex
-- [x] 1.3 Create Application supervisor
+- [x] 1.2 Update Mix application metadata
+- [x] 1.3 Keep runtime startup caller-owned
 - [x] 1.4 Scaffold Rust NIF crate
 - [x] 1.5 Create NIF module stubs
 - [x] 1.6 Core type definitions
@@ -53,15 +53,14 @@
 - [x] `mix compile` succeeds (NIF stubs load with nif_error)
 - [x] `mix test` passes (basic smoke test)
 - [x] Rust crate compiles: `cd native/baileys_nif && cargo check`
-- [x] Application starts: `iex -S mix` launches supervision tree
-- [x] Registry, DynamicSupervisor, TaskSupervisor visible in observer
+- [x] Mix application metadata has no `:mod` callback
+- [x] Runtime supervision is started per connection by explicit caller action
 
 ### Files
 
 | File | Status |
 |------|--------|
 | `mix.exs` | ✅ |
-| `lib/baileys_ex/application.ex` | ✅ |
 | `lib/baileys_ex/types.ex` | ✅ |
 | `lib/baileys_ex/native/noise.ex` | ✅ |
 | `lib/baileys_ex/native/xeddsa.ex` | ✅ |

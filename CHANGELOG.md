@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.0-alpha.8] - 2026-05-22
+
+Library-guideline cleanup.
+
+### Changed
+
+- Removed the unused `BaileysEx.Application` callback and global singleton supervisors; connection runtimes are now only caller-owned per-connection supervisors
+- File persistence convenience defaults now use literal cwd-based paths instead of `Application.get_env/2`
+
 ## [0.1.0-alpha.7] - 2026-03-21
 
 DRY audit and bug-fix pass. Duplicated transport wrappers across feature

@@ -51,30 +51,26 @@ WAM (WhatsApp Analytics/Metrics) is optional — see Phase 12.7.
    built-in stores now use explicit transaction-scoped handles instead of
    hidden caller-local state, while preserving the store boundary itself.
 
-## Supervision Tree
+## Runtime Supervision
 
 ```
-BaileysEx.Application (Supervisor)
-├── Registry (BaileysEx.Registry — named connections)
-├── DynamicSupervisor (BaileysEx.ConnectionSupervisor)
-│   └── Per-connection Supervisor (:rest_for_one)
-│       ├── BaileysEx.Connection.Socket     (:gen_statem)
-│       │   - Owns WebSocket + Noise transport state
-│       │   - States: disconnected → connecting → noise_handshake → authenticating → connected
-│       │   - Mirrors Baileys `makeSocket`: query/send runtime, keep-alive, logout,
-│       │     unified_session, and transport-level offline/routing callbacks
-│       ├── BaileysEx.Connection.Store       (GenServer + ETS)
-│       │   - Signal session state, auth credentials
-│       │   - ETS :read_concurrency for lookups
-│       │   - GenServer serializes writes + persistence
-│       ├── BaileysEx.Connection.EventEmitter (GenServer)
-│       │   - Subscriber registry, batched event dispatch, buffer/flush/process API
-│       │   - Internal tap path for runtime coordination without breaking buffered app delivery
-│       │   - Mirrors Baileys `makeEventBuffer` semantics during offline processing
-│       └── Task.Supervisor (BaileysEx.Connection.TaskSupervisor)
-│           - Concurrent ops: device discovery, media upload/download
-│           - async_nolink for fault isolation
-└── Task.Supervisor (BaileysEx.TaskSupervisor — global one-off tasks)
+Caller-owned per-connection Supervisor (:rest_for_one)
+├── BaileysEx.Connection.Socket       (:gen_statem)
+│   - Owns WebSocket + Noise transport state
+│   - States: disconnected → connecting → noise_handshake → authenticating → connected
+│   - Mirrors Baileys `makeSocket`: query/send runtime, keep-alive, logout,
+│     unified_session, and transport-level offline/routing callbacks
+├── BaileysEx.Connection.Store        (GenServer + ETS)
+│   - Signal session state, auth credentials
+│   - ETS :read_concurrency for lookups
+│   - GenServer serializes writes + persistence
+├── BaileysEx.Connection.EventEmitter (GenServer)
+│   - Subscriber registry, batched event dispatch, buffer/flush/process API
+│   - Internal tap path for runtime coordination without breaking buffered app delivery
+│   - Mirrors Baileys `makeEventBuffer` semantics during offline processing
+└── Task.Supervisor
+    - Concurrent ops: device discovery, media upload/download
+    - Supervised per connection for fault isolation
 ```
 
 ### Why :rest_for_one

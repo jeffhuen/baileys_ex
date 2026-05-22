@@ -551,8 +551,8 @@ defmodule BaileysEx.Connection.Supervisor do
   use Supervisor
 
   def start_link(opts) do
-    name = {:via, Registry, {BaileysEx.Registry, opts[:name] || make_ref()}}
-    Supervisor.start_link(__MODULE__, opts, name: name)
+    {start_opts, init_opts} = split_start_opts(opts)
+    Supervisor.start_link(__MODULE__, init_opts, start_opts)
   end
 
   @impl true

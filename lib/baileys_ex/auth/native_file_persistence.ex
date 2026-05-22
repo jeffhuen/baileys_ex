@@ -182,8 +182,7 @@ defmodule BaileysEx.Auth.NativeFilePersistence do
   end
 
   defp default_path do
-    Application.get_env(:baileys_ex, __MODULE__, [])
-    |> Keyword.get(:path, Path.join(File.cwd!(), @default_dir))
+    Path.join(File.cwd!(), @default_dir)
   end
 
   defp ensure_directory(path) do

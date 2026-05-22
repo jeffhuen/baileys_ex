@@ -43,37 +43,22 @@ defp deps do
 end
 ```
 
-### 1.2 Update application.ex
+### 1.2 Update Mix application metadata
 
 ```elixir
 def application do
   [
-    mod: {BaileysEx.Application, []},
     extra_applications: [:logger, :crypto]
   ]
 end
 ```
 
-### 1.3 Create Application supervisor
+### 1.3 Keep runtime startup caller-owned
 
-File: `lib/baileys_ex/application.ex`
-
-```elixir
-defmodule BaileysEx.Application do
-  use Application
-
-  @impl true
-  def start(_type, _args) do
-    children = [
-      {Registry, keys: :unique, name: BaileysEx.Registry},
-      {DynamicSupervisor, name: BaileysEx.ConnectionSupervisor, strategy: :one_for_one},
-      {Task.Supervisor, name: BaileysEx.TaskSupervisor}
-    ]
-
-    Supervisor.start_link(children, strategy: :one_for_one, name: BaileysEx.Supervisor)
-  end
-end
-```
+BaileysEx is a library and does not define an `Application` callback or auto-start
+global runtime processes. Connection processes are started explicitly through
+`BaileysEx.Connection.Supervisor.start_link/1` / `BaileysEx.connect/2`, returning a
+caller-owned per-connection supervisor pid.
 
 ### 1.4 Scaffold Rust NIF crate
 
@@ -193,13 +178,12 @@ lib/baileys_ex/
 - [x] `mix compile` succeeds (NIF stubs load with nif_error)
 - [x] `mix test` passes (basic smoke test)
 - [x] Rust crate compiles: `cd native/baileys_nif && cargo check`
-- [x] Application starts: `iex -S mix` launches supervision tree
-- [x] `Registry`, `DynamicSupervisor`, `TaskSupervisor` visible in observer
+- [x] Mix application metadata has no `:mod` callback
+- [x] Runtime supervision is started per connection by explicit caller action
 
 ## Files Created/Modified
 
 - `mix.exs` — deps, application config
-- `lib/baileys_ex/application.ex` — supervisor
 - `lib/baileys_ex/types.ex` — core types
 - `lib/baileys_ex/native/noise.ex` — NIF stub
 - `lib/baileys_ex/native/xeddsa.ex` — NIF stub

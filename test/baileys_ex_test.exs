@@ -1,11 +1,39 @@
 defmodule BaileysExTest do
   use ExUnit.Case
 
-  test "application starts supervision tree" do
-    assert Process.whereis(BaileysEx.Supervisor) |> is_pid()
-    assert Process.whereis(BaileysEx.Registry) |> is_pid()
-    assert Process.whereis(BaileysEx.ConnectionSupervisor) |> is_pid()
-    assert Process.whereis(BaileysEx.TaskSupervisor) |> is_pid()
+  alias BaileysEx.Auth.FilePersistence
+  alias BaileysEx.Auth.NativeFilePersistence
+  alias BaileysEx.Auth.State
+
+  test "library application does not auto-start runtime supervision tree" do
+    application = BaileysEx.MixProject.application()
+
+    refute Keyword.has_key?(application, :mod)
+    assert Keyword.get(application, :extra_applications) == [:logger, :crypto]
+  end
+
+  @tag :tmp_dir
+  test "file persistence convenience defaults ignore application environment", %{tmp_dir: tmp_dir} do
+    native_env_path = Path.join(tmp_dir, "env-native")
+    json_env_path = Path.join(tmp_dir, "env-json")
+
+    Application.put_env(:baileys_ex, NativeFilePersistence, path: native_env_path)
+    Application.put_env(:baileys_ex, FilePersistence, path: json_env_path)
+
+    on_exit(fn ->
+      Application.delete_env(:baileys_ex, NativeFilePersistence)
+      Application.delete_env(:baileys_ex, FilePersistence)
+    end)
+
+    File.cd!(tmp_dir, fn ->
+      assert {:ok, %State{}} = NativeFilePersistence.load_credentials()
+      assert File.dir?(Path.join(tmp_dir, "baileys_native_auth_info"))
+      refute File.exists?(native_env_path)
+
+      assert {:ok, %State{}} = FilePersistence.load_credentials()
+      assert File.dir?(Path.join(tmp_dir, "baileys_auth_info"))
+      refute File.exists?(json_env_path)
+    end)
   end
 
   test "JID struct" do

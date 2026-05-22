@@ -434,8 +434,7 @@ defmodule BaileysEx.Auth.FilePersistence do
   defp type_name(_value), do: "unsupported term"
 
   defp default_path do
-    Application.get_env(:baileys_ex, __MODULE__, [])
-    |> Keyword.get(:path, Path.join(File.cwd!(), @default_dir))
+    Path.join(File.cwd!(), @default_dir)
   end
 
   defp ensure_directory(path) do

@@ -189,7 +189,7 @@ defmodule BaileysEx.Message.Receiver do
           id: attrs["id"],
           remote_jid: envelope.remote_jid,
           remote_jid_alt: envelope[:remote_jid_alt],
-          participant: envelope.participant,
+          participant: envelope[:participant],
           participant_alt: envelope[:participant_alt],
           from_me: envelope.from_me
         }
@@ -198,7 +198,7 @@ defmodule BaileysEx.Message.Receiver do
       message: proto_message,
       message_timestamp: parse_timestamp(attrs["t"]),
       sender_jid: envelope.author_jid,
-      participant: envelope.participant,
+      participant: envelope[:participant],
       push_name: attrs["notify"],
       verified_biz_name: verified_biz_name(node)
     }
@@ -251,7 +251,7 @@ defmodule BaileysEx.Message.Receiver do
                Receipt.send_receipt(
                  fun,
                  envelope.remote_jid,
-                 envelope.participant,
+                 envelope[:participant],
                  [attrs["id"]],
                  receipt_type(attrs["category"])
                ) do

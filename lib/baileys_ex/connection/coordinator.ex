@@ -278,8 +278,11 @@ defmodule BaileysEx.Connection.Coordinator do
 
   def handle_info(:initial_sync_timeout, %State{sync_state: :awaiting_initial_sync} = state) do
     Logger.debug("[SyncDiag] initial sync timeout fired, forcing :online")
-    _ = EventEmitter.flush(state.event_emitter)
-    {:noreply, %{state | initial_sync_timer: nil, sync_state: :online}}
+
+    {:noreply,
+     state
+     |> Map.put(:initial_sync_timer, nil)
+     |> complete_initial_sync_online(:timeout)}
   end
 
   def handle_info(:initial_sync_timeout, %State{} = state) do
@@ -288,8 +291,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
   def handle_info(:complete_initial_sync, %State{sync_state: :syncing} = state) do
     Logger.debug("[SyncDiag] completing initial sync, transitioning to :online")
-    _ = EventEmitter.flush(state.event_emitter)
-    {:noreply, %{state | sync_state: :online}}
+    {:noreply, complete_initial_sync_online(state, :initial_sync_complete)}
   end
 
   def handle_info(:complete_initial_sync, %State{app_state_sync_ref: ref} = state)
@@ -583,8 +585,10 @@ defmodule BaileysEx.Connection.Coordinator do
           sync_state: :awaiting_initial_sync
       }
     else
-      _ = EventEmitter.flush(state.event_emitter)
-      %{cancel_initial_sync_timer(state) | initial_sync_timer: nil, sync_state: :online}
+      state
+      |> cancel_initial_sync_timer()
+      |> Map.put(:initial_sync_timer, nil)
+      |> complete_initial_sync_online(:history_sync_disabled)
     end
   end
 
@@ -595,6 +599,19 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp handle_connection_update(%State{} = state, _events), do: state
+
+  defp complete_initial_sync_online(%State{} = state, reason) when is_atom(reason) do
+    _ = EventEmitter.flush(state.event_emitter)
+
+    :ok =
+      EventEmitter.emit(state.event_emitter, :connection_update, %{
+        sync_state: :online,
+        initial_sync_complete: true,
+        initial_sync_reason: reason
+      })
+
+    %{state | sync_state: :online}
+  end
 
   defp handle_sync_event(
          %State{sync_state: :awaiting_initial_sync} = state,

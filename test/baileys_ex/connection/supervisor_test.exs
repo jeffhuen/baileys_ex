@@ -694,6 +694,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
   test "supervisor buffers pending notifications and flushes after the initial sync timeout" do
     name = {:phase6_test, System.unique_integer([:positive])}
+    parent = self()
 
     assert {:ok, supervisor} =
              Supervisor.start_link(
@@ -704,6 +705,8 @@ defmodule BaileysEx.Connection.SupervisorTest do
              )
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
+
     assert false == EventEmitter.buffering?(emitter_pid)
 
     assert :ok =
@@ -713,10 +716,22 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
     assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) == false end)
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        sync_state: :online,
+                        initial_sync_complete: true,
+                        initial_sync_reason: :timeout
+                      }
+                    }}
+
+    unsubscribe.()
   end
 
   test "history sync events transition the coordinator through awaiting_initial_sync, syncing, and online" do
     name = {:phase6_test, System.unique_integer([:positive])}
+    parent = self()
 
     assert {:ok, supervisor} =
              Supervisor.start_link(
@@ -728,6 +743,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
     coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :connection_update, %{
@@ -750,6 +766,17 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_eventually(fn -> :sys.get_state(coordinator_pid).sync_state == :syncing end)
     assert_eventually(fn -> :sys.get_state(coordinator_pid).sync_state == :online end)
     assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) == false end)
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        sync_state: :online,
+                        initial_sync_complete: true,
+                        initial_sync_reason: :initial_sync_complete
+                      }
+                    }}
+
+    unsubscribe.()
   end
 
   test "pending notifications do not wait for history when should_sync_history_message disables RECENT" do

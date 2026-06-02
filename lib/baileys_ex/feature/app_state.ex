@@ -72,14 +72,14 @@ defmodule BaileysEx.Feature.AppState do
     transaction_key = app_state_transaction_key(store, opts)
     codec_opts = Keyword.take(opts, [:external_blob_fetcher])
 
-    Logger.warning(
-      "[AppStateDiag] resync_app_state entering transaction key=#{inspect(transaction_key)}"
-    )
+    app_state_diag(fn ->
+      "resync_app_state entering transaction key=#{inspect(transaction_key)}"
+    end)
 
     with_app_state_transaction(state_store, transaction_key, fn tx_state_store ->
-      Logger.warning(
-        "[AppStateDiag] transaction acquired, starting resync loop collections=#{inspect(collections)}"
-      )
+      app_state_diag(fn ->
+        "transaction acquired, starting resync loop collections=#{inspect(collections)}"
+      end)
 
       context = %{
         queryable: queryable,
@@ -101,13 +101,13 @@ defmodule BaileysEx.Feature.AppState do
            }) do
         {:ok,
          %{global_mutation_map: final_mutations, global_mutation_order: final_mutation_order}} ->
-          Logger.warning(
-            "[AppStateDiag] resync complete " <>
+          app_state_diag(fn ->
+            "resync complete " <>
               "initial_sync=#{is_initial_sync} " <>
               "mutation_count=#{length(final_mutation_order)} " <>
               "push_name_mutation=#{push_name_mutation?(final_mutation_order)} " <>
               "mutation_heads=#{inspect(diagnostic_mutation_heads(final_mutation_order))}"
-          )
+          end)
 
           emit_mutation_map(
             event_emitter,
@@ -627,9 +627,9 @@ defmodule BaileysEx.Feature.AppState do
   defp do_resync_loop(_context, [], loop_state), do: {:ok, finalize_mutation_order(loop_state)}
 
   defp do_resync_loop(context, collections_to_handle, loop_state) do
-    Logger.warning(
-      "[AppStateDiag] resync_loop pass collections=#{inspect(collections_to_handle)}"
-    )
+    app_state_diag(fn ->
+      "resync_loop pass collections=#{inspect(collections_to_handle)}"
+    end)
 
     {iq_node, states, initial_version_map} =
       build_resync_request(
@@ -645,12 +645,12 @@ defmodule BaileysEx.Feature.AppState do
         force_snapshot_collections: MapSet.new()
     }
 
-    Logger.warning("[AppStateDiag] sending sync query")
+    app_state_diag("sending sync query")
 
     with {:ok, response} <- query(context.queryable, iq_node),
-         _ = Logger.warning("[AppStateDiag] sync query response received, extracting patches"),
+         _ = app_state_diag("sync query response received, extracting patches"),
          {:ok, decoded} <- Codec.extract_syncd_patches(response, context.codec_opts) do
-      Logger.warning("[AppStateDiag] patches decoded, collections=#{inspect(Map.keys(decoded))}")
+      app_state_diag(fn -> "patches decoded, collections=#{inspect(Map.keys(decoded))}" end)
 
       loop_state =
         process_collections(
@@ -662,7 +662,7 @@ defmodule BaileysEx.Feature.AppState do
         )
 
       remaining = loop_state.remaining
-      Logger.warning("[AppStateDiag] collections processed, remaining=#{inspect(remaining)}")
+      app_state_diag(fn -> "collections processed, remaining=#{inspect(remaining)}" end)
 
       do_resync_loop(context, remaining, Map.delete(loop_state, :remaining))
     else
@@ -720,11 +720,15 @@ defmodule BaileysEx.Feature.AppState do
   end
 
   defp process_collections(decoded, collections_to_handle, states, loop_state, context) do
-    Enum.reduce(decoded, Map.put(loop_state, :remaining, collections_to_handle), fn
-      {name, collection}, acc ->
-        case process_single_collection(name, collection, Map.get(states, name), acc, context) do
-          {:ok, updated_state} ->
-            maybe_remove_collection(updated_state, name, collection.has_more_patches)
+    Enum.reduce(collections_to_handle, Map.put(loop_state, :remaining, collections_to_handle), fn
+      name, acc ->
+        with {:ok, collection} <- Map.fetch(decoded, name),
+             {:ok, updated_state} <-
+               process_single_collection(name, collection, Map.get(states, name), acc, context) do
+          maybe_remove_collection(updated_state, name, collection.has_more_patches)
+        else
+          :error ->
+            acc
 
           {:error, reason} ->
             handle_collection_failure(acc, context.state_store, name, reason)
@@ -811,7 +815,7 @@ defmodule BaileysEx.Feature.AppState do
         put_app_state_sync_version(context.state_store, name, new_state)
 
         {:ok, new_state, Map.merge(mutation_map, patch_mutation_map),
-         combine_mutation_order(mutation_order, patch_mutation_order),
+         mutation_order ++ patch_mutation_order,
          Map.put(loop_state.initial_version_map, name, new_state.version)}
 
       {:error, _} = err ->
@@ -824,7 +828,7 @@ defmodule BaileysEx.Feature.AppState do
       loop_state
       |> Map.get(:global_mutation_order_chunks, [])
       |> Enum.reverse()
-      |> List.flatten()
+      |> Enum.concat()
 
     Map.put(loop_state, :global_mutation_order, mutation_order)
   end
@@ -834,15 +838,6 @@ defmodule BaileysEx.Feature.AppState do
 
   defp prepend_mutation_order_chunk(loop_state, mutation_order) do
     [mutation_order | Map.get(loop_state, :global_mutation_order_chunks, [])]
-  end
-
-  defp combine_mutation_order([], patch_mutation_order), do: patch_mutation_order
-  defp combine_mutation_order(mutation_order, []), do: mutation_order
-
-  defp combine_mutation_order(mutation_order, patch_mutation_order) do
-    mutation_order
-    |> Enum.reverse()
-    |> Enum.reduce(patch_mutation_order, fn mutation, acc -> [mutation | acc] end)
   end
 
   defp maybe_remove_collection(loop_state, _name, true), do: loop_state
@@ -1037,23 +1032,31 @@ defmodule BaileysEx.Feature.AppState do
   defp maybe_log_mutation_diagnostics(mutation, events) do
     cond do
       push_name_mutation?(mutation) ->
-        Logger.warning(
-          "[AppStateDiag] push-name mutation " <>
+        app_state_diag(fn ->
+          "push-name mutation " <>
             "index=#{inspect(mutation_index(mutation))} " <>
             "event_names=#{inspect(Enum.map(events, &elem(&1, 0)))} " <>
             "emitted_name=#{inspect(push_name_from_events(events))}"
-        )
+        end)
 
       is_binary(push_name_from_events(events)) ->
-        Logger.warning(
-          "[AppStateDiag] creds_update emitted push name " <>
+        app_state_diag(fn ->
+          "creds_update emitted push name " <>
             "from index=#{inspect(mutation_index(mutation))} " <>
             "name=#{inspect(push_name_from_events(events))}"
-        )
+        end)
 
       true ->
         :ok
     end
+  end
+
+  defp app_state_diag(message) when is_binary(message) do
+    Logger.debug(fn -> "[AppStateDiag] " <> message end)
+  end
+
+  defp app_state_diag(message_fun) when is_function(message_fun, 0) do
+    Logger.debug(fn -> "[AppStateDiag] " <> message_fun.() end)
   end
 
   defp push_name_mutation?(mutations) when is_list(mutations),

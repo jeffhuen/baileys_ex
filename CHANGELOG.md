@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10] - 2026-06-02
+
+Maintenance release focused on reducing receive-path overhead and improving
+large app-state resync behavior without changing the public API.
+
+### Changed
+
+- Message receive diagnostics now run at debug level and avoid building
+  expensive protocol-message summaries unless debug logging is enabled.
+- Large app-state resyncs now preserve mutation order without repeatedly
+  appending to growing lists, reducing memory churn during reconnect and
+  initial sync catch-up.
+- Successful app-state resync diagnostics now log at debug level instead of
+  warning level. Actual resync failures still log warnings.
+- App-state resync events now keep collection-level chat updates in the
+  requested sync order when multiple collections are returned together.
+
 ## [0.1.0-alpha.9] - 2026-06-02
 
 WhatsApp/Baileys v7 compatibility update. This release moves BaileysEx from the

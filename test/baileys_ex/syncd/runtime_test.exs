@@ -1,6 +1,8 @@
 defmodule BaileysEx.Syncd.RuntimeTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Store
   alias BaileysEx.Feature.AppState
@@ -68,6 +70,17 @@ defmodule BaileysEx.Syncd.RuntimeTest do
          content: [%{tag: "sync", content: [%{tag: "collection", attrs: attrs}]}]
        }),
        do: attrs
+
+  defp encode_patch_binary!(patch_create, state, iv) do
+    get_key = fn _kid -> {:ok, %{key_data: @key_data}} end
+
+    {:ok, %{patch: patch, state: next_state}} =
+      Codec.encode_syncd_patch(patch_create, @key_id_b64, state, get_key, iv: iv)
+
+    patch
+    |> Map.put(:version, %Syncd.SyncdVersion{version: next_state.version})
+    |> Syncd.SyncdPatch.encode()
+  end
 
   describe "Store app state sync key helpers" do
     test "get/put app state sync key roundtrip" do
@@ -465,6 +478,115 @@ defmodule BaileysEx.Syncd.RuntimeTest do
       end
 
       assert :ok = AppState.resync_app_state(queryable, store, [:regular_high])
+    end
+
+    test "successful resync diagnostics do not log at warning level" do
+      store = start_store()
+      queryable = fn _node -> {:ok, empty_sync_response()} end
+
+      log =
+        capture_log([level: :warning], fn ->
+          assert :ok = AppState.resync_app_state(queryable, store, [:regular_high])
+        end)
+
+      refute log =~ "[AppStateDiag]"
+    end
+
+    test "emits chat mutations in requested collection order" do
+      store = start_store()
+      {:ok, emitter} = EventEmitter.start_link()
+      parent = self()
+      _unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+      high_patch_binary =
+        encode_patch_binary!(
+          %{
+            type: :regular_high,
+            index: ["mute", "high@s.whatsapp.net"],
+            sync_action: %Syncd.SyncActionValue{
+              timestamp: 1_710_000_000,
+              mute_action: %Syncd.MuteAction{
+                muted: true,
+                mute_end_timestamp: 1_710_086_400
+              }
+            },
+            api_version: 2,
+            operation: :set
+          },
+          Codec.new_lt_hash_state(),
+          :binary.copy(<<0x51>>, 16)
+        )
+
+      regular_patch_binary =
+        encode_patch_binary!(
+          %{
+            type: :regular,
+            index: ["mute", "regular@s.whatsapp.net"],
+            sync_action: %Syncd.SyncActionValue{
+              timestamp: 1_710_000_001,
+              mute_action: %Syncd.MuteAction{
+                muted: true,
+                mute_end_timestamp: 1_710_172_800
+              }
+            },
+            api_version: 2,
+            operation: :set
+          },
+          Codec.new_lt_hash_state(),
+          :binary.copy(<<0x52>>, 16)
+        )
+
+      queryable = fn _node ->
+        {:ok,
+         %{
+           tag: "iq",
+           attrs: %{},
+           content: [
+             %{
+               tag: "sync",
+               attrs: %{},
+               content: [
+                 %{
+                   tag: "collection",
+                   attrs: %{
+                     "name" => "regular_high",
+                     "version" => "1",
+                     "has_more_patches" => "false"
+                   },
+                   content: [
+                     %{tag: "patch", attrs: %{}, content: high_patch_binary}
+                   ]
+                 },
+                 %{
+                   tag: "collection",
+                   attrs: %{
+                     "name" => "regular",
+                     "version" => "1",
+                     "has_more_patches" => "false"
+                   },
+                   content: [
+                     %{tag: "patch", attrs: %{}, content: regular_patch_binary}
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+      end
+
+      assert :ok =
+               AppState.resync_app_state(queryable, store, [:regular_high, :regular],
+                 event_emitter: emitter
+               )
+
+      assert_receive {:events,
+                      %{
+                        chats_update: [
+                          %{id: "high@s.whatsapp.net", mute_end_time: 1_710_086_400},
+                          %{id: "regular@s.whatsapp.net", mute_end_time: 1_710_172_800}
+                        ]
+                      }},
+                     300
     end
 
     test "uses JS-parity MAC defaults for version 0 patches during a fresh sync" do

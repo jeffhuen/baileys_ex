@@ -569,6 +569,66 @@ defmodule BaileysEx.Syncd.CodecTest do
       assert decoded.index == ["mute", "user@s.whatsapp.net"]
       assert %{"[\"mute\",\"user@s.whatsapp.net\"]" => ^decoded} = mutation_map
     end
+
+    test "decode_patches/7 preserves mutation order across multiple patches" do
+      get_key = &mock_get_key/1
+
+      mute_patch_create = %{
+        type: :regular_high,
+        index: ["mute", "first@s.whatsapp.net"],
+        sync_action: %Syncd.SyncActionValue{
+          timestamp: 1_710_000_000,
+          mute_action: %Syncd.MuteAction{muted: true, mute_end_timestamp: 1_710_086_400}
+        },
+        api_version: 2,
+        operation: :set
+      }
+
+      pin_patch_create = %{
+        type: :regular_high,
+        index: ["pin_v1", "second@s.whatsapp.net"],
+        sync_action: %Syncd.SyncActionValue{
+          timestamp: 1_710_000_001,
+          pin_action: %Syncd.PinAction{pinned: true}
+        },
+        api_version: 5,
+        operation: :set
+      }
+
+      {:ok, %{patch: mute_patch, state: first_state}} =
+        Codec.encode_syncd_patch(
+          mute_patch_create,
+          @key_id_b64,
+          Codec.new_lt_hash_state(),
+          get_key,
+          iv: :binary.copy(<<0x42>>, 16)
+        )
+
+      {:ok, %{patch: pin_patch, state: second_state}} =
+        Codec.encode_syncd_patch(
+          pin_patch_create,
+          @key_id_b64,
+          first_state,
+          get_key,
+          iv: :binary.copy(<<0x43>>, 16)
+        )
+
+      mute_patch = %{mute_patch | version: %Syncd.SyncdVersion{version: first_state.version}}
+      pin_patch = %{pin_patch | version: %Syncd.SyncdVersion{version: second_state.version}}
+
+      assert {:ok, %{mutation_order: [first, second]}} =
+               Codec.decode_patches(
+                 :regular_high,
+                 [mute_patch, pin_patch],
+                 Codec.new_lt_hash_state(),
+                 get_key,
+                 nil,
+                 true
+               )
+
+      assert first.index == ["mute", "first@s.whatsapp.net"]
+      assert second.index == ["pin_v1", "second@s.whatsapp.net"]
+    end
   end
 
   # ============================================================================

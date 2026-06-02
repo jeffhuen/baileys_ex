@@ -459,53 +459,41 @@ defmodule BaileysEx.Message.Receiver do
   defp unavailable_message_age_seconds(_received_message, opts), do: now_seconds(opts)
 
   defp log_received_message(received_message) do
-    if logger_level_enabled?(:debug) do
-      do_log_received_message(received_message)
-    else
-      :ok
-    end
-  end
+    Logger.debug(fn ->
+      msg = received_message[:message]
 
-  defp logger_level_enabled?(level) do
-    Logger.compare_levels(Logger.level(), level) != :gt
-  end
+      msg_type =
+        cond do
+          is_nil(msg) ->
+            "nil_message"
 
-  defp do_log_received_message(received_message) do
-    msg = received_message[:message]
+          is_struct(msg) ->
+            msg.__struct__ |> Module.split() |> List.last()
 
-    msg_type =
-      cond do
-        is_nil(msg) ->
-          "nil_message"
+          is_map(msg) ->
+            "map(#{Map.keys(msg) |> Enum.reject(&is_nil(Map.get(msg, &1))) |> inspect()})"
 
-        is_struct(msg) ->
-          msg.__struct__ |> Module.split() |> List.last()
+          true ->
+            inspect(msg)
+        end
 
-        is_map(msg) ->
-          "map(#{Map.keys(msg) |> Enum.reject(&is_nil(Map.get(msg, &1))) |> inspect()})"
+      # Find the non-nil content field in the proto message
+      content_fields =
+        if is_struct(msg) do
+          msg
+          |> Map.from_struct()
+          |> Enum.filter(fn {_k, v} -> v != nil and v != "" and v != [] and v != 0 end)
+          |> Enum.map(fn {k, _v} -> k end)
+        else
+          []
+        end
 
-        true ->
-          inspect(msg)
-      end
-
-    # Find the non-nil content field in the proto message
-    content_fields =
-      if is_struct(msg) do
-        msg
-        |> Map.from_struct()
-        |> Enum.filter(fn {_k, v} -> v != nil and v != "" and v != [] and v != 0 end)
-        |> Enum.map(fn {k, _v} -> k end)
-      else
-        []
-      end
-
-    Logger.debug(
       "[Receiver] message emitted — id=#{received_message[:key][:id]}, " <>
         "from=#{received_message[:key][:remote_jid]}, " <>
         "from_me=#{inspect(received_message[:key][:from_me])}, " <>
         "push_name=#{inspect(received_message[:push_name])}, " <>
         "msg_type=#{msg_type}, content_fields=#{inspect(content_fields)}"
-    )
+    end)
 
     :ok
   end

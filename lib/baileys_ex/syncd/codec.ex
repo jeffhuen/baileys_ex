@@ -661,35 +661,37 @@ defmodule BaileysEx.Syncd.Codec do
       ) do
     new_state = %{initial | index_value_map: Map.new(initial.index_value_map)}
     mutation_map = %{}
-    mutation_order = []
+    mutation_order_reversed = []
     external_blob_fetcher = Keyword.get(opts, :external_blob_fetcher, &download_external_blob/1)
 
     result =
-      Enum.reduce_while(patches, {:ok, new_state, mutation_map, mutation_order}, fn syncd,
-                                                                                    {:ok, state,
-                                                                                     mut_map,
-                                                                                     mut_order} ->
-        case maybe_expand_external_mutations(syncd, external_blob_fetcher) do
-          {:ok, expanded_syncd} ->
-            expanded_syncd
-            |> decode_patch_result(
-              name,
-              state,
-              mut_map,
-              mut_order,
-              get_app_state_sync_key,
-              minimum_version_number,
-              validate_macs
-            )
-            |> continue_patch_reduction()
+      Enum.reduce_while(
+        patches,
+        {:ok, new_state, mutation_map, mutation_order_reversed},
+        fn syncd, {:ok, state, mut_map, mut_order_reversed} ->
+          case maybe_expand_external_mutations(syncd, external_blob_fetcher) do
+            {:ok, expanded_syncd} ->
+              expanded_syncd
+              |> decode_patch_result(
+                name,
+                state,
+                mut_map,
+                mut_order_reversed,
+                get_app_state_sync_key,
+                minimum_version_number,
+                validate_macs
+              )
+              |> continue_patch_reduction()
 
-          {:error, _} = err ->
-            {:halt, err}
+            {:error, _} = err ->
+              {:halt, err}
+          end
         end
-      end)
+      )
 
     case result do
-      {:ok, final_state, final_map, final_order} ->
+      {:ok, final_state, final_map, final_order_reversed} ->
+        final_order = Enum.reverse(final_order_reversed)
         {:ok, %{state: final_state, mutation_map: final_map, mutation_order: final_order}}
 
       {:error, _} = err ->
@@ -944,7 +946,7 @@ defmodule BaileysEx.Syncd.Codec do
          name,
          state,
          mutation_map,
-         mutation_order,
+         mutation_order_reversed,
          get_app_state_sync_key,
          minimum_version_number,
          validate_macs
@@ -965,7 +967,7 @@ defmodule BaileysEx.Syncd.Codec do
            ) do
       patch_mutation_order = Enum.reverse(patch_mutations)
       next_mutation_map = Map.merge(mutation_map, mutation_order_to_map(patch_mutation_order))
-      next_mutation_order = mutation_order ++ patch_mutation_order
+      next_mutation_order_reversed = patch_mutations ++ mutation_order_reversed
       verified_state = %{state | hash: hash, index_value_map: ivm}
 
       case verify_snapshot_mac(
@@ -976,16 +978,16 @@ defmodule BaileysEx.Syncd.Codec do
              get_app_state_sync_key
            ) do
         :ok ->
-          {:ok, verified_state, next_mutation_map, next_mutation_order}
+          {:ok, verified_state, next_mutation_map, next_mutation_order_reversed}
 
         {:error, :invalid_snapshot_mac} ->
-          {:break, verified_state, next_mutation_map, next_mutation_order}
+          {:break, verified_state, next_mutation_map, next_mutation_order_reversed}
 
         {:error, reason} = err ->
           if missing_key_error?(reason) do
             err
           else
-            {:skip_patch, state, mutation_map, mutation_order}
+            {:skip_patch, state, mutation_map, mutation_order_reversed}
           end
       end
     else
@@ -993,7 +995,7 @@ defmodule BaileysEx.Syncd.Codec do
         if missing_key_error?(reason) do
           err
         else
-          {:skip_patch, state, mutation_map, mutation_order}
+          {:skip_patch, state, mutation_map, mutation_order_reversed}
         end
     end
   end

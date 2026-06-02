@@ -97,7 +97,7 @@ defmodule BaileysEx.Feature.AppState do
              force_snapshot_collections: MapSet.new(),
              on_blocked_collection: context.on_blocked_collection,
              global_mutation_map: %{},
-             global_mutation_order: []
+             global_mutation_order_chunks: []
            }) do
         {:ok,
          %{global_mutation_map: final_mutations, global_mutation_order: final_mutation_order}} ->
@@ -624,7 +624,7 @@ defmodule BaileysEx.Feature.AppState do
   # Resync loop — chats.ts:500-624
   # ============================================================================
 
-  defp do_resync_loop(_context, [], loop_state), do: {:ok, loop_state}
+  defp do_resync_loop(_context, [], loop_state), do: {:ok, finalize_mutation_order(loop_state)}
 
   defp do_resync_loop(context, collections_to_handle, loop_state) do
     Logger.warning(
@@ -751,15 +751,15 @@ defmodule BaileysEx.Feature.AppState do
       {:ok,
        %{
          loop_state
-         | global_mutation_map: mutation_map,
-           global_mutation_order: mutation_order,
+         | global_mutation_map: Map.merge(loop_state.global_mutation_map, mutation_map),
+           global_mutation_order_chunks: prepend_mutation_order_chunk(loop_state, mutation_order),
            initial_version_map: initial_version_map
        }}
     end
   end
 
-  defp maybe_decode_snapshot(_name, nil, state, loop_state, _context) do
-    {:ok, state, loop_state.global_mutation_map, loop_state.global_mutation_order}
+  defp maybe_decode_snapshot(_name, nil, state, _loop_state, _context) do
+    {:ok, state, %{}, []}
   end
 
   defp maybe_decode_snapshot(name, snapshot, _state, loop_state, context) do
@@ -773,8 +773,7 @@ defmodule BaileysEx.Feature.AppState do
       {:ok, %{state: new_state, mutation_map: mutation_map, mutation_order: mutation_order}} ->
         put_app_state_sync_version(context.state_store, name, new_state)
 
-        {:ok, new_state, Map.merge(loop_state.global_mutation_map, mutation_map),
-         loop_state.global_mutation_order ++ mutation_order}
+        {:ok, new_state, mutation_map, mutation_order}
 
       {:error, _} = err ->
         err
@@ -812,12 +811,38 @@ defmodule BaileysEx.Feature.AppState do
         put_app_state_sync_version(context.state_store, name, new_state)
 
         {:ok, new_state, Map.merge(mutation_map, patch_mutation_map),
-         mutation_order ++ patch_mutation_order,
+         combine_mutation_order(mutation_order, patch_mutation_order),
          Map.put(loop_state.initial_version_map, name, new_state.version)}
 
       {:error, _} = err ->
         err
     end
+  end
+
+  defp finalize_mutation_order(loop_state) do
+    mutation_order =
+      loop_state
+      |> Map.get(:global_mutation_order_chunks, [])
+      |> Enum.reverse()
+      |> List.flatten()
+
+    Map.put(loop_state, :global_mutation_order, mutation_order)
+  end
+
+  defp prepend_mutation_order_chunk(loop_state, []),
+    do: Map.get(loop_state, :global_mutation_order_chunks, [])
+
+  defp prepend_mutation_order_chunk(loop_state, mutation_order) do
+    [mutation_order | Map.get(loop_state, :global_mutation_order_chunks, [])]
+  end
+
+  defp combine_mutation_order([], patch_mutation_order), do: patch_mutation_order
+  defp combine_mutation_order(mutation_order, []), do: mutation_order
+
+  defp combine_mutation_order(mutation_order, patch_mutation_order) do
+    mutation_order
+    |> Enum.reverse()
+    |> Enum.reduce(patch_mutation_order, fn mutation, acc -> [mutation | acc] end)
   end
 
   defp maybe_remove_collection(loop_state, _name, true), do: loop_state

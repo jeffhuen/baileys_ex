@@ -459,6 +459,18 @@ defmodule BaileysEx.Message.Receiver do
   defp unavailable_message_age_seconds(_received_message, opts), do: now_seconds(opts)
 
   defp log_received_message(received_message) do
+    if logger_level_enabled?(:debug) do
+      do_log_received_message(received_message)
+    else
+      :ok
+    end
+  end
+
+  defp logger_level_enabled?(level) do
+    Logger.compare_levels(Logger.level(), level) != :gt
+  end
+
+  defp do_log_received_message(received_message) do
     msg = received_message[:message]
 
     msg_type =
@@ -487,7 +499,7 @@ defmodule BaileysEx.Message.Receiver do
         []
       end
 
-    Logger.warning(
+    Logger.debug(
       "[Receiver] message emitted — id=#{received_message[:key][:id]}, " <>
         "from=#{received_message[:key][:remote_jid]}, " <>
         "from_me=#{inspect(received_message[:key][:from_me])}, " <>

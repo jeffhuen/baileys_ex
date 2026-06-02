@@ -720,6 +720,8 @@ defmodule BaileysEx.Feature.AppState do
   end
 
   defp process_collections(decoded, collections_to_handle, states, loop_state, context) do
+    # Baileys processes decoded response order; WA echoes requested order in practice.
+    # Iterate the request list here so collection ordering is explicit on the BEAM.
     Enum.reduce(collections_to_handle, Map.put(loop_state, :remaining, collections_to_handle), fn
       name, acc ->
         with {:ok, collection} <- Map.fetch(decoded, name),

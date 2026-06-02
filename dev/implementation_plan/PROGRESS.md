@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-03-20
+> Last updated: 2026-06-02
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -28,6 +28,7 @@
 | 14 | Verified Behavior Parity Gaps | 5 | COMPLETE | 12 | — |
 | 15 | Persistence Architecture Alignment | 6 | COMPLETE | 7, 12 | — |
 | 16 | Signal Store Transaction Redesign | 6 | COMPLETE | 5, 15 | — |
+| 17 | Baileys rc13 Upstream Refresh | 6 | COMPLETE | 16 | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -1121,13 +1122,85 @@ migrate to the new contract.
 
 ---
 
+## Phase 17: Baileys rc13 Upstream Refresh
+
+**Status:** COMPLETE · **Depends on:** Phase 16 · **Blocks:** —
+
+This phase retargets the project from Baileys rc9 to Baileys v7.0.0-rc13.
+The latest rc12/rc13 fixes and the rc10-rc13 protocol deltas identified in this
+pass are ported or audited as Elixir-native/not-applicable implementation
+details. App-state resilience, offline batching, and the fixture-backed parity
+surfaces are now closed against the rc13 reference.
+
+### Tasks
+
+- [x] 17.1 Compare official rc9/rc10/rc12/rc13 source tags and identify the source-backed latest-fix set
+- [x] 17.2 Port rc12/rc13 message receive and presence fixes
+- [x] 17.3 Replace or repin `dev/reference/Baileys-master/` to the rc13 target source
+- [x] 17.4 Audit rc10 source deltas by callsite
+- [x] 17.4a Port bounded rc10-rc13 observable deltas: QR format/version, retry
+  and unavailable-message resend, 463 account restriction updates, WMex account
+  helpers, device-list notifications, trusted-contact token lifecycle, peer
+  `tctoken` exclusion, USync username, album/`@all`, group usernames/counts,
+  newsletter v2, media direct-path fallback, MEX notifications, app-state
+  resilience, and offline batching
+- [x] 17.5 Regenerate changed rc9 parity fixtures against rc13 where behavior changed
+- [x] 17.6 Finish source-backed rc10 audit for app-state resilience/offline batching and fixture-backed behavior outside the bounded deltas
+
+### Acceptance Criteria
+
+- [x] Project-level docs name Baileys v7.0.0-rc13 as the target reference
+- [x] rc12 self-only protocolMessage guard is covered by a regression test
+- [x] rc13 peer-routed self-stanza decoding is covered by a regression test
+- [x] rc12 group online presence count parsing is covered by a regression test
+- [x] `dev/reference/Baileys-master/` describes or contains the rc13 target source
+- [x] Bounded rc10-rc13 deltas above are covered by focused regression tests
+- [x] The rc10 delta audit is recorded in `dev/parity/` with a concrete owner for every source-backed gap
+- [x] Changed wire/parity fixtures are regenerated from rc13 and committed, or audited as unchanged primitive vectors that still match rc13 behavior
+
+### Files
+
+| File | Status |
+|------|--------|
+| `AGENTS.md` | ✅ |
+| `CLAUDE.md` | ✅ |
+| `README.md` | ✅ |
+| `dev/implementation_plan/00-overview.md` | ✅ |
+| `dev/implementation_plan/CLAUDE.md` | ✅ |
+| `dev/implementation_plan/PROGRESS.md` | ✅ |
+| `dev/implementation_plan/17-rc13-upstream-refresh.md` | ✅ |
+| `dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md` | ✅ |
+| `dev/reference/Baileys-master/` | ✅ |
+| `lib/baileys_ex/message/decode.ex` | ✅ |
+| `lib/baileys_ex/message/receiver.ex` | ✅ |
+| `lib/baileys_ex/feature/presence.ex` | ✅ |
+| `lib/baileys_ex/feature/account.ex` | ✅ |
+| `lib/baileys_ex/feature/tc_token.ex` | ✅ |
+| `lib/baileys_ex/message/sender.ex` | ✅ |
+| `lib/baileys_ex/message/notification_handler.ex` | ✅ |
+| `lib/baileys_ex/message/retry.ex` | ✅ |
+| `lib/baileys_ex/media/download.ex` | ✅ |
+| `lib/baileys_ex/protocol/usync.ex` | ✅ |
+| `test/baileys_ex/message/decode_test.exs` | ✅ |
+| `test/baileys_ex/message/receiver_test.exs` | ✅ |
+| `test/baileys_ex/feature/presence_test.exs` | ✅ |
+| `test/baileys_ex/feature/account_test.exs` | ✅ |
+| `test/baileys_ex/feature/tc_token_test.exs` | ✅ |
+| `test/baileys_ex/message/sender_test.exs` | ✅ |
+| `test/baileys_ex/message/notification_handler_test.exs` | ✅ |
+| `test/baileys_ex/message/retry_test.exs` | ✅ |
+| `test/baileys_ex/media/download_test.exs` | ✅ |
+| `test/baileys_ex/protocol/usync_test.exs` | ✅ |
+
+---
+
 ## Totals
 
 | Metric | Count |
 |--------|-------|
-| Phases | 16 |
-| Tasks | 127 |
-| Acceptance Criteria | 224 |
+| Phases | 17 |
+| Tasks | 133 |
+| Acceptance Criteria | 231 |
 | Source Files | ~110 |
 | Test Files | ~45 |
 | GAP items resolved | 48/48 |

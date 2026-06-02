@@ -1252,14 +1252,19 @@ defmodule BaileysEx.Auth.FilePersistence do
   defp encode_tctoken(value) when is_map(value) do
     %{
       "timestamp" => value |> fetch_map_value(:timestamp) |> encode_json_safe(),
-      "token" => value |> fetch_map_value(:token) |> encode_json_safe()
+      "token" => value |> fetch_map_value(:token) |> encode_json_safe(),
+      "senderTimestamp" => value |> fetch_map_value(:sender_timestamp) |> encode_json_safe()
     }
   end
 
   defp decode_tctoken(value) when is_map(value) do
     %{
       timestamp: value |> Map.get("timestamp") |> decode_json_safe(),
-      token: value |> Map.get("token") |> decode_json_safe()
+      token: value |> Map.get("token") |> decode_json_safe(),
+      sender_timestamp:
+        value
+        |> Map.get("senderTimestamp", Map.get(value, "sender_timestamp"))
+        |> decode_json_safe()
     }
   end
 

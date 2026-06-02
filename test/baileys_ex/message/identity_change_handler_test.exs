@@ -10,6 +10,7 @@ defmodule BaileysEx.Message.IdentityChangeHandlerTest do
     {repo, _store} = MessageSignalHelpers.new_repo()
     session = MessageSignalHelpers.session_fixture()
     repo = inject_session!(repo, "15551234567@s.whatsapp.net", session)
+    parent = self()
 
     node = %BinaryNode{
       tag: "notification",
@@ -21,8 +22,11 @@ defmodule BaileysEx.Message.IdentityChangeHandlerTest do
       signal_repository: repo,
       me_id: "15550001111@s.whatsapp.net",
       me_lid: "15550001111@lid",
+      on_before_session_refresh_fun: fn "15551234567@s.whatsapp.net" ->
+        send(parent, :before_session_refresh)
+      end,
       assert_sessions_fun: fn ctx, ["15551234567@s.whatsapp.net"], true ->
-        send(self(), {:assert_sessions, ctx.signal_repository})
+        send(parent, {:assert_sessions, ctx.signal_repository})
         {:ok, ctx, true}
       end
     }
@@ -31,7 +35,34 @@ defmodule BaileysEx.Message.IdentityChangeHandlerTest do
              IdentityChangeHandler.handle(node, context, %{}, now_ms: 1_000)
 
     assert cache["15551234567@s.whatsapp.net"] == 1_000
+    assert_received :before_session_refresh
     assert_received {:assert_sessions, %Repository{}}
+  end
+
+  test "handle/4 does not invoke the before-refresh callback for skipped identity changes" do
+    {repo, _store} = MessageSignalHelpers.new_repo()
+    parent = self()
+
+    assert {:ok, %{action: :skipped_no_session}, _context, _cache} =
+             IdentityChangeHandler.handle(
+               %BinaryNode{
+                 tag: "notification",
+                 attrs: %{"type" => "encrypt", "from" => "15551234567@s.whatsapp.net"},
+                 content: [%BinaryNode{tag: "identity", attrs: %{}, content: nil}]
+               },
+               %{
+                 signal_repository: repo,
+                 me_id: "15550001111@s.whatsapp.net",
+                 me_lid: nil,
+                 on_before_session_refresh_fun: fn _jid ->
+                   send(parent, :before_session_refresh)
+                 end
+               },
+               %{},
+               now_ms: 1_000
+             )
+
+    refute_received :before_session_refresh
   end
 
   test "handle/4 skips companion devices, self-primary, offline nodes, missing sessions, and debounces repeats" do

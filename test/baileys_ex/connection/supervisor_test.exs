@@ -542,6 +542,128 @@ defmodule BaileysEx.Connection.SupervisorTest do
                    500
   end
 
+  test "send_message issues trusted-contact tokens after eligible direct sends" do
+    name = {:phase17_test, System.unique_integer([:positive])}
+    {repo, _signal_store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    assert {:ok, repo} =
+             Repository.inject_e2e_session(repo, %{
+               jid: "15551234567:0@s.whatsapp.net",
+               session: session
+             })
+
+    query_handler = fn
+      %BinaryNode{
+        attrs: %{"xmlns" => "privacy", "type" => "set"},
+        content: [
+          %BinaryNode{
+            tag: "tokens",
+            content: [
+              %BinaryNode{
+                tag: "token",
+                attrs: %{
+                  "jid" => "15551234567@s.whatsapp.net",
+                  "type" => "trusted_contact"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "tokens",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "token",
+                   attrs: %{"type" => "trusted_contact", "t" => "1710001000"},
+                   content: {:binary, "issued-token"}
+                 }
+               ]
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:error, :unexpected_query}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               signal_repository: repo,
+               test_pid: self(),
+               query_handler: query_handler,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert %SignalStore{} = signal_store = Supervisor.signal_store(supervisor)
+
+    assert :ok =
+             SignalStore.set(signal_store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => []}
+             })
+
+    jid = %BaileysEx.JID{user: "15551234567", server: "s.whatsapp.net"}
+
+    assert {:ok, %{id: "3EB0COORDTC"}} =
+             Supervisor.send_message(supervisor, jid, %{text: "hello"},
+               message_id_fun: fn _me_id -> "3EB0COORDTC" end
+             )
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{"id" => "3EB0COORDTC", "to" => "15551234567@s.whatsapp.net"}
+                    }},
+                   500
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "privacy", "type" => "set"},
+                      content: [
+                        %BinaryNode{
+                          tag: "tokens",
+                          content: [
+                            %BinaryNode{
+                              attrs: %{
+                                "jid" => "15551234567@s.whatsapp.net",
+                                "type" => "trusted_contact"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }, _timeout},
+                   500
+
+    assert_eventually(fn ->
+      match?(
+        %{
+          "15551234567@s.whatsapp.net" => %{
+            token: "issued-token",
+            timestamp: "1710001000",
+            sender_timestamp: sender_timestamp
+          }
+        }
+        when is_integer(sender_timestamp),
+        SignalStore.get(signal_store, :tctoken, ["15551234567@s.whatsapp.net"])
+      )
+    end)
+  end
+
   test "supervisor persists creds updates into the store" do
     name = {:phase6_test, System.unique_integer([:positive])}
 
@@ -895,6 +1017,69 @@ defmodule BaileysEx.Connection.SupervisorTest do
                    50
 
     assert :sys.get_state(coordinator_pid).app_state_sync_ref == nil
+  end
+
+  test "app state key arrival resyncs blocked collections outside active initial sync" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "sync", attrs: %{}, content: []}]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               query_handler: query_handler,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+
+    :sys.replace_state(coordinator_pid, fn state -> %{state | sync_state: :online} end)
+    send(coordinator_pid, {:app_state_collection_blocked, :regular_high})
+
+    assert_eventually(fn ->
+      :regular_high in :sys.get_state(coordinator_pid).blocked_app_state_collections
+    end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "AQIDBA=="})
+
+    assert_receive {:fake_socket_sync_creds_update, %{my_app_state_key_id: "AQIDBA=="}}, 200
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "w:sync:app:state"},
+                      content: [
+                        %BinaryNode{
+                          tag: "sync",
+                          content: [
+                            %BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}}
+                          ]
+                        }
+                      ]
+                    }, _timeout},
+                   300
+
+    assert_eventually(fn ->
+      MapSet.size(:sys.get_state(coordinator_pid).blocked_app_state_collections) == 0
+    end)
   end
 
   test "connection open fires init queries, updates store caches, and marks presence available" do
@@ -1600,6 +1785,38 @@ defmodule BaileysEx.Connection.SupervisorTest do
   test "socket_node receipt, ack, and notification events are routed through the messaging handlers" do
     name = {:phase8_test, System.unique_integer([:positive])}
 
+    query_handler = fn node, _timeout ->
+      [
+        %BinaryNode{
+          tag: "query",
+          attrs: %{"query_id" => "23983697327930364"}
+        }
+      ] = node.content
+
+      {:ok,
+       %BinaryNode{
+         tag: "iq",
+         attrs: %{"type" => "result"},
+         content: [
+           %BinaryNode{
+             tag: "result",
+             attrs: %{},
+             content:
+               {:binary,
+                JSON.encode!(%{
+                  "data" => %{
+                    "xwa2_fetch_account_reachout_timelock" => %{
+                      "is_active" => true,
+                      "time_enforcement_ends" => "1710000000",
+                      "enforcement_type" => "WEB_COMPANION_ONLY"
+                    }
+                  }
+                })}
+           }
+         ]
+       }}
+    end
+
     assert {:ok, supervisor} =
              Supervisor.start_link(
                name: name,
@@ -1607,6 +1824,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
                socket_module: FakeSocket,
                test_pid: self(),
+               query_handler: query_handler,
                transport: {NoopTransport, %{}}
              )
 
@@ -1617,6 +1835,17 @@ defmodule BaileysEx.Connection.SupervisorTest do
     signal_store =
       child_pid!(supervisor, SignalStoreMemory)
       |> SignalStoreMemory.wrap()
+
+    assert :ok =
+             SignalStoreMemory.set(signal_store, %{
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{
+                   token: "",
+                   timestamp: "100",
+                   sender_timestamp: 1_710_000_804
+                 }
+               }
+             })
 
     parent = self()
     unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:events, &1}))
@@ -1637,7 +1866,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
         "class" => "message",
         "from" => "15551234567@s.whatsapp.net",
         "id" => "ack-msg-1",
-        "error" => "406"
+        "error" => "463"
       },
       content: nil
     }
@@ -1720,7 +1949,44 @@ defmodule BaileysEx.Connection.SupervisorTest do
                     }}
 
     assert_receive(
-      {:events, %{messages_update: [%{key: %{id: "ack-msg-1"}, update: %{status: :ERROR}}]}},
+      {:events,
+       %{
+         messages_update: [
+           %{
+             key: %{id: "ack-msg-1"},
+             update: %{
+               status: :ERROR,
+               message_stub_parameters: ["463", "Your account has been restricted"]
+             }
+           }
+         ]
+       }},
+      500
+    )
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{"xmlns" => "w:mex"},
+                      content: [
+                        %BinaryNode{
+                          tag: "query",
+                          attrs: %{"query_id" => "23983697327930364"}
+                        }
+                      ]
+                    }, 60_000}
+
+    assert_receive(
+      {:events,
+       %{
+         connection_update: %{
+           reachout_time_lock: %{
+             is_active: true,
+             time_enforcement_ends: ~U[2024-03-09 16:00:00Z],
+             enforcement_type: "WEB_COMPANION_ONLY"
+           }
+         }
+       }},
       500
     )
 
@@ -1760,7 +2026,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_eventually(fn ->
       SignalStoreMemory.get(signal_store, :tctoken, ["15551234567@s.whatsapp.net"])[
         "15551234567@s.whatsapp.net"
-      ] == %{token: "trusted-token", timestamp: "1710000803"}
+      ] == %{token: "trusted-token", timestamp: "1710000803", sender_timestamp: 1_710_000_804}
     end)
 
     unsubscribe.()
@@ -1844,6 +2110,44 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     key_bundle_response = fn
       %BinaryNode{
+        attrs: %{"xmlns" => "privacy", "type" => "set"},
+        content: [
+          %BinaryNode{
+            tag: "tokens",
+            content: [
+              %BinaryNode{
+                tag: "token",
+                attrs: %{
+                  "jid" => "15551234567@s.whatsapp.net",
+                  "t" => "4102444800",
+                  "type" => "trusted_contact"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "tokens",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "token",
+                   attrs: %{"type" => "trusted_contact", "t" => "4102444900"},
+                   content: {:binary, "fresh-token"}
+                 }
+               ]
+             }
+           ]
+         }}
+
+      %BinaryNode{
         attrs: %{"xmlns" => "encrypt", "type" => "get"},
         content: [%BinaryNode{tag: "key", content: [%BinaryNode{tag: "user", attrs: user_attrs}]}]
       },
@@ -1921,6 +2225,26 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
 
+    signal_store =
+      %SignalStore{
+        module: SignalStoreMemory,
+        ref:
+          supervisor
+          |> child_pid!(SignalStoreMemory)
+          |> SignalStoreMemory.wrap()
+      }
+
+    assert :ok =
+             SignalStore.set(signal_store, %{
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{
+                   token: "",
+                   timestamp: "100",
+                   sender_timestamp: 4_102_444_800
+                 }
+               }
+             })
+
     notification = %BinaryNode{
       tag: "notification",
       attrs: %{"type" => "encrypt", "from" => "15551234567@s.whatsapp.net"},
@@ -1948,6 +2272,39 @@ defmodule BaileysEx.Connection.SupervisorTest do
                         }
                       ]
                     }, _timeout}
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "privacy", "type" => "set"},
+                      content: [
+                        %BinaryNode{
+                          tag: "tokens",
+                          content: [
+                            %BinaryNode{
+                              tag: "token",
+                              attrs: %{
+                                "jid" => "15551234567@s.whatsapp.net",
+                                "t" => "4102444800",
+                                "type" => "trusted_contact"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }, _timeout}
+
+    assert_eventually(fn ->
+      match?(
+        %{
+          "15551234567@s.whatsapp.net" => %{
+            token: "fresh-token",
+            timestamp: "4102444900",
+            sender_timestamp: 4_102_444_800
+          }
+        },
+        SignalStore.get(signal_store, :tctoken, ["15551234567@s.whatsapp.net"])
+      )
+    end)
   end
 
   defp child_pid!(supervisor, child_id) do

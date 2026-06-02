@@ -101,7 +101,8 @@ defmodule BaileysEx.Feature.Presence do
      %{
        last_known_presence: if(attrs["type"] == "unavailable", do: :unavailable, else: :available)
      }
-     |> maybe_put_last_seen(attrs["last"])}
+     |> maybe_put_last_seen(attrs["last"])
+     |> maybe_put_group_online_count(attrs["count"])}
   end
 
   defp parse_presence(%BinaryNode{tag: "chatstate", content: [%BinaryNode{} = child | _rest]}) do
@@ -178,6 +179,15 @@ defmodule BaileysEx.Feature.Presence do
   defp maybe_put_last_seen(presence, value) do
     case Integer.parse(value) do
       {last_seen, ""} -> Map.put(presence, :last_seen, last_seen)
+      _ -> presence
+    end
+  end
+
+  defp maybe_put_group_online_count(presence, nil), do: presence
+
+  defp maybe_put_group_online_count(presence, value) do
+    case Integer.parse(value) do
+      {count, ""} -> Map.put(presence, :group_online_count, count)
       _ -> presence
     end
   end

@@ -28,7 +28,7 @@ The branch name tells you which phase you are on. Cross-check it against the fir
 - Do not skip or reorder tasks in PROGRESS.md. Work sequentially within a phase.
 - Every task must pass all delivery gates before committing.
 - If a task's phase file is not yet written, stop and report — do not invent scope.
-- **Baileys 7.00rc9 is the spec.** `dev/reference/Baileys-master/` is the authoritative
+- **Baileys v7.0.0-rc13 is the spec.** `dev/reference/Baileys-master/` is the authoritative
   reference for all wire behaviour, protocol semantics, message formats, handshake flows,
   feature scope, and public compatibility promises. When unsure what to implement or how
   something should behave, **read the Baileys source — do not ask, do not deliberate, do
@@ -165,7 +165,7 @@ Every task must pass these gates before committing.
 
 **Gate 8 — Baileys source parity (manual review required):**
 - Cross-check the touched behavior against `dev/reference/Baileys-master/` at the relevant callsites, not just one obvious export.
-- The implementation must match Baileys 7.00rc9 observable behavior for the same inputs: wire nodes, event output, helper return shape, config semantics, and error behavior.
+- The implementation must match Baileys v7.0.0-rc13 observable behavior for the same inputs: wire nodes, event output, helper return shape, config semantics, and error behavior.
 - Do not invent new protocol behavior. If Baileys does not do it, we do not add it under the name of parity.
 - If the parity understanding changes, update the active phase file, `PROGRESS.md`, and `dev/parity/` artifacts in the same task.
 
@@ -312,7 +312,7 @@ Each file (`01-foundation.md` through `12-polish.md`) is a self-contained phase.
    its dependencies are complete.
 4. **Check acceptance criteria** at the end of each phase — all must pass before
    moving on.
-5. **Baileys is the spec** — `dev/reference/Baileys-master/` (7.00rc9) is the
+5. **Baileys is the spec** — `dev/reference/Baileys-master/` (v7.0.0-rc13) is the
    authoritative reference. Read it first, don't guess or ask.
 
 ### First Step for Every Task

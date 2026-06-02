@@ -234,7 +234,7 @@ alerting, or tracing.
 ## Status
 
 BaileysEx is in **alpha**. The API surface is stabilizing but may change before
-1.0. The library tracks Baileys `7.00rc9` as its upstream reference for wire
+1.0. The library tracks Baileys `v7.0.0-rc13` as its upstream reference for wire
 behaviour and feature scope.
 
 ## Acknowledgements

@@ -7,7 +7,7 @@ defmodule BaileysEx.Media.DownloadTest do
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
   @tag :tmp_dir
-  test "download/2 decrypts media via direct_path fallback even when a non-mmg url is present",
+  test "download/2 uses direct_path with host parsed from a non-default media url",
        %{tmp_dir: tmp_dir} do
     parent = self()
     media_key = :binary.copy(<<5>>, 32)
@@ -25,14 +25,46 @@ defmodule BaileysEx.Media.DownloadTest do
     end
 
     message = %Message.ImageMessage{
-      url: "https://example.com/not-whatsapp",
+      url: "https://media-custom.whatsapp.net/not-whatsapp",
       media_key: media_key,
       direct_path: "/mms/image/file-1"
     }
 
     assert {:ok, ^plaintext} = Download.download(message, request_fun: request_fun)
 
-    assert_receive {:download_request, "mmg.whatsapp.net", "/mms/image/file-1", headers}
+    assert_receive {:download_request, "media-custom.whatsapp.net", "/mms/image/file-1", headers}
+
+    assert {"origin", "https://web.whatsapp.com"} in headers
+  end
+
+  @tag :tmp_dir
+  test "download/2 allows an explicit media host override for direct_path downloads",
+       %{tmp_dir: tmp_dir} do
+    parent = self()
+    media_key = :binary.copy(<<5>>, 32)
+    plaintext = "downloaded media payload"
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+
+    request_fun = fn request ->
+      uri = URI.parse(request[:url])
+      send(parent, {:download_request, uri.host, uri.path, List.wrap(request[:headers])})
+      {:ok, %Req.Response{status: 200, body: encrypted}}
+    end
+
+    message = %Message.ImageMessage{
+      url: "https://media-custom.whatsapp.net/not-whatsapp",
+      media_key: media_key,
+      direct_path: "/mms/image/file-1"
+    }
+
+    assert {:ok, ^plaintext} =
+             Download.download(message, request_fun: request_fun, host: "override.whatsapp.net")
+
+    assert_receive {:download_request, "override.whatsapp.net", "/mms/image/file-1", headers}
     assert {"origin", "https://web.whatsapp.com"} in headers
   end
 

@@ -264,23 +264,105 @@ defmodule BaileysEx.Protocol.Proto.MessageKey do
   end
 end
 
+defmodule BaileysEx.Protocol.Proto.MessageAssociation do
+  @moduledoc false
+
+  alias BaileysEx.Protocol.Proto.MessageKey
+  alias BaileysEx.Protocol.Proto.MessageSupport
+
+  @association_types %{
+    UNKNOWN: 0,
+    MEDIA_ALBUM: 1,
+    BOT_PLUGIN: 2,
+    EVENT_COVER_IMAGE: 3,
+    STATUS_POLL: 4,
+    HD_VIDEO_DUAL_UPLOAD: 5,
+    STATUS_EXTERNAL_RESHARE: 6,
+    MEDIA_POLL: 7,
+    STATUS_ADD_YOURS: 8,
+    STATUS_NOTIFICATION: 9,
+    HD_IMAGE_DUAL_UPLOAD: 10,
+    STICKER_ANNOTATION: 11,
+    MOTION_PHOTO: 12,
+    STATUS_LINK_ACTION: 13,
+    VIEW_ALL_REPLIES: 14,
+    STATUS_ADD_YOURS_AI_IMAGINE: 15,
+    STATUS_QUESTION: 16,
+    STATUS_ADD_YOURS_DIWALI: 17,
+    STATUS_REACTION: 18,
+    HEVC_VIDEO_DUAL_UPLOAD: 19
+  }
+
+  defstruct association_type: nil, parent_message_key: nil, message_index: nil
+
+  @type association_type ::
+          :UNKNOWN
+          | :MEDIA_ALBUM
+          | :BOT_PLUGIN
+          | :EVENT_COVER_IMAGE
+          | :STATUS_POLL
+          | :HD_VIDEO_DUAL_UPLOAD
+          | :STATUS_EXTERNAL_RESHARE
+          | :MEDIA_POLL
+          | :STATUS_ADD_YOURS
+          | :STATUS_NOTIFICATION
+          | :HD_IMAGE_DUAL_UPLOAD
+          | :STICKER_ANNOTATION
+          | :MOTION_PHOTO
+          | :STATUS_LINK_ACTION
+          | :VIEW_ALL_REPLIES
+          | :STATUS_ADD_YOURS_AI_IMAGINE
+          | :STATUS_QUESTION
+          | :STATUS_ADD_YOURS_DIWALI
+          | :STATUS_REACTION
+          | :HEVC_VIDEO_DUAL_UPLOAD
+          | non_neg_integer()
+
+  @type t :: %__MODULE__{
+          association_type: association_type() | nil,
+          parent_message_key: MessageKey.t() | nil,
+          message_index: integer() | nil
+        }
+
+  @spec encode(t()) :: binary()
+  def encode(%__MODULE__{} = message_association) do
+    MessageSupport.encode_fields(message_association,
+      association_type: {:enum, 1, @association_types},
+      parent_message_key: {:message, 2, MessageKey},
+      message_index: {:int, 3}
+    )
+  end
+
+  @spec decode(binary()) :: {:ok, t()} | {:error, term()}
+  def decode(binary) do
+    MessageSupport.decode_fields(binary, %__MODULE__{},
+      association_type: {:enum, 1, @association_types},
+      parent_message_key: {:message, 2, MessageKey},
+      message_index: {:int, 3}
+    )
+  end
+end
+
 defmodule BaileysEx.Protocol.Proto.MessageContextInfo do
   @moduledoc false
 
+  alias BaileysEx.Protocol.Proto.MessageAssociation
   alias BaileysEx.Protocol.Proto.MessageSupport
 
-  defstruct message_secret: nil, message_add_on_duration_in_secs: nil
+  defstruct message_secret: nil, message_add_on_duration_in_secs: nil, message_association: nil
 
   @type t :: %__MODULE__{
           message_secret: binary() | nil,
-          message_add_on_duration_in_secs: non_neg_integer() | nil
+          message_add_on_duration_in_secs: non_neg_integer() | nil,
+          message_association: MessageAssociation.t() | nil
         }
 
   @spec encode(t()) :: binary()
   def encode(%__MODULE__{} = message_context_info) do
     MessageSupport.encode_fields(message_context_info,
       message_secret: {:bytes, 3},
-      message_add_on_duration_in_secs: {:uint, 5}
+      message_add_on_duration_in_secs: {:uint, 5},
+      message_association: {:message, 10, MessageAssociation}
     )
   end
 
@@ -288,7 +370,8 @@ defmodule BaileysEx.Protocol.Proto.MessageContextInfo do
   def decode(binary) do
     MessageSupport.decode_fields(binary, %__MODULE__{},
       message_secret: {:bytes, 3},
-      message_add_on_duration_in_secs: {:uint, 5}
+      message_add_on_duration_in_secs: {:uint, 5},
+      message_association: {:message, 10, MessageAssociation}
     )
   end
 end
@@ -315,7 +398,8 @@ defmodule BaileysEx.Protocol.Proto.Message do
               forwarding_score: nil,
               is_forwarded: nil,
               placeholder_key: nil,
-              expiration: nil
+              expiration: nil,
+              non_jid_mentions: nil
 
     @type t :: %__MODULE__{
             stanza_id: String.t() | nil,
@@ -326,7 +410,8 @@ defmodule BaileysEx.Protocol.Proto.Message do
             forwarding_score: non_neg_integer() | nil,
             is_forwarded: boolean() | nil,
             placeholder_key: MessageKey.t() | nil,
-            expiration: non_neg_integer() | nil
+            expiration: non_neg_integer() | nil,
+            non_jid_mentions: non_neg_integer() | nil
           }
 
     @spec encode(t()) :: binary()
@@ -340,7 +425,8 @@ defmodule BaileysEx.Protocol.Proto.Message do
         forwarding_score: {:uint, 21},
         is_forwarded: {:bool, 22},
         placeholder_key: {:message, 24, MessageKey},
-        expiration: {:uint, 25}
+        expiration: {:uint, 25},
+        non_jid_mentions: {:uint, 70}
       )
     end
 
@@ -355,7 +441,41 @@ defmodule BaileysEx.Protocol.Proto.Message do
         forwarding_score: {:uint, 21},
         is_forwarded: {:bool, 22},
         placeholder_key: {:message, 24, MessageKey},
-        expiration: {:uint, 25}
+        expiration: {:uint, 25},
+        non_jid_mentions: {:uint, 70}
+      )
+    end
+  end
+
+  defmodule AlbumMessage do
+    @moduledoc false
+
+    alias BaileysEx.Protocol.Proto.Message.ContextInfo
+    alias BaileysEx.Protocol.Proto.MessageSupport
+
+    defstruct expected_image_count: nil, expected_video_count: nil, context_info: nil
+
+    @type t :: %__MODULE__{
+            expected_image_count: non_neg_integer() | nil,
+            expected_video_count: non_neg_integer() | nil,
+            context_info: ContextInfo.t() | nil
+          }
+
+    @spec encode(t()) :: binary()
+    def encode(%__MODULE__{} = album_message) do
+      MessageSupport.encode_fields(album_message,
+        expected_image_count: {:uint, 2},
+        expected_video_count: {:uint, 3},
+        context_info: {:message, 17, ContextInfo}
+      )
+    end
+
+    @spec decode(binary()) :: {:ok, t()} | {:error, term()}
+    def decode(binary) do
+      MessageSupport.decode_fields(binary, %__MODULE__{},
+        expected_image_count: {:uint, 2},
+        expected_video_count: {:uint, 3},
+        context_info: {:message, 17, ContextInfo}
       )
     end
   end
@@ -2922,6 +3042,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
             event_message: nil,
             enc_event_response_message: nil,
             live_location_message: nil,
+            album_message: nil,
             associated_child_message: nil,
             group_status_message: nil,
             group_status_message_v2: nil
@@ -2966,6 +3087,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
           event_message: EventMessage.t() | nil,
           enc_event_response_message: EncEventResponseMessage.t() | nil,
           live_location_message: LiveLocationMessage.t() | nil,
+          album_message: AlbumMessage.t() | nil,
           associated_child_message: FutureProofMessage.t() | nil,
           group_status_message: FutureProofMessage.t() | nil,
           group_status_message_v2: FutureProofMessage.t() | nil
@@ -3013,6 +3135,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
       event_message: {:message, 75, EventMessage},
       enc_event_response_message: {:message, 76, EncEventResponseMessage},
       live_location_message: {:message, 18, LiveLocationMessage},
+      album_message: {:message, 83, AlbumMessage},
       associated_child_message: {:message, 91, FutureProofMessage},
       group_status_message: {:message, 96, FutureProofMessage},
       group_status_message_v2: {:message, 103, FutureProofMessage}
@@ -3061,6 +3184,7 @@ defmodule BaileysEx.Protocol.Proto.Message do
       ptv_message: {:message, 66, VideoMessage},
       event_message: {:message, 75, EventMessage},
       enc_event_response_message: {:message, 76, EncEventResponseMessage},
+      album_message: {:message, 83, AlbumMessage},
       associated_child_message: {:message, 91, FutureProofMessage},
       group_status_message: {:message, 96, FutureProofMessage},
       group_status_message_v2: {:message, 103, FutureProofMessage}

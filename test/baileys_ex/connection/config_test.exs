@@ -24,7 +24,7 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.enable_auto_session_recreation == true
     assert config.enable_recent_message_cache == true
     assert config.browser == {"Mac OS", "Chrome", "14.4.1"}
-    assert config.version == [2, 3000, 1_033_846_690]
+    assert config.version == [2, 3000, 1_035_194_821]
     assert config.country_code == "US"
     assert config.sync_full_history == true
     assert config.validate_snapshot_macs == false

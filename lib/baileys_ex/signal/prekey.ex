@@ -11,7 +11,7 @@ defmodule BaileysEx.Signal.PreKey do
   @max_upload_retries 3
   @default_min_prekey_count 5
   @default_initial_prekey_count 812
-  @default_min_upload_interval_ms 5_000
+  @default_min_upload_interval_ms 0
   @default_upload_timeout_ms 30_000
 
   @spec next_pre_keys_node(Store.t(), map(), pos_integer(), keyword()) ::
@@ -192,7 +192,7 @@ defmodule BaileysEx.Signal.PreKey do
   defp skip_upload?(context, retry_count, now) do
     last_upload_at = context.get_last_upload_at.()
 
-    retry_count == 0 and is_integer(last_upload_at) and
+    retry_count == 0 and context.min_upload_interval_ms > 0 and is_integer(last_upload_at) and
       now - last_upload_at < context.min_upload_interval_ms
   end
 

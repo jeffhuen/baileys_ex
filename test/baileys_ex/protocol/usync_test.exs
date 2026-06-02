@@ -138,6 +138,39 @@ defmodule BaileysEx.Protocol.USyncTest do
                 ]
               }} = USync.to_node(query, "tag-2")
     end
+
+    test "builds rc10 username protocol query without per-user payload" do
+      query =
+        USync.new()
+        |> USync.with_protocol(:username)
+        |> USync.with_user(%User{id: "15557654321@s.whatsapp.net"})
+
+      assert {:ok,
+              %BinaryNode{
+                content: [
+                  %BinaryNode{
+                    content: [
+                      %BinaryNode{
+                        tag: "query",
+                        content: [
+                          %BinaryNode{tag: "username", attrs: %{}, content: nil}
+                        ]
+                      },
+                      %BinaryNode{
+                        tag: "list",
+                        content: [
+                          %BinaryNode{
+                            tag: "user",
+                            attrs: %{"jid" => "15557654321@s.whatsapp.net"},
+                            content: []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }} = USync.to_node(query, "tag-username")
+    end
   end
 
   describe "parse_result/2" do
@@ -326,6 +359,42 @@ defmodule BaileysEx.Protocol.USyncTest do
                 side_list: [
                   %{id: "15559876543@s.whatsapp.net", contact: true}
                 ]
+              }} = USync.parse_result(query, response)
+    end
+
+    test "parses rc10 username protocol results" do
+      query = USync.new() |> USync.with_protocol(:username)
+
+      response = %BinaryNode{
+        tag: "iq",
+        attrs: %{"type" => "result"},
+        content: [
+          %BinaryNode{
+            tag: "usync",
+            attrs: %{},
+            content: [
+              %BinaryNode{
+                tag: "list",
+                attrs: %{},
+                content: [
+                  %BinaryNode{
+                    tag: "user",
+                    attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                    content: [
+                      %BinaryNode{tag: "username", attrs: %{}, content: "openclaw"}
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      assert {:ok,
+              %{
+                list: [%{id: "15551234567@s.whatsapp.net", username: "openclaw"}],
+                side_list: []
               }} = USync.parse_result(query, response)
     end
 

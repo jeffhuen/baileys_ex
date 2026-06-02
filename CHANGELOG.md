@@ -1,5 +1,92 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.1.0-alpha.9] - 2026-06-02
+
+WhatsApp/Baileys v7 compatibility update. This release moves BaileysEx from the
+Baileys v7 rc9 behavior set to `v7.0.0-rc13` and brings over the rc10-rc13
+protocol fixes that affect pairing, message resend, app-state sync, trusted
+contact tokens, device lists, newsletters, groups, and account-limit handling.
+
+### Upgrade Impact
+
+- No public BaileysEx function was intentionally removed or renamed.
+- QR pairing payloads now use Baileys rc13's linked-device format. Regenerate
+  any in-flight QR codes after upgrading.
+- Direct 1:1 message sends may now attach trusted-contact tokens or issue fresh
+  tokens after sending. Apps that inspect raw stanzas or count outbound
+  protocol traffic may see additional token-related traffic.
+- Missing/unavailable messages can now emit Baileys-shaped placeholder stubs and
+  request a resend from the phone device. Message consumers should tolerate
+  unavailable-message placeholders and later replacement messages.
+- App-state sync can now retry with snapshots, park collections while waiting
+  for missing app-state keys, and resume when a key-share arrives. This improves
+  recovery after reconnects and key rotation, but sync completion may now
+  proceed with partial state when WhatsApp sends an individually corrupted sync
+  record.
+- Device-list removals now clear stale sessions. This can cause a session to be
+  rebuilt on the next send instead of reusing an outdated device session.
+- New account restriction and message-cap notifications can be emitted when
+  WhatsApp reports reachout timelocks or new-chat limits.
+- Parsed events may include new fields such as usernames, group participant
+  usernames, and group online counts.
+
+### Added
+
+- `fetch_account_reachout_timelock/2` and
+  `fetch_new_chat_message_cap/2` for WhatsApp account-limit checks.
+- Reachout timelock and new-chat-limit events from MEX notifications.
+- Trusted-contact token persistence, post-send issuance, identity-change
+  reissue, expiry cleanup, and sender timestamp preservation.
+- Username lookup support in USync results.
+- Album message sending.
+- Group `@all` mentions.
+- Group participant usernames and group online counts in parsed events.
+- Device-list notification handling for add, remove, and update changes.
+- Newsletter v2 join/leave support and multi-child newsletter notification
+  handling.
+
+### Changed
+
+- Updated the compatibility target from Baileys v7 rc9 behavior to
+  `v7.0.0-rc13`.
+- Default WhatsApp Web version and linked-device QR pairing output now match
+  Baileys rc13.
+- Direct 1:1 sends now follow Baileys' trusted-contact-token rules: existing
+  tokens are attached only for eligible user messages, peer/AppStateSync
+  messages are excluded, and fresh tokens are issued after eligible sends.
+- App-state sync is more resilient after reconnects and key rotation: missing
+  keys retry with a snapshot before parking, parked collections retry when a new
+  app-state key arrives, and corrupted individual sync records no longer abort
+  the whole sync pass.
+- Incoming unavailable-message placeholders now use the Baileys rc10 resend
+  behavior, including phone-device requests for missing messages and safety
+  skips for bot, hosted, view-once, and old unavailable stanzas.
+- Retry and bad-ack handling now preserves Baileys error semantics, including
+  unknown retry codes and 463 account-restriction updates.
+- Pre-key uploads no longer use a default throttle, matching the Baileys rc10
+  send path.
+- Media downloads now fall back across direct-path hosts when WhatsApp returns
+  a CDN URL that cannot be fetched directly.
+- Offline notifications are processed in Baileys-compatible FIFO batches with
+  buffered event flushing, reducing event churn during reconnect catch-up.
+
+### Fixed
+
+- Linked-device sync messages routed by WhatsApp as outgoing self stanzas are
+  now treated as `from_me`, even when the stanza omits an explicit `recipient`.
+  This prevents valid history sync, app-state key-share, LID mapping, and
+  peer-data operation responses from being skipped after reconnects or
+  companion sync flows.
+- Self-only protocol sync messages are ignored when they arrive from another
+  sender, preventing peer-originated stanzas from mutating local sync state.
+- Privacy-token notifications no longer drop the stored sender timestamp used to
+  avoid duplicate trusted-contact token issuance.
+- Direct peer messages no longer include `tctoken` nodes that WhatsApp rejects.
+- Protocol message parsing now handles WhatsApp's newer peer-routed self-stanza
+  shape without dropping legitimate self sync messages.
+
 ## [0.1.0-alpha.8] - 2026-05-22
 
 Library-guideline cleanup.

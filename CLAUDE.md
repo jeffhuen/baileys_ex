@@ -1,6 +1,6 @@
 # BaileysEx
 
-**Behaviour-accurate Elixir port of [Baileys 7.00rc9](https://github.com/WhiskeySockets/Baileys)** —
+**Behaviour-accurate Elixir port of [Baileys v7.0.0-rc13](https://github.com/WhiskeySockets/Baileys/releases/tag/v7.0.0-rc13)** —
 a WhatsApp Web API library. The goal is a **drop-in replacement** for Elixir apps
 currently using Baileys (Node.js) as a sidecar. Same wire behaviour, same protocol
 semantics, idiomatic Elixir implementation. Targets Elixir 1.19+/OTP 28.
@@ -8,12 +8,12 @@ semantics, idiomatic Elixir implementation. Targets Elixir 1.19+/OTP 28.
 Rust NIFs are currently used for Noise protocol (`snow`) and the narrow XEdDSA
 helper (`curve25519-dalek`). Signal protocol is pure Elixir.
 
-Reference source: `dev/reference/Baileys-master/` (pinned at 7.00rc9)
+Reference source: `dev/reference/Baileys-master/` (pinned at v7.0.0-rc13)
 
 ### Baileys Is the Spec
 
 **Do not deliberate about what to implement or how the protocol should behave.**
-Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
+Baileys v7.0.0-rc13 (`dev/reference/Baileys-master/`) is the authoritative reference for
 all wire behaviour, protocol semantics, message formats, handshake flows, feature
 scope, and public compatibility promises. When you are unsure what to do:
 
@@ -41,7 +41,7 @@ when a working reference exists 50 feet away in `dev/reference/`.
 | Overview | `dev/implementation_plan/00-overview.md` | Architecture, dependency graph |
 | Agent rules | `dev/implementation_plan/CLAUDE.md` | Phase workflow, native-first policy |
 | Progress | `dev/implementation_plan/PROGRESS.md` | Task/file/acceptance-criteria tracker |
-| Reference source | `dev/reference/Baileys-master/` | Authoritative Baileys rc.9 behavior and wire semantics |
+| Reference source | `dev/reference/Baileys-master/` | Authoritative Baileys v7.0.0-rc13 behavior and wire semantics |
 
 ---
 

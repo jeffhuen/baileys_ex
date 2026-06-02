@@ -122,4 +122,30 @@ defmodule BaileysEx.Message.DecodeTest do
     assert envelope.signal_author_jid == "15551234567:1@s.whatsapp.net"
     assert envelope.decryption_jid == "15551234567:1@s.whatsapp.net"
   end
+
+  test "decode_envelope/2 marks peer-routed self stanzas as from me without recipient" do
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "self-peer-routed-1",
+        "from" => "15550001111@s.whatsapp.net",
+        "t" => "1710000203"
+      },
+      content: []
+    }
+
+    context = %{
+      signal_repository: repo,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid"
+    }
+
+    assert {:ok, envelope, %{signal_repository: ^repo}} = Decode.decode_envelope(node, context)
+    assert envelope.remote_jid == "15550001111@s.whatsapp.net"
+    assert envelope.from_me == true
+    assert envelope.author_jid == "15550001111@s.whatsapp.net"
+    assert envelope.signal_author_jid == "15550001111@s.whatsapp.net"
+  end
 end

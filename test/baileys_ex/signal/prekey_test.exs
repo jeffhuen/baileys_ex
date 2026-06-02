@@ -113,6 +113,44 @@ defmodule BaileysEx.Signal.PreKeyTest do
     assert Map.keys(Store.get(store, :"pre-key", ["1", "2", "3"])) == ["1", "2", "3"]
   end
 
+  test "upload_if_required/1 does not throttle server-driven low pre-key uploads by default", %{
+    store: store
+  } do
+    parent = self()
+
+    state =
+      DeterministicAuth.state(145)
+      |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
+
+    query_fun = fn
+      %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "get"}} ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "count", attrs: %{"value" => "1"}, content: nil}]
+         }}
+
+      %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}} = node ->
+        send(parent, {:prekey_upload, node})
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+    end
+
+    assert :ok =
+             PreKey.upload_if_required(
+               store: store,
+               auth_state: state,
+               query_fun: query_fun,
+               emit_creds_update: fn _update -> :ok end,
+               upload_key: {"test-upload", "no-throttle"},
+               min_prekey_count: 2,
+               now_ms: fn -> 10_000 end,
+               get_last_upload_at: fn -> 9_999 end
+             )
+
+    assert_receive {:prekey_upload, %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}}}
+  end
+
   test "digest_key_bundle/1 sends encrypt digest and succeeds when the digest node is present", %{
     store: store
   } do

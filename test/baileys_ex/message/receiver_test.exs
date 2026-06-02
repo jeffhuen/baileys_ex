@@ -562,6 +562,175 @@ defmodule BaileysEx.Message.ReceiverTest do
              )
   end
 
+  test "process_node/3 requests placeholder resend for eligible unavailable stubs" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+    {:ok, runtime_store} = ConnectionStore.start_link()
+    runtime_store_ref = ConnectionStore.wrap(runtime_store)
+
+    node = unavailable_message_node("missing-msg-1", "regular_unavailable", "1710000000")
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid",
+      store_ref: runtime_store_ref,
+      send_node_fun: fn sent_node ->
+        send(parent, {:sent_node, sent_node})
+        :ok
+      end,
+      send_placeholder_request_fun: fn request ->
+        send(parent, {:placeholder_request, request})
+        {:ok, "request-123"}
+      end
+    }
+
+    assert {:ok,
+            %{
+              key: %{id: "missing-msg-1", remote_jid: "15551234567@s.whatsapp.net"},
+              message: nil,
+              message_stub_type: :CIPHERTEXT,
+              message_stub_parameters: ["Message absent from node"]
+            }, _context} =
+             Receiver.process_node(node, context, now_seconds: fn -> 1_710_000_010 end)
+
+    assert_receive {:sent_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{
+                        "id" => "missing-msg-1",
+                        "to" => "15551234567@s.whatsapp.net",
+                        "class" => "message"
+                      }
+                    }}
+
+    assert_receive {:placeholder_request,
+                    %Message.PeerDataOperationRequestMessage{
+                      peer_data_operation_request_type: :PLACEHOLDER_MESSAGE_RESEND,
+                      placeholder_message_resend_request: [
+                        %Message.PeerDataOperationRequestMessage.PlaceholderMessageResendRequest{
+                          message_key: %MessageKey{
+                            remote_jid: "15551234567@s.whatsapp.net",
+                            from_me: false,
+                            id: "missing-msg-1"
+                          }
+                        }
+                      ]
+                    }}
+
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        messages: [
+                          %{
+                            message_stub_type: :CIPHERTEXT,
+                            message_stub_parameters: ["Message absent from node"]
+                          }
+                        ]
+                      }
+                    }}
+
+    assert_receive {:events,
+                    %{
+                      messages_update: [
+                        %{
+                          key: %{id: "missing-msg-1"},
+                          update: %{
+                            message_stub_parameters: ["Message absent from node", "request-123"]
+                          }
+                        }
+                      ]
+                    }}
+
+    assert %{key: %{id: "missing-msg-1"}, message_timestamp: 1_710_000_000} =
+             Retry.get_placeholder_resend(runtime_store_ref, "missing-msg-1")
+
+    unsubscribe.()
+  end
+
+  test "process_node/3 skips placeholder resend for rc10 excluded unavailable types" do
+    excluded_types = [
+      "bot_unavailable_fanout",
+      "hosted_unavailable_fanout",
+      "view_once_unavailable_fanout"
+    ]
+
+    Enum.each(excluded_types, fn unavailable_type ->
+      {:ok, emitter} = EventEmitter.start_link()
+      parent = self()
+      unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, unavailable_type, &1}))
+
+      {repo, _store} = MessageSignalHelpers.new_repo()
+      {:ok, runtime_store} = ConnectionStore.start_link()
+
+      context = %{
+        signal_repository: repo,
+        event_emitter: emitter,
+        me_id: "15550001111@s.whatsapp.net",
+        me_lid: "15550001111@lid",
+        store_ref: ConnectionStore.wrap(runtime_store),
+        send_node_fun: fn sent_node ->
+          send(parent, {:sent_node, unavailable_type, sent_node})
+          :ok
+        end,
+        send_placeholder_request_fun: fn _request ->
+          flunk("excluded unavailable stubs must not request placeholder resend")
+        end
+      }
+
+      node =
+        unavailable_message_node("missing-#{unavailable_type}", unavailable_type, "1710000000")
+
+      assert {:ok, %{message_stub_type: :CIPHERTEXT}, _context} =
+               Receiver.process_node(node, context, now_seconds: fn -> 1_710_000_010 end)
+
+      assert_receive {:sent_node, ^unavailable_type, %BinaryNode{tag: "ack"}}
+      refute_receive {:events, ^unavailable_type, %{messages_upsert: _}}, 25
+      unsubscribe.()
+    end)
+  end
+
+  test "process_node/3 skips placeholder resend for unavailable messages older than 14 days" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+    {:ok, runtime_store} = ConnectionStore.start_link()
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid",
+      store_ref: ConnectionStore.wrap(runtime_store),
+      send_node_fun: fn sent_node ->
+        send(parent, {:sent_node, sent_node})
+        :ok
+      end,
+      send_placeholder_request_fun: fn _request ->
+        flunk("old unavailable stubs must not request placeholder resend")
+      end
+    }
+
+    node = unavailable_message_node("missing-old-1", "regular_unavailable", "1700000000")
+
+    assert {:ok, %{message_stub_type: :CIPHERTEXT}, _context} =
+             Receiver.process_node(node, context,
+               now_seconds: fn -> 1_700_000_000 + 1_209_601 end
+             )
+
+    assert_receive {:sent_node, %BinaryNode{tag: "ack"}}
+    refute_receive {:events, %{messages_upsert: _}}, 25
+
+    unsubscribe.()
+  end
+
   test "process_node/3 emits receive telemetry" do
     assert {:ok, emitter} = EventEmitter.start_link()
 
@@ -645,7 +814,7 @@ defmodule BaileysEx.Message.ReceiverTest do
       tag: "message",
       attrs: %{
         "id" => "proto-app-state-1",
-        "from" => "15551234567@s.whatsapp.net",
+        "from" => "15550001111@s.whatsapp.net",
         "t" => "1710000500"
       },
       content: [%BinaryNode{tag: "plaintext", attrs: %{}, content: Message.encode(proto_message)}]
@@ -775,6 +944,57 @@ defmodule BaileysEx.Message.ReceiverTest do
     unsubscribe.()
   end
 
+  test "process_node/3 drops self-only protocol messages from non-self origins" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    key_id = <<8, 7, 6, 5, 4, 3, 2, 1>>
+    key_data = <<42::256>>
+
+    proto_message = %Message{
+      protocol_message: %Message.ProtocolMessage{
+        type: :APP_STATE_SYNC_KEY_SHARE,
+        app_state_sync_key_share: %Message.AppStateSyncKeyShare{
+          keys: [
+            %Message.AppStateSyncKey{
+              key_id: %Message.AppStateSyncKeyId{key_id: key_id},
+              key_data: %Message.AppStateSyncKeyData{key_data: key_data}
+            }
+          ]
+        }
+      }
+    }
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "spoofed-app-state-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => "1710000504"
+      },
+      content: [%BinaryNode{tag: "plaintext", attrs: %{}, content: Message.encode(proto_message)}]
+    }
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid"
+    }
+
+    assert {:ok, %{message: %Message{}}, %{signal_repository: %Repository{}}} =
+             Receiver.process_node(node, context)
+
+    key_id_b64 = Base.encode64(key_id)
+    assert %{} == Store.get(store, :"app-state-sync-key", [key_id_b64])
+    refute_receive {:events, %{creds_update: %{my_app_state_key_id: ^key_id_b64}}}
+
+    unsubscribe.()
+  end
+
   test "process_node/3 emits history-sync events and persists processed history metadata" do
     {:ok, emitter} = EventEmitter.start_link()
     parent = self()
@@ -802,7 +1022,7 @@ defmodule BaileysEx.Message.ReceiverTest do
       tag: "message",
       attrs: %{
         "id" => "hist-1",
-        "from" => "15551234567@s.whatsapp.net",
+        "from" => "15550001111@s.whatsapp.net",
         "t" => "1710000600"
       },
       content: [
@@ -866,7 +1086,7 @@ defmodule BaileysEx.Message.ReceiverTest do
                       tag: "receipt",
                       attrs: %{
                         "id" => "hist-1",
-                        "to" => "15551234567@s.whatsapp.net"
+                        "to" => "15550001111@s.whatsapp.net"
                       }
                     }}
 
@@ -875,7 +1095,7 @@ defmodule BaileysEx.Message.ReceiverTest do
                       tag: "receipt",
                       attrs: %{
                         "id" => "hist-1",
-                        "to" => "15551234567@s.whatsapp.net",
+                        "to" => "15550001111@s.whatsapp.net",
                         "type" => "hist_sync"
                       }
                     }}
@@ -998,7 +1218,7 @@ defmodule BaileysEx.Message.ReceiverTest do
       tag: "message",
       attrs: %{
         "id" => "hist-inline",
-        "from" => "15551234567@s.whatsapp.net",
+        "from" => "15550001111@s.whatsapp.net",
         "t" => "1710000639"
       },
       content: [
@@ -1098,7 +1318,7 @@ defmodule BaileysEx.Message.ReceiverTest do
       tag: "message",
       attrs: %{
         "id" => "pdo-response-1",
-        "from" => "15551234567@s.whatsapp.net",
+        "from" => "15550001111@s.whatsapp.net",
         "t" => "1710000601"
       },
       content: [
@@ -1239,7 +1459,7 @@ defmodule BaileysEx.Message.ReceiverTest do
       tag: "message",
       attrs: %{
         "id" => "lid-sync-1",
-        "from" => "15551234567@s.whatsapp.net",
+        "from" => "15550001111@s.whatsapp.net",
         "t" => "1710000604"
       },
       content: [
@@ -1294,6 +1514,56 @@ defmodule BaileysEx.Message.ReceiverTest do
                             from_me: true
                           },
                           update: %{status: :ERROR, message_stub_parameters: ["500"]}
+                        }
+                      ]
+                    }}
+
+    unsubscribe.()
+  end
+
+  test "handle_bad_ack/2 fetches reachout state and annotates 463 restricted errors" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    ack = %BinaryNode{
+      tag: "ack",
+      attrs: %{
+        "class" => "message",
+        "from" => "15551234567@s.whatsapp.net",
+        "id" => "ack-463",
+        "error" => "463"
+      },
+      content: nil
+    }
+
+    assert :ok =
+             Receiver.handle_bad_ack(ack, %{
+               event_emitter: emitter,
+               fetch_reachout_timelock_fun: fn ->
+                 send(parent, :fetch_reachout_timelock)
+                 {:ok, %{is_active: true}}
+               end
+             })
+
+    assert_receive :fetch_reachout_timelock
+
+    assert_receive {:events,
+                    %{
+                      messages_update: [
+                        %{
+                          key: %{
+                            remote_jid: "15551234567@s.whatsapp.net",
+                            id: "ack-463",
+                            from_me: true
+                          },
+                          update: %{
+                            status: :ERROR,
+                            message_stub_parameters: [
+                              "463",
+                              "Your account has been restricted"
+                            ]
+                          }
                         }
                       ]
                     }}
@@ -1645,7 +1915,7 @@ defmodule BaileysEx.Message.ReceiverTest do
       tag: "message",
       attrs: %{
         "id" => message_id,
-        "from" => "15551234567@s.whatsapp.net",
+        "from" => "15550001111@s.whatsapp.net",
         "t" => Integer.to_string(message_timestamp)
       },
       content: [
@@ -1654,6 +1924,20 @@ defmodule BaileysEx.Message.ReceiverTest do
           attrs: %{},
           content: Message.encode(history_message)
         }
+      ]
+    }
+  end
+
+  defp unavailable_message_node(message_id, unavailable_type, timestamp) do
+    %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => message_id,
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => timestamp
+      },
+      content: [
+        %BinaryNode{tag: "unavailable", attrs: %{"type" => unavailable_type}, content: nil}
       ]
     }
   end

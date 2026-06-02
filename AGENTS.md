@@ -1,16 +1,16 @@
 # BaileysEx
 
-**Behaviour-accurate Elixir port of [Baileys 7.00rc9](https://github.com/WhiskeySockets/Baileys)** —
+**Behaviour-accurate Elixir port of [Baileys v7.0.0-rc13](https://github.com/WhiskeySockets/Baileys/releases/tag/v7.0.0-rc13)** —
 a WhatsApp Web API library. The goal is a **drop-in replacement** for Elixir apps
 currently using Baileys (Node.js) as a sidecar. Same wire behaviour, same protocol
 semantics, idiomatic Elixir implementation. Targets Elixir 1.19+/OTP 28.
 
-Reference source: `dev/reference/Baileys-master/` (pinned at 7.00rc9)
+Reference source: `dev/reference/Baileys-master/` (pinned at v7.0.0-rc13)
 
 ### Baileys Is the Spec
 
 **Do not deliberate about what to implement or how the protocol should behave.**
-Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
+Baileys v7.0.0-rc13 (`dev/reference/Baileys-master/`) is the authoritative reference for
 all wire behaviour, protocol semantics, message formats, handshake flows, feature
 scope, and public compatibility promises. When you are unsure what to do:
 
@@ -190,6 +190,59 @@ benefits from BEAM concurrency, fault tolerance, or has native support.
 | `async-mutex` | Concurrency | Process-based (BEAM handles this natively) |
 | `@hapi/boom` | Error objects | Tagged tuples / custom exception structs |
 | `lru-cache` / `node-cache` | Caching | ETS tables (built-in, concurrent, fast) |
+
+---
+
+## Iron Laws Enforcement (NON-NEGOTIABLE)
+These rules are NEVER violated. If code would violate them, STOP and explain before proceeding:
+
+### LiveView Iron Laws
+- NO unconditional DB queries in mount - Mount runs twice. Default: assign_async. SEO routes: connected? + cache-backed disconnected branch (dead-render IS the crawler-indexed HTML)
+- ALWAYS use streams for lists >100 items - Regular assigns = O(n) memory per user
+- CHECK connected?/1 before PubSub subscribe - Prevents double subscriptions
+
+### Ecto Iron Laws
+- NEVER use :float for money - Use :decimal or :integer (cents)
+- ALWAYS pin values with ^ in queries - Never interpolate user input
+- SEPARATE QUERIES for has_many, JOIN for belongs_to - Avoids row multiplication
+
+### Oban Iron Laws
+- Jobs MUST be idempotent - Safe to retry
+- Args use STRING keys, not atoms - Pattern match %{"user_id" => id}
+- NEVER store structs in args - Store IDs, not %User{}
+
+### Security Iron Laws
+- NO String.to_atom with user input - Atom exhaustion DoS
+- AUTHORIZE in EVERY LiveView handle_event - Don't trust mount authorization
+- NEVER use raw/1 with untrusted content - XSS vulnerability
+
+### OTP Iron Laws
+- NO process without runtime reason - Processes model concurrency/state/isolation, NOT code structure
+- SUPERVISE ALL LONG-LIVED PROCESSES - Never bare GenServer.start_link/Agent.start_link in production. Use supervision trees
+
+### Ecto Iron Laws (continued)
+- NO IMPLICIT CROSS JOINS - from(a in A, b in B) without on: creates Cartesian product
+
+### Elixir Iron Laws
+- @external_resource FOR COMPILE-TIME FILES - Modules reading files at compile time MUST declare @external_resource
+
+### Ecto Iron Laws (continued)
+- DEDUP BEFORE cast_assoc WITH SHARED DATA - Deduplicate shared child records before building changesets, not inside them
+
+### LiveView Iron Laws (continued)
+- CHECK CHANGESET ERRORS BEFORE UI DEBUGGING - When a form save produces no visible error but no expected side effect, check {:error, changeset} first
+
+### Ecto Iron Laws (continued)
+- HIDDEN INPUTS FOR ALL REQUIRED EMBEDDED FIELDS - Every required field in an embedded schema MUST have a hidden_input if not directly editable
+
+### Elixir Iron Laws (continued)
+- WRAP THIRD-PARTY LIBRARY APIs - Always facade external dependency APIs behind a project-owned module. Enables swapping libraries without touching callers
+
+### LiveView Iron Laws (continued)
+- NEVER use assign_new for values refreshed every mount - assign_new skips the function if the key exists. Use assign/3 for locale, current user, or any value that must be set on every mount
+
+### Verification Iron Laws
+- VERIFY BEFORE CLAIMING DONE - Never say "should work" or "this fixes it." Run mix compile && mix test and show the result. If you can't verify, explicitly state what remains unverified
 
 ---
 

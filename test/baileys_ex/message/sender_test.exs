@@ -45,7 +45,11 @@ defmodule BaileysEx.Message.SenderTest do
              ])
 
     assert :ok =
-             Store.set(store, %{tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}})
+             Store.set(store, %{
+               tctoken: %{
+                 "12345@lid" => %{token: "tc-token", timestamp: "4102444800"}
+               }
+             })
 
     context = %{
       signal_repository: repo,
@@ -669,7 +673,9 @@ defmodule BaileysEx.Message.SenderTest do
     assert :ok =
              Store.set(store, %{
                :"device-list" => %{"15551234567" => ["0"], "15550001111" => []},
-               tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{token: "tc-token", timestamp: "4102444800"}
+               }
              })
 
     context = %{
@@ -713,6 +719,86 @@ defmodule BaileysEx.Message.SenderTest do
     assert tc_token_index < additional_index
   end
 
+  test "send/4 triggers post-send tc token issuance for eligible direct 1:1 messages" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+    repo = inject_session!(repo, "15551234567:0@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{:"device-list" => %{"15551234567" => ["0"], "15550001111" => []}})
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end,
+      tc_token_issue_fun: fn destination_jid, message, opts ->
+        send(parent, {:tc_token_issue, destination_jid, message, opts})
+        :ok
+      end
+    }
+
+    assert {:ok, _sent, _context} =
+             Sender.send(context, jid, %{text: "hello"},
+               message_id_fun: fn _me_id -> "3EB0TCISSUE" end
+             )
+
+    assert_receive {:relay_node, %BinaryNode{attrs: %{"id" => "3EB0TCISSUE"}}}
+
+    assert_receive {:tc_token_issue, "15551234567@s.whatsapp.net",
+                    %Message{extended_text_message: %Message.ExtendedTextMessage{text: "hello"}},
+                    issue_opts}
+
+    assert issue_opts[:message_id] == "3EB0TCISSUE"
+  end
+
+  test "send/4 skips trusted-contact tokens and post-send issuance for peer messages" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+    repo = inject_session!(repo, "15551234567:0@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => []},
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{token: "tc-token", timestamp: "4102444800"}
+               }
+             })
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end,
+      tc_token_issue_fun: fn destination_jid, message, opts ->
+        send(parent, {:unexpected_tc_token_issue, destination_jid, message, opts})
+        :ok
+      end
+    }
+
+    assert {:ok, _sent, _context} =
+             Sender.send(context, jid, %{text: "peer"},
+               additional_attributes: %{"category" => "peer"}
+             )
+
+    assert_receive {:relay_node, %BinaryNode{content: content}}
+
+    refute Enum.any?(content, &match?(%BinaryNode{tag: "tctoken"}, &1))
+    refute_received {:unexpected_tc_token_issue, _destination_jid, _message, _opts}
+  end
+
   test "send/4 skips trusted-contact tokens for retry-resend relays" do
     jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
     parent = self()
@@ -724,7 +810,9 @@ defmodule BaileysEx.Message.SenderTest do
     assert :ok =
              Store.set(store, %{
                :"device-list" => %{"15551234567" => ["0"], "15550001111" => []},
-               tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{token: "tc-token", timestamp: "4102444800"}
+               }
              })
 
     context = %{

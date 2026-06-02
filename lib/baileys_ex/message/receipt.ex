@@ -19,6 +19,27 @@ defmodule BaileysEx.Message.Receipt do
   }
 
   @doc """
+  Builds an ACK/NACK stanza for a received node.
+
+  Mirrors Baileys rc10 `buildAckStanza/3`: copies the stanza id, source,
+  class, participant, recipient, and type, and includes `from` for message
+  ACKs when the local device JID is known.
+  """
+  @spec build_ack_stanza(BinaryNode.t(), non_neg_integer() | nil, String.t() | nil) ::
+          BinaryNode.t()
+  def build_ack_stanza(%BinaryNode{tag: tag, attrs: attrs}, error_code \\ nil, me_id \\ nil) do
+    ack_attrs =
+      %{"id" => attrs["id"], "to" => attrs["from"], "class" => tag}
+      |> maybe_put("participant", attrs["participant"])
+      |> maybe_put("recipient", attrs["recipient"])
+      |> maybe_put("type", attrs["type"])
+      |> maybe_put_error(error_code)
+      |> maybe_put_message_from(tag, me_id)
+
+    %BinaryNode{tag: "ack", attrs: ack_attrs, content: nil}
+  end
+
+  @doc """
   Constructs a receipt node (delivery, read, played, etc.) for the given message IDs.
   """
   @spec build_receipt_node(String.t(), String.t() | nil, [String.t()], receipt_type(), keyword()) ::
@@ -204,6 +225,16 @@ defmodule BaileysEx.Message.Receipt do
     do:
       JIDUtil.user?(jid) or JIDUtil.lid?(jid) or JIDUtil.hosted_pn?(jid) or
         JIDUtil.hosted_lid?(jid)
+
+  defp maybe_put_error(attrs, error_code) when is_integer(error_code) and error_code != 0,
+    do: Map.put(attrs, "error", Integer.to_string(error_code))
+
+  defp maybe_put_error(attrs, _error_code), do: attrs
+
+  defp maybe_put_message_from(attrs, "message", me_id) when is_binary(me_id),
+    do: Map.put(attrs, "from", me_id)
+
+  defp maybe_put_message_from(attrs, _tag, _me_id), do: attrs
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

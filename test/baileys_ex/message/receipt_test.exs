@@ -5,6 +5,37 @@ defmodule BaileysEx.Message.ReceiptTest do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Message.Receipt
 
+  test "build_ack_stanza/3 mirrors rc10 ACK/NACK construction for message nodes" do
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "msg-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => "15557654321@s.whatsapp.net",
+        "recipient" => "15550001111@s.whatsapp.net",
+        "type" => "text"
+      },
+      content: nil
+    }
+
+    assert %BinaryNode{
+             tag: "ack",
+             attrs: %{
+               "id" => "msg-1",
+               "to" => "15551234567@s.whatsapp.net",
+               "class" => "message",
+               "participant" => "15557654321@s.whatsapp.net",
+               "recipient" => "15550001111@s.whatsapp.net",
+               "type" => "text",
+               "from" => "15550001111@s.whatsapp.net"
+             },
+             content: nil
+           } = Receipt.build_ack_stanza(node, nil, "15550001111@s.whatsapp.net")
+
+    assert %BinaryNode{attrs: %{"error" => "500"}} =
+             Receipt.build_ack_stanza(node, 500, "15550001111@s.whatsapp.net")
+  end
+
   test "read_messages/3 chooses read-self when privacy disables read receipts and aggregates ids" do
     parent = self()
     timestamp = 1_710_000_900

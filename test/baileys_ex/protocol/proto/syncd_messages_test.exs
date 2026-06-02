@@ -128,6 +128,30 @@ defmodule BaileysEx.Protocol.Proto.SyncdTest do
       assert decoded.patch_mac == patch.patch_mac
       assert decoded.key_id.id == <<3, 4, 5>>
     end
+
+    test "encode/decode roundtrip with external mutations reference" do
+      external_ref = %Syncd.ExternalBlobReference{
+        media_key: :binary.copy(<<0x55>>, 32),
+        direct_path: "/mms/md-app-state/patch-1",
+        file_size_bytes: 1234
+      }
+
+      patch = %Syncd.SyncdPatch{
+        version: %Syncd.SyncdVersion{version: 11},
+        external_mutations: external_ref,
+        snapshot_mac: :binary.copy(<<0x33>>, 32),
+        patch_mac: :binary.copy(<<0x44>>, 32),
+        key_id: %Syncd.KeyId{id: <<3, 4, 5>>}
+      }
+
+      encoded = Syncd.SyncdPatch.encode(patch)
+
+      assert {:ok, decoded} = Syncd.SyncdPatch.decode(encoded)
+      assert %Syncd.ExternalBlobReference{} = decoded.external_mutations
+      assert decoded.external_mutations.media_key == external_ref.media_key
+      assert decoded.external_mutations.direct_path == external_ref.direct_path
+      assert decoded.external_mutations.file_size_bytes == external_ref.file_size_bytes
+    end
   end
 
   describe "SyncdSnapshot" do

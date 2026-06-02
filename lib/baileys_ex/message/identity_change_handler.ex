@@ -92,6 +92,7 @@ defmodule BaileysEx.Message.IdentityChangeHandler do
 
   defp refresh_session(context, cache, from) do
     assert_sessions_fun = context[:assert_sessions_fun] || (&default_assert_sessions/3)
+    maybe_before_session_refresh(context, from)
 
     case assert_sessions_fun.(context, [from], true) do
       {:ok, updated_context, _did_fetch} ->
@@ -101,6 +102,12 @@ defmodule BaileysEx.Message.IdentityChangeHandler do
         {:ok, %{action: :session_refresh_failed, error: reason}, context, cache}
     end
   end
+
+  defp maybe_before_session_refresh(%{on_before_session_refresh_fun: fun}, from)
+       when is_function(fun, 1),
+       do: fun.(from)
+
+  defp maybe_before_session_refresh(_context, _from), do: :ok
 
   defp prune_cache(cache, now_ms, debounce_ms) do
     Enum.reduce(cache, %{}, fn {jid, previous_ms}, acc ->

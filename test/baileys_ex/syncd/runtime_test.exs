@@ -64,6 +64,11 @@ defmodule BaileysEx.Syncd.RuntimeTest do
     end
   end
 
+  defp first_sync_collection_attrs(%{
+         content: [%{tag: "sync", content: [%{tag: "collection", attrs: attrs}]}]
+       }),
+       do: attrs
+
   describe "Store app state sync key helpers" do
     test "get/put app state sync key roundtrip" do
       store = start_store()
@@ -537,6 +542,95 @@ defmodule BaileysEx.Syncd.RuntimeTest do
                         chats_update: [%{id: "user@s.whatsapp.net", mute_end_time: 1_710_086_400}]
                       }},
                      300
+    end
+
+    test "missing app-state keys retry with a forced snapshot before parking collection" do
+      store = start_store()
+      ref = Store.wrap(store)
+      parent = self()
+
+      Store.put_app_state_sync_version(store, :regular_high, %{
+        Codec.new_lt_hash_state()
+        | version: 5
+      })
+
+      get_key = fn _kid -> {:ok, %{key_data: @key_data}} end
+
+      {:ok, %{patch: patch, state: enc_state}} =
+        Codec.encode_syncd_patch(
+          %{
+            type: :regular_high,
+            index: ["mute", "user@s.whatsapp.net"],
+            sync_action: %Syncd.SyncActionValue{
+              timestamp: 1_710_000_000,
+              mute_action: %Syncd.MuteAction{muted: true}
+            },
+            api_version: 2,
+            operation: :set
+          },
+          @key_id_b64,
+          Codec.new_lt_hash_state(),
+          get_key,
+          iv: :binary.copy(<<0x66>>, 16)
+        )
+
+      patch_binary =
+        patch
+        |> Map.put(:version, %Syncd.SyncdVersion{version: enc_state.version})
+        |> Syncd.SyncdPatch.encode()
+
+      Store.delete(store, {:app_state_sync_key, @key_id_b64})
+
+      queryable = fn node ->
+        send(parent, {:sync_query, first_sync_collection_attrs(node)})
+
+        {:ok,
+         %{
+           tag: "iq",
+           attrs: %{},
+           content: [
+             %{
+               tag: "sync",
+               attrs: %{},
+               content: [
+                 %{
+                   tag: "collection",
+                   attrs: %{
+                     "name" => "regular_high",
+                     "version" => "5",
+                     "has_more_patches" => "false"
+                   },
+                   content: [
+                     %{tag: "patch", attrs: %{}, content: patch_binary}
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+      end
+
+      assert :ok =
+               AppState.resync_app_state(queryable, store, [:regular_high],
+                 on_blocked_collection: fn name -> send(parent, {:blocked_collection, name}) end
+               )
+
+      assert_received {:sync_query,
+                       %{
+                         "name" => "regular_high",
+                         "version" => "5",
+                         "return_snapshot" => "false"
+                       }}
+
+      assert_received {:sync_query,
+                       %{
+                         "name" => "regular_high",
+                         "version" => "5",
+                         "return_snapshot" => "true"
+                       }}
+
+      assert_received {:blocked_collection, :regular_high}
+      assert Store.get_app_state_sync_version(ref, :regular_high).version == 5
     end
 
     test "initial sync threads unarchive_chats settings into later archive mutations" do

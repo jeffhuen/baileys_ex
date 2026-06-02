@@ -12,7 +12,7 @@ defmodule BaileysEx.Protocol.USync do
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.JID
 
-  @protocols [:devices, :contact, :status, :disappearing_mode, :lid, :bot]
+  @protocols [:devices, :contact, :status, :disappearing_mode, :lid, :bot, :username]
   @contexts [:interactive, :background, :message, :notification]
   @modes [:query, :delta]
 
@@ -32,7 +32,8 @@ defmodule BaileysEx.Protocol.USync do
     defstruct [:id, :lid, :phone, :type, :persona_id]
   end
 
-  @type protocol :: :devices | :contact | :status | :disappearing_mode | :lid | :bot
+  @type protocol ::
+          :devices | :contact | :status | :disappearing_mode | :lid | :bot | :username
   @type context :: :interactive | :background | :message | :notification
   @type mode :: :query | :delta
   @type user_result :: %{required(:id) => String.t(), optional(atom()) => term()}
@@ -280,6 +281,8 @@ defmodule BaileysEx.Protocol.USync do
 
   defp parse_protocol_value(:lid, %BinaryNode{attrs: attrs}), do: attrs["val"]
 
+  defp parse_protocol_value(:username, %BinaryNode{content: content}), do: content_string(content)
+
   defp parse_protocol_value(:bot, %BinaryNode{} = node, jid) do
     profile = BinaryNodeUtil.child(node, "profile")
     commands_node = BinaryNodeUtil.child(profile, "commands")
@@ -309,6 +312,7 @@ defmodule BaileysEx.Protocol.USync do
     do: %BinaryNode{tag: "disappearing_mode", attrs: %{}}
 
   defp protocol_query_node(:lid), do: %BinaryNode{tag: "lid", attrs: %{}}
+  defp protocol_query_node(:username), do: %BinaryNode{tag: "username", attrs: %{}}
 
   defp protocol_query_node(:bot) do
     %BinaryNode{
@@ -385,6 +389,7 @@ defmodule BaileysEx.Protocol.USync do
   defp protocol_for_tag("disappearing_mode"), do: :disappearing_mode
   defp protocol_for_tag("lid"), do: :lid
   defp protocol_for_tag("bot"), do: :bot
+  defp protocol_for_tag("username"), do: :username
   defp protocol_for_tag(_tag), do: nil
 
   defp content_bytes({:binary, bytes}) when is_binary(bytes), do: bytes

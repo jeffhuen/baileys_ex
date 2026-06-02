@@ -99,7 +99,7 @@ defmodule BaileysEx.Connection.Config do
             enable_recent_message_cache: true,
             cached_group_metadata: nil,
             browser: {"Mac OS", "Chrome", "14.4.1"},
-            version: [2, 3000, 1_033_846_690],
+            version: [2, 3000, 1_035_194_821],
             country_code: "US",
             sync_full_history: true,
             should_sync_history_message: &__MODULE__.default_should_sync_history_message/1,

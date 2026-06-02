@@ -87,12 +87,15 @@ defmodule BaileysEx.Feature.AppState do
         get_key: fn key_id -> get_app_state_sync_key(tx_state_store, key_id) end,
         validate_snapshot: validate_snapshot,
         validate_patch: validate_patch,
-        codec_opts: codec_opts
+        codec_opts: codec_opts,
+        on_blocked_collection: Keyword.get(opts, :on_blocked_collection, fn _name -> :ok end)
       }
 
       case do_resync_loop(context, collections, %{
              attempts_map: %{},
              initial_version_map: %{},
+             force_snapshot_collections: MapSet.new(),
+             on_blocked_collection: context.on_blocked_collection,
              global_mutation_map: %{},
              global_mutation_order: []
            }) do
@@ -632,10 +635,15 @@ defmodule BaileysEx.Feature.AppState do
       build_resync_request(
         context.state_store,
         collections_to_handle,
-        loop_state.initial_version_map
+        loop_state.initial_version_map,
+        Map.get(loop_state, :force_snapshot_collections, MapSet.new())
       )
 
-    loop_state = %{loop_state | initial_version_map: initial_version_map}
+    loop_state = %{
+      loop_state
+      | initial_version_map: initial_version_map,
+        force_snapshot_collections: MapSet.new()
+    }
 
     Logger.warning("[AppStateDiag] sending sync query")
 
@@ -664,7 +672,12 @@ defmodule BaileysEx.Feature.AppState do
     end
   end
 
-  defp build_resync_request(state_store, collections_to_handle, initial_version_map) do
+  defp build_resync_request(
+         state_store,
+         collections_to_handle,
+         initial_version_map,
+         force_snapshot_collections
+       ) do
     {nodes, states, initial_version_map} =
       Enum.reduce(collections_to_handle, {[], %{}, initial_version_map}, fn name,
                                                                             {nodes_acc,
@@ -675,15 +688,18 @@ defmodule BaileysEx.Feature.AppState do
               {Codec.new_lt_hash_state(), ivm}
 
             cached_state ->
+              cached_state = ensure_lt_hash_state_version(cached_state)
               {cached_state, Map.put_new(ivm, name, cached_state.version)}
           end
+
+        force_snapshot? = MapSet.member?(force_snapshot_collections, name)
 
         node = %BinaryNode{
           tag: "collection",
           attrs: %{
             "name" => Atom.to_string(name),
             "version" => to_string(state.version),
-            "return_snapshot" => to_string(state.version == 0)
+            "return_snapshot" => to_string(force_snapshot? or state.version == 0)
           }
         }
 
@@ -718,6 +734,7 @@ defmodule BaileysEx.Feature.AppState do
 
   defp process_single_collection(name, collection, state, loop_state, context) do
     state = state || Codec.new_lt_hash_state()
+    state = ensure_lt_hash_state_version(state)
 
     with {:ok, state, mutation_map, mutation_order} <-
            maybe_decode_snapshot(name, collection.snapshot, state, loop_state, context),
@@ -809,27 +826,56 @@ defmodule BaileysEx.Feature.AppState do
     %{loop_state | remaining: List.delete(loop_state.remaining, name)}
   end
 
-  defp handle_collection_failure(loop_state, state_store, name, reason) do
+  defp handle_collection_failure(loop_state, _state_store, name, reason) do
     attempts = Map.get(loop_state.attempts_map, name, 0) + 1
-    irrecoverable? = attempts >= @max_sync_attempts or match?({:key_not_found, _}, reason)
+    missing_key? = missing_key_error?(reason)
+    blocked? = missing_key? and attempts >= @max_sync_attempts
+    irrecoverable? = not missing_key? and attempts >= @max_sync_attempts
 
     Logger.info(
       "failed to sync #{name}: #{inspect(reason)}" <>
-        if(irrecoverable?, do: "", else: ", retrying from scratch")
+        cond do
+          blocked? -> ", parking until key arrives"
+          irrecoverable? -> ""
+          true -> ", retrying with snapshot"
+        end
     )
 
-    put_app_state_sync_version(state_store, name, nil)
+    if blocked? do
+      notify_blocked_collection(loop_state, name)
+    end
 
     %{
       loop_state
       | attempts_map: Map.put(loop_state.attempts_map, name, attempts),
+        force_snapshot_collections:
+          if(blocked? or irrecoverable?,
+            do: loop_state.force_snapshot_collections,
+            else: MapSet.put(loop_state.force_snapshot_collections, name)
+          ),
         remaining:
-          if(irrecoverable?,
+          if(blocked? or irrecoverable?,
             do: List.delete(loop_state.remaining, name),
             else: loop_state.remaining
           )
     }
   end
+
+  defp ensure_lt_hash_state_version(%{version: version} = state) when is_integer(version),
+    do: state
+
+  defp ensure_lt_hash_state_version(%{} = state), do: Map.put(state, :version, 0)
+
+  defp missing_key_error?({:key_not_found, _key_id}), do: true
+  defp missing_key_error?({:missing_app_state_key, _key_id}), do: true
+  defp missing_key_error?(_reason), do: false
+
+  defp notify_blocked_collection(%{on_blocked_collection: fun}, name) when is_function(fun, 1) do
+    _ = fun.(name)
+    :ok
+  end
+
+  defp notify_blocked_collection(_loop_state, _name), do: :ok
 
   # ============================================================================
   # Queryable dispatch

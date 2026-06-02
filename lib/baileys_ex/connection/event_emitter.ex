@@ -67,6 +67,7 @@ defmodule BaileysEx.Connection.EventEmitter do
           | :messages_update
           | :messages_upsert
           | :messaging_history_set
+          | :message_capping_update
           | :newsletter_participants_update
           | :newsletter_reaction
           | :newsletter_settings_update

@@ -15,9 +15,12 @@ defmodule BaileysEx.Message.Retry do
   @session_history_key :message_retry_session_recreate_history
   @phone_requests_key :message_retry_phone_requests
   @placeholder_cache_key :message_retry_placeholder_resends
+  @base_keys_key :message_retry_base_keys
 
   @recent_message_cache_size 512
   @recent_message_cache_ttl_ms 300_000
+  @base_key_cache_size 1024
+  @base_key_cache_ttl_ms 900_000
   @session_recreate_cooldown_ms 3_600_000
   @phone_request_delay_ms 3_000
   @placeholder_request_timeout_ms 8_000
@@ -135,6 +138,57 @@ defmodule BaileysEx.Message.Retry do
   end
 
   @doc """
+  Saves the open Signal base key observed during the rc10 retry collision check.
+  """
+  @spec save_base_key(Store.Ref.t(), String.t(), String.t(), binary(), keyword()) :: :ok
+  def save_base_key(%Store.Ref{} = store_ref, addr, msg_id, base_key, opts \\ [])
+      when is_binary(addr) and is_binary(msg_id) and is_binary(base_key) do
+    now_ms = now_ms(opts)
+    ttl_ms = Keyword.get(opts, :ttl_ms, @base_key_cache_ttl_ms)
+    max_size = Keyword.get(opts, :max_size, @base_key_cache_size)
+
+    cache =
+      Store.get(store_ref, @base_keys_key, %{})
+      |> prune_base_key_cache(now_ms, ttl_ms)
+      |> Map.put({addr, msg_id}, %{base_key: base_key, timestamp: now_ms})
+      |> enforce_base_key_cache_limit(max_size)
+
+    Store.put(store_ref, @base_keys_key, cache)
+  end
+
+  @doc """
+  Returns true when the cached base key exactly matches the current base key.
+  """
+  @spec has_same_base_key?(Store.Ref.t(), String.t(), String.t(), binary(), keyword()) ::
+          boolean()
+  def has_same_base_key?(%Store.Ref{} = store_ref, addr, msg_id, base_key, opts \\ [])
+      when is_binary(addr) and is_binary(msg_id) and is_binary(base_key) do
+    now_ms = now_ms(opts)
+    ttl_ms = Keyword.get(opts, :ttl_ms, @base_key_cache_ttl_ms)
+
+    cache =
+      Store.get(store_ref, @base_keys_key, %{})
+      |> prune_base_key_cache(now_ms, ttl_ms)
+
+    :ok = Store.put(store_ref, @base_keys_key, cache)
+
+    case Map.get(cache, {addr, msg_id}) do
+      %{base_key: ^base_key} -> true
+      _ -> false
+    end
+  end
+
+  @doc """
+  Deletes a cached retry base key once the collision check has completed.
+  """
+  @spec delete_base_key(Store.Ref.t(), String.t(), String.t()) :: :ok
+  def delete_base_key(%Store.Ref{} = store_ref, addr, msg_id)
+      when is_binary(addr) and is_binary(msg_id) do
+    cache = Store.get(store_ref, @base_keys_key, %{}) |> Map.delete({addr, msg_id})
+    Store.put(store_ref, @base_keys_key, cache)
+  end
+
+  @doc """
   Schedules an asynchronous fallback request for a retry sequence.
   """
   @spec schedule_phone_request(Store.Ref.t(), String.t(), (-> term()), keyword()) :: :ok
@@ -187,7 +241,7 @@ defmodule BaileysEx.Message.Retry do
   Idempotently queues a placeholder resend command, stalling slightly to await in-flight messages.
   """
   @spec request_placeholder_resend(Store.Ref.t(), map(), map() | boolean() | nil, keyword()) ::
-          {:ok, String.t() | nil} | {:error, term()}
+          {:ok, String.t() | nil} | {:ok, String.t() | nil, term()} | {:error, term()}
   def request_placeholder_resend(
         %Store.Ref{} = store_ref,
         message_key,
@@ -417,6 +471,16 @@ defmodule BaileysEx.Message.Retry do
 
   defp issue_placeholder_resend_request(store_ref, message_key, message_id, timeout_ms, opts) do
     case send_placeholder_resend_request(message_key, opts[:send_request_fun]) do
+      {:ok, request_id, context} ->
+        {:ok, cleanup_ref} =
+          :timer.apply_after(timeout_ms, __MODULE__, :expire_placeholder_resend, [
+            store_ref,
+            message_id
+          ])
+
+        update_placeholder_timer(store_ref, message_id, cleanup_ref)
+        {:ok, request_id, context}
+
       {:ok, request_id} ->
         {:ok, cleanup_ref} =
           :timer.apply_after(timeout_ms, __MODULE__, :expire_placeholder_resend, [
@@ -487,9 +551,9 @@ defmodule BaileysEx.Message.Retry do
   defp normalize_retry_reason(_reason), do: nil
 
   defp retry_reason_for_code(code) do
-    Enum.find_value(@retry_reason_values, fn
+    Enum.find_value(@retry_reason_values, :UNKNOWN_ERROR, fn
       {reason, ^code} -> reason
-      _other -> nil
+      _other -> false
     end)
   end
 
@@ -537,6 +601,28 @@ defmodule BaileysEx.Message.Retry do
 
   defp prune_recent_order(order, cache) do
     Enum.filter(order, &Map.has_key?(cache, &1))
+  end
+
+  defp prune_base_key_cache(cache, now_ms, ttl_ms) do
+    Enum.reduce(cache, %{}, fn {key, %{timestamp: timestamp} = value}, acc ->
+      if now_ms - timestamp <= ttl_ms do
+        Map.put(acc, key, value)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp enforce_base_key_cache_limit(cache, max_size)
+       when is_integer(max_size) and max_size > 0 do
+    if map_size(cache) > max_size do
+      cache
+      |> Enum.sort_by(fn {_key, %{timestamp: timestamp}} -> timestamp end)
+      |> Enum.drop(map_size(cache) - max_size)
+      |> Map.new()
+    else
+      cache
+    end
   end
 
   defp now_ms(opts) do

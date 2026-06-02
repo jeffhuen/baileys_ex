@@ -645,6 +645,107 @@ defmodule BaileysEx.PublicApiTest do
     assert :ok = BaileysEx.disconnect(connection)
   end
 
+  test "account standing helpers use the connection runtime and emit reachout updates" do
+    parent = self()
+
+    query_handler = fn node, _timeout ->
+      [
+        %BinaryNode{
+          tag: "query",
+          attrs: %{"query_id" => query_id},
+          content: {:binary, payload}
+        }
+      ] = node.content
+
+      variables = JSON.decode!(payload)["variables"]
+      send(parent, {:wmex_query, query_id, variables, node.attrs["id"]})
+
+      response_payload =
+        case query_id do
+          "23983697327930364" ->
+            %{
+              "data" => %{
+                "xwa2_fetch_account_reachout_timelock" => %{
+                  "is_active" => true,
+                  "time_enforcement_ends" => "1710000000",
+                  "enforcement_type" => "WEB_COMPANION_ONLY"
+                }
+              }
+            }
+
+          "24503548349331633" ->
+            %{
+              "data" => %{
+                "xwa2_message_capping_info" => %{
+                  "total_quota" => 25,
+                  "used_quota" => 7,
+                  "capping_status" => "FIRST_WARNING"
+                }
+              }
+            }
+        end
+
+      {:ok,
+       %BinaryNode{
+         tag: "iq",
+         attrs: %{"type" => "result"},
+         content: [
+           %BinaryNode{
+             tag: "result",
+             attrs: %{},
+             content: {:binary, JSON.encode!(response_payload)}
+           }
+         ]
+       }}
+    end
+
+    assert {:ok, connection} =
+             BaileysEx.connect(%{creds: %{}},
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self(),
+               query_handler: query_handler
+             )
+
+    assert_receive :fake_socket_connect
+
+    unsubscribe =
+      BaileysEx.subscribe(connection, fn event -> send(parent, {:public_event, event}) end)
+
+    assert {:ok,
+            %{
+              is_active: true,
+              time_enforcement_ends: ~U[2024-03-09 16:00:00Z],
+              enforcement_type: "WEB_COMPANION_ONLY"
+            }} =
+             BaileysEx.fetch_account_reachout_timelock(connection,
+               message_tag_fun: fn -> "account-runtime-1" end
+             )
+
+    assert_receive {:wmex_query, "23983697327930364", %{}, "account-runtime-1"}
+
+    assert_receive {:public_event,
+                    {:connection,
+                     %{
+                       reachout_time_lock: %{
+                         is_active: true,
+                         time_enforcement_ends: ~U[2024-03-09 16:00:00Z],
+                         enforcement_type: "WEB_COMPANION_ONLY"
+                       }
+                     }}}
+
+    assert {:ok, %{"total_quota" => 25, "used_quota" => 7, "capping_status" => "FIRST_WARNING"}} =
+             BaileysEx.fetch_new_chat_message_cap(connection,
+               message_tag_fun: fn -> "account-runtime-2" end
+             )
+
+    assert_receive {:wmex_query, "24503548349331633",
+                    %{"input" => %{"type" => "INDIVIDUAL_NEW_CHAT_MSG"}}, "account-runtime-2"}
+
+    unsubscribe.()
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
   test "public facade exports the remaining source-supported helper wrappers" do
     wrappers = [
       {:archive_chat, 5},
@@ -660,6 +761,8 @@ defmodule BaileysEx.PublicApiTest do
       {:on_whatsapp, 3},
       {:fetch_status, 3},
       {:business_profile, 3},
+      {:fetch_account_reachout_timelock, 2},
+      {:fetch_new_chat_message_cap, 2},
       {:update_profile_name, 3},
       {:update_profile_picture, 5},
       {:remove_profile_picture, 3},

@@ -167,10 +167,10 @@ defmodule BaileysEx.Syncd.Codec do
     gen =
       if operation == :remove do
         if is_nil(prev_op) do
-          raise "tried remove, but no previous op for index #{index_mac_b64}"
+          gen
+        else
+          %{gen | index_value_map: Map.delete(gen.index_value_map, index_mac_b64)}
         end
-
-        %{gen | index_value_map: Map.delete(gen.index_value_map, index_mac_b64)}
       else
         gen =
           %{gen | add_buffs: [value_mac | gen.add_buffs]}
@@ -284,6 +284,9 @@ defmodule BaileysEx.Syncd.Codec do
           {:ok, mutation, new_gen, new_cache} ->
             {:cont, {:ok, new_gen, new_cache, reducer.(mutation, acc)}}
 
+          {:skip, new_gen, new_cache} ->
+            {:cont, {:ok, new_gen, new_cache, acc}}
+
           {:error, _reason} = err ->
             {:halt, err}
         end
@@ -303,8 +306,37 @@ defmodule BaileysEx.Syncd.Codec do
     {operation, record} = extract_operation_and_record(msg_mutation)
 
     with {:ok, key_id_bin} <- extract_key_id(record),
-         {:ok, keys, cache} <- get_cached_keys(key_id_bin, get_key_fn, cache),
-         {:ok, enc_content, og_value_mac} <- extract_value_parts(record),
+         {:ok, keys, cache} <- get_cached_keys(key_id_bin, get_key_fn, cache) do
+      case decode_mutation_payload(record, operation, key_id_bin, keys, validate_macs) do
+        {:ok, mutation, index_mac, value_mac} ->
+          new_gen =
+            mix_mutation(gen, %{
+              index_mac: index_mac,
+              value_mac: value_mac,
+              operation: operation
+            })
+
+          {:ok, mutation, new_gen, cache}
+
+        {:error, reason} = err ->
+          if skippable_mutation_error?(reason) do
+            {:skip, gen, cache}
+          else
+            err
+          end
+      end
+    else
+      {:error, reason} = err ->
+        if missing_key_error?(reason) do
+          err
+        else
+          {:skip, gen, cache}
+        end
+    end
+  end
+
+  defp decode_mutation_payload(record, operation, key_id_bin, keys, validate_macs) do
+    with {:ok, enc_content, og_value_mac} <- extract_value_parts(record),
          :ok <-
            verify_value_mac(
              validate_macs,
@@ -320,16 +352,7 @@ defmodule BaileysEx.Syncd.Codec do
          {:ok, index_array} <- parse_index(sync_action_data.index) do
       mutation = %{sync_action: sync_action_data, index: index_array}
 
-      index_mac = record.index.blob
-
-      new_gen =
-        mix_mutation(gen, %{
-          index_mac: index_mac,
-          value_mac: og_value_mac,
-          operation: operation
-        })
-
-      {:ok, mutation, new_gen, cache}
+      {:ok, mutation, record.index.blob, og_value_mac}
     end
   end
 
@@ -560,15 +583,23 @@ defmodule BaileysEx.Syncd.Codec do
         mutation_map = mutation_order_to_map(mutation_order)
         final_state = %{new_state | hash: hash, index_value_map: ivm}
 
-        with :ok <-
-               verify_snapshot_mac(
-                 validate_macs,
-                 snapshot,
-                 final_state,
-                 name,
-                 get_app_state_sync_key
-               ) do
-          {:ok, %{state: final_state, mutation_map: mutation_map, mutation_order: mutation_order}}
+        case verify_snapshot_mac(
+               validate_macs,
+               snapshot,
+               final_state,
+               name,
+               get_app_state_sync_key
+             ) do
+          :ok ->
+            {:ok,
+             %{state: final_state, mutation_map: mutation_map, mutation_order: mutation_order}}
+
+          {:error, :invalid_snapshot_mac} ->
+            {:ok,
+             %{state: final_state, mutation_map: mutation_map, mutation_order: mutation_order}}
+
+          {:error, _} = err ->
+            err
         end
 
       {:error, _} = err ->
@@ -928,23 +959,42 @@ defmodule BaileysEx.Syncd.Codec do
              syncd.mutations,
              state,
              get_app_state_sync_key,
-             true,
+             validate_macs,
              [],
              patch_mutation_reducer(should_mutate)
-           ),
-         patch_mutation_order = Enum.reverse(patch_mutations),
-         next_mutation_map = Map.merge(mutation_map, mutation_order_to_map(patch_mutation_order)),
-         next_mutation_order = mutation_order ++ patch_mutation_order,
-         verified_state = %{state | hash: hash, index_value_map: ivm},
-         :ok <-
-           verify_snapshot_mac(
+           ) do
+      patch_mutation_order = Enum.reverse(patch_mutations)
+      next_mutation_map = Map.merge(mutation_map, mutation_order_to_map(patch_mutation_order))
+      next_mutation_order = mutation_order ++ patch_mutation_order
+      verified_state = %{state | hash: hash, index_value_map: ivm}
+
+      case verify_snapshot_mac(
              validate_macs,
              %{key_id: syncd.key_id, mac: syncd.snapshot_mac},
              verified_state,
              name,
              get_app_state_sync_key
            ) do
-      {:ok, verified_state, next_mutation_map, next_mutation_order}
+        :ok ->
+          {:ok, verified_state, next_mutation_map, next_mutation_order}
+
+        {:error, :invalid_snapshot_mac} ->
+          {:break, verified_state, next_mutation_map, next_mutation_order}
+
+        {:error, reason} = err ->
+          if missing_key_error?(reason) do
+            err
+          else
+            {:skip_patch, state, mutation_map, mutation_order}
+          end
+      end
+    else
+      {:error, reason} = err ->
+        if missing_key_error?(reason) do
+          err
+        else
+          {:skip_patch, state, mutation_map, mutation_order}
+        end
     end
   end
 
@@ -971,7 +1021,26 @@ defmodule BaileysEx.Syncd.Codec do
     {:cont, {:ok, next_state, next_mutation_map, next_mutation_order}}
   end
 
+  defp continue_patch_reduction({:skip_patch, state, mutation_map, mutation_order}) do
+    {:cont, {:ok, state, mutation_map, mutation_order}}
+  end
+
+  defp continue_patch_reduction({:break, state, mutation_map, mutation_order}) do
+    {:halt, {:ok, state, mutation_map, mutation_order}}
+  end
+
   defp continue_patch_reduction({:error, _} = err), do: {:halt, err}
+
+  defp missing_key_error?({:key_not_found, _key_id}), do: true
+  defp missing_key_error?({:missing_app_state_key, _key_id}), do: true
+  defp missing_key_error?(_reason), do: false
+
+  defp skippable_mutation_error?(:hmac_content_verification_failed), do: true
+  defp skippable_mutation_error?(:decrypt_failed), do: true
+  defp skippable_mutation_error?(:data_too_short), do: true
+  defp skippable_mutation_error?(:invalid_value_blob), do: true
+  defp skippable_mutation_error?({:decode_error, _reason}), do: true
+  defp skippable_mutation_error?(_reason), do: false
 
   defp decode_collection_node(collection_node, external_blob_fetcher) do
     name = String.to_existing_atom(collection_node.attrs["name"])

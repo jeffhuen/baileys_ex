@@ -8,7 +8,7 @@ defmodule BaileysEx.Media.Download do
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Telemetry
 
-  @mmg_host "https://mmg.whatsapp.net"
+  @default_media_host "mmg.whatsapp.net"
   @aes_chunk_size 16
 
   @type media_message :: %{
@@ -43,7 +43,7 @@ defmodule BaileysEx.Media.Download do
       %{media_type: telemetry_media_type(media_message, opts), target: :memory},
       fn ->
         with {:ok, media_type} <- media_type(media_message, opts),
-             {:ok, url} <- media_url(media_message),
+             {:ok, url} <- media_url(media_message, opts),
              media_key when is_binary(media_key) <- Map.get(media_message, :media_key),
              {:ok, iodata} <-
                download_into(media_key, media_type, url, opts, [], &collect_chunk/2) do
@@ -71,7 +71,7 @@ defmodule BaileysEx.Media.Download do
       %{media_type: telemetry_media_type(media_message, opts), path: path, target: :file},
       fn ->
         with {:ok, media_type} <- media_type(media_message, opts),
-             {:ok, url} <- media_url(media_message),
+             {:ok, url} <- media_url(media_message, opts),
              media_key when is_binary(media_key) <- Map.get(media_message, :media_key) do
           stream_download_to_file(media_key, media_type, url, path, opts)
         else
@@ -102,29 +102,24 @@ defmodule BaileysEx.Media.Download do
   defp telemetry_media_type(%Message.StickerMessage{}, _opts), do: :sticker
   defp telemetry_media_type(_media_message, opts), do: opts[:media_type]
 
-  defp media_url(%{url: url, direct_path: direct_path})
-       when is_binary(url) and byte_size(url) > 0 and is_binary(direct_path) and
-              byte_size(direct_path) > 0 do
-    if String.starts_with?(url, @mmg_host) do
-      {:ok, url}
-    else
-      {:ok, @mmg_host <> direct_path}
+  defp media_url(%{direct_path: direct_path} = media_message, opts)
+       when is_binary(direct_path) and byte_size(direct_path) > 0 do
+    host = opts[:host] || extract_host(Map.get(media_message, :url)) || @default_media_host
+    {:ok, "https://#{host}#{direct_path}"}
+  end
+
+  defp media_url(%{url: url}, _opts) when is_binary(url) and byte_size(url) > 0, do: {:ok, url}
+
+  defp media_url(_media_message, _opts), do: {:error, :missing_media_url}
+
+  defp extract_host(url) when is_binary(url) and byte_size(url) > 0 do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) -> host
+      _ -> nil
     end
   end
 
-  defp media_url(%{url: url}) when is_binary(url) and byte_size(url) > 0 do
-    if String.starts_with?(url, @mmg_host) do
-      {:ok, url}
-    else
-      {:error, :missing_media_url}
-    end
-  end
-
-  defp media_url(%{direct_path: direct_path})
-       when is_binary(direct_path) and byte_size(direct_path) > 0,
-       do: {:ok, @mmg_host <> direct_path}
-
-  defp media_url(_media_message), do: {:error, :missing_media_url}
+  defp extract_host(_url), do: nil
 
   defp stream_download_to_file(media_key, media_type, url, path, opts) do
     File.mkdir_p!(Path.dirname(path))

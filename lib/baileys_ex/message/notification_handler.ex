@@ -17,6 +17,40 @@ defmodule BaileysEx.Message.NotificationHandler do
   alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.MessageStubType
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Signal.Repository
+  alias BaileysEx.Signal.Store
+
+  @reachout_enforcement_types MapSet.new([
+                                "BIZ_COMMERCE_VIOLATION_ALCOHOL",
+                                "BIZ_COMMERCE_VIOLATION_ADULT",
+                                "BIZ_COMMERCE_VIOLATION_ANIMALS",
+                                "BIZ_COMMERCE_VIOLATION_BODY_PARTS_FLUIDS",
+                                "BIZ_COMMERCE_VIOLATION_DATING",
+                                "BIZ_COMMERCE_VIOLATION_DIGITAL_SERVICES_PRODUCTS",
+                                "BIZ_COMMERCE_VIOLATION_DRUGS",
+                                "BIZ_COMMERCE_VIOLATION_DRUGS_ONLY_OTC",
+                                "BIZ_COMMERCE_VIOLATION_GAMBLING",
+                                "BIZ_COMMERCE_VIOLATION_HEALTHCARE",
+                                "BIZ_COMMERCE_VIOLATION_REAL_FAKE_CURRENCY",
+                                "BIZ_COMMERCE_VIOLATION_SUPPLEMENTS",
+                                "BIZ_COMMERCE_VIOLATION_TOBACCO",
+                                "BIZ_COMMERCE_VIOLATION_VIOLENT_CONTENT",
+                                "BIZ_COMMERCE_VIOLATION_WEAPONS",
+                                "BIZ_QUALITY",
+                                "DEFAULT",
+                                "WEB_COMPANION_ONLY"
+                              ])
+
+  @message_capping_fields [
+    {"total_quota", :total_quota},
+    {"used_quota", :used_quota},
+    {"cycle_start_timestamp", :cycle_start_timestamp},
+    {"cycle_end_timestamp", :cycle_end_timestamp},
+    {"server_sent_timestamp", :server_sent_timestamp},
+    {"ote_status", :ote_status},
+    {"mv_status", :mv_status},
+    {"capping_status", :capping_status}
+  ]
 
   @type context :: %{
           optional(:event_emitter) => GenServer.server(),
@@ -25,7 +59,10 @@ defmodule BaileysEx.Message.NotificationHandler do
                                                    :ok | {:error, term()}),
           optional(:handle_encrypt_notification_fun) => (BinaryNode.t() -> term()),
           optional(:device_notification_fun) => (BinaryNode.t() -> term()),
-          optional(:resync_app_state_fun) => (String.t() -> term())
+          optional(:signal_store) => Store.t(),
+          optional(:signal_repository) => Repository.t(),
+          optional(:resync_app_state_fun) => (String.t() -> term()),
+          optional(:now_seconds) => integer()
         }
 
   @doc """
@@ -98,7 +135,8 @@ defmodule BaileysEx.Message.NotificationHandler do
         subject: create_attrs["subject"],
         creation: parse_integer(create_attrs["creation"]),
         owner: create_attrs["creator"],
-        author: author
+        author: author,
+        author_username: attrs["participant_username"]
       }
     ])
 
@@ -180,6 +218,8 @@ defmodule BaileysEx.Message.NotificationHandler do
   end
 
   defp handle_devices_notification(%BinaryNode{} = node, context) do
+    :ok = apply_devices_notification(node, context)
+
     case context[:device_notification_fun] do
       fun when is_function(fun, 1) ->
         _ = fun.(node)
@@ -189,6 +229,85 @@ defmodule BaileysEx.Message.NotificationHandler do
         :ok
     end
   end
+
+  defp apply_devices_notification(
+         %BinaryNode{} = node,
+         %{signal_store: %Store{} = store} = context
+       ) do
+    with [%BinaryNode{} = child | _rest] <- BinaryNodeUtil.children(node),
+         tag when tag in ["add", "remove", "update"] <- child.tag,
+         decoded when decoded != [] <- decode_device_entries(child) do
+      decoded
+      |> Enum.group_by(& &1.user)
+      |> Enum.each(fn {user, entries} ->
+        apply_device_entries(store, context, tag, user, entries)
+      end)
+    end
+
+    :ok
+  end
+
+  defp apply_devices_notification(%BinaryNode{}, _context), do: :ok
+
+  defp apply_device_entries(%Store{} = store, _context, "update", user, _entries) do
+    Store.set(store, %{:"device-list" => %{user => nil}})
+  end
+
+  defp apply_device_entries(%Store{} = store, context, tag, user, entries) do
+    if tag == "remove" do
+      maybe_delete_device_sessions(context, entries)
+    end
+
+    case Store.get(store, :"device-list", [user]) do
+      %{^user => existing_devices} when is_list(existing_devices) and existing_devices != [] ->
+        affected = MapSet.new(Enum.map(entries, & &1.device_id))
+
+        updated_devices =
+          case tag do
+            "add" ->
+              existing_devices
+              |> Enum.reject(&MapSet.member?(affected, &1))
+              |> Kernel.++(Enum.map(entries, & &1.device_id))
+
+            "remove" ->
+              Enum.reject(existing_devices, &MapSet.member?(affected, &1))
+          end
+
+        if updated_devices == [] do
+          Store.set(store, %{:"device-list" => %{user => nil}})
+        else
+          Store.set(store, %{:"device-list" => %{user => updated_devices}})
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp decode_device_entries(%BinaryNode{} = child) do
+    child
+    |> BinaryNodeUtil.children("device")
+    |> Enum.flat_map(fn
+      %BinaryNode{attrs: %{"jid" => jid}} when is_binary(jid) ->
+        case JIDUtil.parse(jid) do
+          %{user: user, device: device} when is_binary(user) ->
+            [%{jid: jid, user: user, device_id: Integer.to_string(device || 0)}]
+
+          _ ->
+            []
+        end
+
+      _ ->
+        []
+    end)
+  end
+
+  defp maybe_delete_device_sessions(%{signal_repository: %Repository{} = repository}, entries) do
+    _ = Repository.delete_session(repository, Enum.map(entries, & &1.jid))
+    :ok
+  end
+
+  defp maybe_delete_device_sessions(_context, _entries), do: :ok
 
   defp handle_picture_notification(%BinaryNode{attrs: attrs} = node, context) do
     set_picture = BinaryNodeUtil.child(node, "set")
@@ -275,59 +394,151 @@ defmodule BaileysEx.Message.NotificationHandler do
   end
 
   defp handle_newsletter_notification(%BinaryNode{attrs: attrs} = node, context) do
-    case BinaryNodeUtil.children(node) do
-      [%BinaryNode{tag: "reaction", attrs: reaction_attrs} = child | _rest] ->
-        emit(context, :newsletter_reaction, %{
-          id: attrs["from"],
-          server_id: reaction_attrs["message_id"],
-          reaction: %{code: newsletter_reaction_code(child), count: 1}
-        })
+    node
+    |> BinaryNodeUtil.children()
+    |> Enum.each(&handle_newsletter_child(&1, attrs, context))
 
-      [%BinaryNode{tag: "view", attrs: view_attrs, content: content} | _rest] ->
-        emit(context, :newsletter_view, %{
-          id: attrs["from"],
-          server_id: view_attrs["message_id"],
-          count: parse_integer(content) || 0
-        })
-
-      [%BinaryNode{tag: "participant", attrs: participant_attrs} | _rest] ->
-        emit(context, :newsletter_participants_update, %{
-          id: attrs["from"],
-          author: attrs["participant"],
-          user: participant_attrs["jid"],
-          action: participant_attrs["action"],
-          new_role: participant_attrs["role"]
-        })
-
-      [%BinaryNode{tag: "update"} = child | _rest] ->
-        emit(context, :newsletter_settings_update, %{
-          id: attrs["from"],
-          update: newsletter_settings(child)
-        })
-
-      [%BinaryNode{tag: "message", attrs: message_attrs} = child | _rest] ->
-        emit_newsletter_message(context, attrs["from"], child, message_attrs)
-
-      _ ->
-        :ok
-    end
+    :ok
   end
+
+  defp handle_newsletter_child(
+         %BinaryNode{tag: "reaction", attrs: reaction_attrs} = child,
+         attrs,
+         context
+       ) do
+    emit(context, :newsletter_reaction, %{
+      id: attrs["from"],
+      server_id: reaction_attrs["message_id"],
+      reaction: %{code: newsletter_reaction_code(child), count: 1}
+    })
+  end
+
+  defp handle_newsletter_child(
+         %BinaryNode{tag: "view", attrs: view_attrs, content: content},
+         attrs,
+         context
+       ) do
+    emit(context, :newsletter_view, %{
+      id: attrs["from"],
+      server_id: view_attrs["message_id"],
+      count: parse_integer(content) || 0
+    })
+  end
+
+  defp handle_newsletter_child(
+         %BinaryNode{tag: "participant", attrs: participant_attrs},
+         attrs,
+         context
+       ) do
+    emit(context, :newsletter_participants_update, %{
+      id: attrs["from"],
+      author: attrs["participant"],
+      user: participant_attrs["jid"],
+      action: participant_attrs["action"],
+      new_role: participant_attrs["role"]
+    })
+  end
+
+  defp handle_newsletter_child(%BinaryNode{tag: "update"} = child, attrs, context) do
+    emit(context, :newsletter_settings_update, %{
+      id: attrs["from"],
+      update: newsletter_settings(child)
+    })
+  end
+
+  defp handle_newsletter_child(
+         %BinaryNode{tag: "message", attrs: message_attrs} = child,
+         attrs,
+         context
+       ) do
+    emit_newsletter_message(context, attrs["from"], child, message_attrs)
+  end
+
+  defp handle_newsletter_child(%BinaryNode{}, _attrs, _context), do: :ok
 
   defp handle_mex_notification(%BinaryNode{} = node, context) do
-    case BinaryNodeUtil.child(node, "mex") do
-      %BinaryNode{content: content} when is_binary(content) ->
-        case JSON.decode(content) do
-          {:ok, %{"operation" => operation, "updates" => updates}} when is_list(updates) ->
-            emit_mex_updates(context, operation, updates, node.attrs["from"])
+    case BinaryNodeUtil.child(node, "update") do
+      %BinaryNode{} = update_node ->
+        handle_mex_update_notification(update_node, context)
 
-          _ ->
-            :ok
-        end
+      _ ->
+        handle_legacy_mex_notification(node, context)
+    end
+  end
+
+  defp handle_mex_update_notification(%BinaryNode{attrs: attrs, content: content}, context) do
+    with op_name when is_binary(op_name) <- attrs["op_name"],
+         payload when is_binary(payload) <- binary_content(content),
+         {:ok, %{"data" => data} = response} <- JSON.decode(payload),
+         true <- mex_response_ok?(response) do
+      dispatch_mex_update(op_name, data, context)
+    else
+      _ -> :ok
+    end
+  end
+
+  defp handle_legacy_mex_notification(%BinaryNode{} = node, context) do
+    case BinaryNodeUtil.child(node, "mex") || BinaryNodeUtil.child(node, "update") do
+      %BinaryNode{content: content} when is_binary(content) ->
+        dispatch_legacy_mex_payload(content, node.attrs["from"], context)
+
+      %BinaryNode{content: {:binary, content}} when is_binary(content) ->
+        dispatch_legacy_mex_payload(content, node.attrs["from"], context)
 
       _ ->
         :ok
     end
   end
+
+  defp mex_response_ok?(%{"errors" => errors}) when is_list(errors) and errors != [], do: false
+  defp mex_response_ok?(_response), do: true
+
+  defp dispatch_legacy_mex_payload(content, author, context) do
+    case JSON.decode(content) do
+      {:ok, %{"operation" => operation, "updates" => updates}} when is_list(updates) ->
+        emit_mex_updates(context, operation, updates, author)
+
+      {:ok, %{"data" => %{"xwa2_notify_linked_profiles" => linked_profiles}}} ->
+        emit_mex_updates(context, "NotificationLinkedProfilesUpdates", [linked_profiles], author)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp dispatch_mex_update("NotificationUserReachoutTimelockUpdate", data, context) do
+    case data["xwa2_notify_account_reachout_timelock"] do
+      payload when is_map(payload) ->
+        emit(context, :connection_update, %{
+          reachout_time_lock: reachout_time_lock(payload, context)
+        })
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp dispatch_mex_update("MessageCappingInfoNotification", data, context) do
+    case data["xwa2_notify_new_chat_messages_capping_info_update"] do
+      payload when is_map(payload) ->
+        emit(context, :message_capping_update, normalize_message_capping(payload))
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp dispatch_mex_update("NotificationLinkedProfilesUpdates", data, context) do
+    case data["xwa2_notify_linked_profiles"] do
+      payload when is_map(payload) ->
+        emit_mex_updates(context, "NotificationLinkedProfilesUpdates", [payload], nil)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp dispatch_mex_update(_op_name, _data, _context), do: :ok
 
   defp emit_group_message(context, attrs, payload) do
     emit(context, :messages_upsert, %{
@@ -412,7 +623,83 @@ defmodule BaileysEx.Message.NotificationHandler do
     end)
   end
 
+  defp emit_mex_updates(context, "NotificationLinkedProfilesUpdates", updates, _author) do
+    Enum.each(updates, fn
+      %{"jid" => lid, "added_profiles" => profiles} when is_list(profiles) ->
+        Enum.each(profiles, fn
+          pn when is_binary(pn) ->
+            emit(context, :lid_mapping_update, %{lid: lid, pn: pn})
+
+          %{"pn" => pn} when is_binary(pn) ->
+            emit(context, :lid_mapping_update, %{lid: lid, pn: pn})
+
+          %{"jid" => pn} when is_binary(pn) ->
+            emit(context, :lid_mapping_update, %{lid: lid, pn: pn})
+
+          _other ->
+            :ok
+        end)
+
+      _other ->
+        :ok
+    end)
+  end
+
   defp emit_mex_updates(_context, _operation, _updates, _author), do: :ok
+
+  defp reachout_time_lock(%{"is_active" => false}, _context) do
+    %{is_active: false, enforcement_type: "DEFAULT"}
+  end
+
+  defp reachout_time_lock(payload, context) do
+    enforcement_type =
+      case payload["enforcement_type"] do
+        value when is_binary(value) ->
+          if MapSet.member?(@reachout_enforcement_types, value), do: value, else: "DEFAULT"
+
+        _ ->
+          "DEFAULT"
+      end
+
+    %{
+      is_active: payload["is_active"] == true,
+      enforcement_type: enforcement_type
+    }
+    |> maybe_put(
+      :time_enforcement_ends,
+      reachout_end_time(payload["time_enforcement_ends"], payload["is_active"] == true, context)
+    )
+  end
+
+  defp reachout_end_time(value, active?, context)
+
+  defp reachout_end_time(nil, true, context), do: unix_to_datetime(now_seconds(context) + 60)
+  defp reachout_end_time("", true, context), do: unix_to_datetime(now_seconds(context) + 60)
+
+  defp reachout_end_time(value, _active?, _context) do
+    with seconds when is_integer(seconds) <- parse_integer(value),
+         {:ok, datetime} <- DateTime.from_unix(seconds) do
+      datetime
+    else
+      _ -> nil
+    end
+  end
+
+  defp now_seconds(%{now_seconds: seconds}) when is_integer(seconds), do: seconds
+  defp now_seconds(_context), do: System.system_time(:second)
+
+  defp unix_to_datetime(seconds) do
+    case DateTime.from_unix(seconds) do
+      {:ok, datetime} -> datetime
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp normalize_message_capping(payload) when is_map(payload) do
+    Enum.reduce(@message_capping_fields, %{}, fn {source_key, target_key}, acc ->
+      maybe_put(acc, target_key, payload[source_key])
+    end)
+  end
 
   defp newsletter_reaction_code(%BinaryNode{} = child) do
     case BinaryNodeUtil.child(child, "reaction") do
@@ -482,6 +769,7 @@ defmodule BaileysEx.Message.NotificationHandler do
         id: participant.attrs["jid"],
         phone_number: participant.attrs["phone_number"],
         lid: participant.attrs["lid"],
+        username: participant.attrs["participant_username"] || participant.attrs["username"],
         admin: participant.attrs["type"]
       })
     end)

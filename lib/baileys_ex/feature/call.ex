@@ -7,6 +7,7 @@ defmodule BaileysEx.Feature.Call do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Store
+  alias BaileysEx.Message.Receipt
   import BaileysEx.Connection.TransportAdapter, only: [query: 3]
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   @timeout 60_000
@@ -53,7 +54,7 @@ defmodule BaileysEx.Feature.Call do
 
         maybe_store_offer(opts[:store_ref], call, status)
         maybe_emit_call(opts[:event_emitter], call)
-        :ok = maybe_send_ack(opts[:send_node_fun], build_ack(node))
+        :ok = maybe_send_ack(opts[:send_node_fun], Receipt.build_ack_stanza(node))
 
         {:ok, call}
 
@@ -182,18 +183,6 @@ defmodule BaileysEx.Feature.Call do
 
   defp maybe_send_ack(nil, _ack), do: :ok
   defp maybe_send_ack(fun, ack) when is_function(fun, 1), do: fun.(ack)
-
-  defp build_ack(%BinaryNode{tag: tag, attrs: attrs}) do
-    %BinaryNode{
-      tag: "ack",
-      attrs:
-        %{"id" => attrs["id"], "to" => attrs["from"], "class" => tag}
-        |> maybe_put("participant", attrs["participant"])
-        |> maybe_put("recipient", attrs["recipient"])
-        |> maybe_put("type", attrs["type"]),
-      content: nil
-    }
-  end
 
   defp cached_offer(%Store.Ref{} = store_ref, id) do
     store_ref

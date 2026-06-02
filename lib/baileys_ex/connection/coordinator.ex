@@ -17,13 +17,16 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
+  alias BaileysEx.Feature.Account
   alias BaileysEx.Feature.AppState
   alias BaileysEx.Feature.Call
   alias BaileysEx.Feature.Community
   alias BaileysEx.Feature.Group
   alias BaileysEx.Feature.Presence
+  alias BaileysEx.Feature.TcToken
   alias BaileysEx.Message.IdentityChangeHandler
   alias BaileysEx.Message.NotificationHandler
+  alias BaileysEx.Message.PeerData
   alias BaileysEx.Message.Receipt
   alias BaileysEx.Message.Receiver
   alias BaileysEx.Message.Retry
@@ -83,6 +86,7 @@ defmodule BaileysEx.Connection.Coordinator do
       :reconnect_timer,
       :initial_sync_timer,
       :app_state_sync_ref,
+      blocked_app_state_collections: MapSet.new(),
       init_query_handlers: %{},
       event_buffer_seed: %{},
       identity_change_cache: %{},
@@ -242,6 +246,7 @@ defmodule BaileysEx.Connection.Coordinator do
       |> handle_connection_update(events)
       |> handle_sync_event(events)
       |> maybe_start_initial_app_state_sync(events)
+      |> maybe_resync_blocked_app_state_collections(events)
       |> handle_dirty_update(events)
 
     {:noreply, state}
@@ -261,6 +266,7 @@ defmodule BaileysEx.Connection.Coordinator do
       |> handle_connection_update(events)
       |> handle_sync_event(events)
       |> maybe_start_initial_app_state_sync(events)
+      |> maybe_resync_blocked_app_state_collections(events)
       |> handle_dirty_update(events)
 
     {:noreply, state}
@@ -363,6 +369,12 @@ defmodule BaileysEx.Connection.Coordinator do
     {:noreply, state}
   end
 
+  def handle_info({:app_state_collection_blocked, name}, %State{} = state)
+      when is_atom(name) do
+    blocked = MapSet.put(blocked_app_state_collections(state), name)
+    {:noreply, %{state | blocked_app_state_collections: blocked}}
+  end
+
   @impl true
   def terminate(_reason, %State{unsubscribe: unsubscribe}) when is_function(unsubscribe, 0) do
     unsubscribe.()
@@ -442,7 +454,7 @@ defmodule BaileysEx.Connection.Coordinator do
   defp handle_socket_node(%State{} = state, %{
          socket_node: %{node: %BinaryNode{tag: "ack"} = node}
        }) do
-    :ok = Receiver.handle_bad_ack(node, state.event_emitter)
+    :ok = Receiver.handle_bad_ack(node, bad_ack_context(state))
     state
   end
 
@@ -1222,19 +1234,25 @@ defmodule BaileysEx.Connection.Coordinator do
   defp receiver_context(%State{} = state, %Repository{} = repository) do
     creds = Store.get(state.store_ref, :creds, %{})
 
-    %{
-      signal_repository: repository,
-      event_emitter: state.event_emitter,
-      enable_recent_message_cache: state.config.enable_recent_message_cache,
-      me_id: AuthState.me_id(creds),
-      me_lid: AuthState.me_lid(creds),
-      store_ref: state.store_ref,
-      signal_store: state.signal_store
-    }
-    |> maybe_put_callback(:send_receipt_fun, receipt_sender_fun(state))
-    |> maybe_put_callback(:history_sync_download_fun, state.history_sync_download_fun)
-    |> maybe_put_callback(:inflate_fun, state.history_sync_inflate_fun)
-    |> maybe_put_callback(:get_message_fun, state.get_message_fun)
+    context =
+      %{
+        signal_repository: repository,
+        event_emitter: state.event_emitter,
+        enable_recent_message_cache: state.config.enable_recent_message_cache,
+        me_id: AuthState.me_id(creds),
+        me_lid: AuthState.me_lid(creds),
+        store_ref: state.store_ref,
+        signal_store: state.signal_store
+      }
+      |> maybe_put_callback(:send_receipt_fun, receipt_sender_fun(state))
+      |> maybe_put_callback(:send_node_fun, receipt_sender_fun(state))
+      |> maybe_put_callback(:query_fun, sender_query_fun(state))
+      |> maybe_put_callback(:history_sync_download_fun, state.history_sync_download_fun)
+      |> maybe_put_callback(:inflate_fun, state.history_sync_inflate_fun)
+      |> maybe_put_callback(:get_message_fun, state.get_message_fun)
+
+    context
+    |> maybe_put_callback(:send_placeholder_request_fun, placeholder_request_fun(context))
   end
 
   defp sender_context(%State{} = state, %Repository{} = repository) do
@@ -1249,10 +1267,12 @@ defmodule BaileysEx.Connection.Coordinator do
     }
     |> maybe_put(:device_identity, encoded_device_identity(creds))
     |> maybe_put(:store_ref, state.store_ref)
+    |> maybe_put(:privacy_token_on_1to1?, privacy_token_on_1to1?(state))
     |> maybe_put_callback(:query_fun, sender_query_fun(state))
     |> maybe_put_callback(:send_node_fun, receipt_sender_fun(state))
     |> maybe_put_callback(:cached_group_metadata, state.config.cached_group_metadata)
     |> maybe_put_callback(:group_metadata_fun, group_metadata_fun(state))
+    |> maybe_put_callback(:tc_token_issue_fun, tc_token_issue_fun(state))
   end
 
   defp group_metadata_fun(%State{} = state) do
@@ -1348,6 +1368,8 @@ defmodule BaileysEx.Connection.Coordinator do
 
     %{event_emitter: state.event_emitter}
     |> maybe_put_callback(:me_id, me_id)
+    |> maybe_put_callback(:signal_store, state.signal_store)
+    |> maybe_put_callback(:signal_repository, state.signal_repository)
     |> maybe_put_callback(:store_privacy_token_fun, privacy_token_store_fun(state.signal_store))
     |> maybe_put_callback(:handle_encrypt_notification_fun, state.handle_encrypt_notification_fun)
     |> maybe_put_callback(:device_notification_fun, state.device_notification_fun)
@@ -1394,6 +1416,35 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
+  defp bad_ack_context(%State{} = state) do
+    %{
+      event_emitter: state.event_emitter
+    }
+    |> maybe_put_callback(:fetch_reachout_timelock_fun, fetch_reachout_timelock_fun(state))
+  end
+
+  defp fetch_reachout_timelock_fun(%State{} = state) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        fn ->
+          Account.fetch_account_reachout_timelock({state.socket_module, socket_pid},
+            event_emitter: state.event_emitter,
+            query_timeout: state.config.default_query_timeout_ms
+          )
+        end
+
+      :error ->
+        nil
+    end
+  end
+
+  defp placeholder_request_fun(%{send_node_fun: send_node_fun, query_fun: query_fun} = context)
+       when is_function(send_node_fun, 1) and is_function(query_fun, 1) do
+    fn request -> PeerData.send_request(context, request) end
+  end
+
+  defp placeholder_request_fun(_context), do: nil
+
   defp maybe_handle_identity_change(
          %State{signal_repository: %Repository{}} = state,
          %BinaryNode{} = node
@@ -1409,7 +1460,8 @@ defmodule BaileysEx.Connection.Coordinator do
         me_lid: AuthState.me_lid(creds),
         assert_sessions_fun: fn ctx, jids, force? ->
           assert_sessions(state, ctx, jids, force?)
-        end
+        end,
+        on_before_session_refresh_fun: tc_token_reissue_fun(state)
       }
 
       case IdentityChangeHandler.handle(node, context, state.identity_change_cache) do
@@ -1423,6 +1475,86 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp maybe_handle_identity_change(%State{} = state, _node), do: state
+
+  defp tc_token_reissue_fun(%State{} = state) do
+    case {fetch_socket_pid(state), state.signal_store, state.task_supervisor} do
+      {{:ok, socket_pid}, %SignalStore{} = signal_store, task_supervisor}
+      when not is_nil(task_supervisor) ->
+        fn jid ->
+          Task.Supervisor.start_child(task_supervisor, fn ->
+            opts = [
+              issue_to_lid?: tc_token_issue_to_lid?(state),
+              now: System.os_time(:second)
+            ]
+
+            case TcToken.reissue_after_identity_change(
+                   {state.socket_module, socket_pid},
+                   signal_store,
+                   jid,
+                   opts
+                 ) do
+              :ok -> :ok
+              {:error, reason} -> Logger.debug("failed to re-issue tctoken: #{inspect(reason)}")
+            end
+          end)
+
+          :ok
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp tc_token_issue_fun(%State{} = state) do
+    case {fetch_socket_pid(state), state.signal_store, state.task_supervisor} do
+      {{:ok, socket_pid}, %SignalStore{} = signal_store, task_supervisor}
+      when not is_nil(task_supervisor) ->
+        fn jid, _message, _opts ->
+          Task.Supervisor.start_child(task_supervisor, fn ->
+            opts = [
+              issue_to_lid?: tc_token_issue_to_lid?(state),
+              query_timeout: state.config.default_query_timeout_ms,
+              now: System.os_time(:second)
+            ]
+
+            case TcToken.issue_after_outgoing_message(
+                   {state.socket_module, socket_pid},
+                   signal_store,
+                   jid,
+                   opts
+                 ) do
+              :ok -> :ok
+              {:error, reason} -> Logger.debug("failed to issue tctoken: #{inspect(reason)}")
+            end
+          end)
+
+          :ok
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp tc_token_issue_to_lid?(%State{} = state) do
+    props = Store.get(state.store_ref, :props, %{}) || %{}
+
+    case props["14303"] || props["lid_trusted_token_issue_to_lid"] do
+      value when value in [true, 1, "1", "true"] -> true
+      _value -> false
+    end
+  end
+
+  defp privacy_token_on_1to1?(%State{} = state) do
+    props = Store.get(state.store_ref, :props, %{}) || %{}
+
+    case props["10518"] || props["privacy_token_sending_on_all_1_on_1_messages"] do
+      nil -> true
+      value when value in [true, 1, "1", "true"] -> true
+      _value -> false
+    end
+  end
 
   defp assert_sessions(
          %State{} = state,
@@ -1450,11 +1582,25 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp privacy_token_store_fun(%SignalStore{} = signal_store) do
     fn jid, token, timestamp ->
-      SignalStore.set(signal_store, %{tctoken: %{jid => %{token: token, timestamp: timestamp}}})
+      existing =
+        case SignalStore.get(signal_store, :tctoken, [jid]) do
+          %{^jid => entry} when is_map(entry) -> entry
+          _ -> %{}
+        end
+
+      entry =
+        %{token: token, timestamp: timestamp}
+        |> maybe_put(:sender_timestamp, tc_entry_sender_timestamp(existing))
+
+      SignalStore.set(signal_store, %{tctoken: %{jid => entry}})
     end
   end
 
   defp privacy_token_store_fun(_signal_store), do: nil
+
+  defp tc_entry_sender_timestamp(entry) when is_map(entry) do
+    entry[:sender_timestamp] || entry["sender_timestamp"] || entry["senderTimestamp"]
+  end
 
   defp pn_to_lid_lookup_fun(supervisor, socket_module, query_timeout_ms)
        when is_pid(supervisor) and is_atom(socket_module) and is_integer(query_timeout_ms) do
@@ -1575,6 +1721,65 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp maybe_start_initial_app_state_sync(%State{} = state, _events), do: state
 
+  defp maybe_resync_blocked_app_state_collections(
+         %State{} = state,
+         %{creds_update: %{my_app_state_key_id: key_id}}
+       )
+       when is_binary(key_id) and key_id != "" do
+    blocked = blocked_app_state_collections(state)
+
+    cond do
+      MapSet.size(blocked) == 0 ->
+        state
+
+      state.sync_state == :syncing ->
+        %{state | blocked_app_state_collections: MapSet.new()}
+
+      true ->
+        launch_blocked_app_state_sync(
+          %{state | blocked_app_state_collections: MapSet.new()},
+          blocked
+        )
+    end
+  end
+
+  defp maybe_resync_blocked_app_state_collections(%State{} = state, _events), do: state
+
+  defp launch_blocked_app_state_sync(%State{} = state, blocked) do
+    case fetch_socket_pid(state) do
+      {:ok, socket_pid} ->
+        collections = MapSet.to_list(blocked)
+        coordinator_pid = self()
+
+        case Task.Supervisor.start_child(state.task_supervisor, fn ->
+               result =
+                 run_app_state_resync(state, collections,
+                   initial_sync: false,
+                   socket_pid: socket_pid,
+                   coordinator_pid: coordinator_pid
+                 )
+
+               case normalize_sync_result(result) do
+                 :ok ->
+                   :ok
+
+                 {:error, reason} ->
+                   Logger.warning("blocked app state resync failed: #{inspect(reason)}")
+               end
+             end) do
+          {:ok, _pid} ->
+            state
+
+          {:error, reason} ->
+            Logger.warning("failed to start blocked app state resync: #{inspect(reason)}")
+            %{state | blocked_app_state_collections: blocked}
+        end
+
+      :error ->
+        %{state | blocked_app_state_collections: blocked}
+    end
+  end
+
   defp maybe_launch_initial_app_state_sync(%State{} = state) do
     case current_app_state_key_id(state) do
       key_id when is_binary(key_id) and key_id != "" ->
@@ -1604,6 +1809,7 @@ defmodule BaileysEx.Connection.Coordinator do
                   collections,
                   initial_sync: true,
                   socket_pid: socket_pid,
+                  coordinator_pid: coordinator_pid,
                   me: me
                 )
               rescue
@@ -1638,6 +1844,7 @@ defmodule BaileysEx.Connection.Coordinator do
   defp run_app_state_resync(%State{} = state, collections, opts) when is_list(collections) do
     socket_pid = Keyword.get_lazy(opts, :socket_pid, fn -> socket_pid!(state) end)
     me = Keyword.get_lazy(opts, :me, fn -> current_me(state) end)
+    coordinator_pid = Keyword.get(opts, :coordinator_pid, self())
 
     queryable = fn node ->
       state.socket_module.query(socket_pid, node, state.config.default_query_timeout_ms)
@@ -1652,9 +1859,17 @@ defmodule BaileysEx.Connection.Coordinator do
       me: me,
       validate_snapshot_macs: state.config.validate_snapshot_macs,
       validate_patch_macs: state.config.validate_patch_macs,
-      is_initial_sync: Keyword.get(opts, :initial_sync, false)
+      is_initial_sync: Keyword.get(opts, :initial_sync, false),
+      on_blocked_collection: fn name ->
+        Kernel.send(coordinator_pid, {:app_state_collection_blocked, name})
+      end
     )
   end
+
+  defp blocked_app_state_collections(%State{blocked_app_state_collections: %MapSet{} = blocked}),
+    do: blocked
+
+  defp blocked_app_state_collections(%State{}), do: MapSet.new()
 
   defp increment_account_sync_counter(%State{} = state) do
     current_counter =

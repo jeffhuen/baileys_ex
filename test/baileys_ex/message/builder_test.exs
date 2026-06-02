@@ -8,6 +8,7 @@ defmodule BaileysEx.Message.BuilderTest do
   alias BaileysEx.Protocol.Proto.Message.FutureProofMessage
   alias BaileysEx.Protocol.Proto.Message.ProtocolMessage
   alias BaileysEx.Protocol.Proto.Message.ReactionMessage
+  alias BaileysEx.Protocol.Proto.MessageAssociation
   alias BaileysEx.Protocol.Proto.MessageContextInfo
   alias BaileysEx.Protocol.Proto.MessageKey
 
@@ -111,6 +112,72 @@ defmodule BaileysEx.Message.BuilderTest do
                },
                mentions: ["15557654321@s.whatsapp.net"]
              })
+  end
+
+  test "builds rc10 group-wide mention context" do
+    assert %Message{
+             extended_text_message: %Message.ExtendedTextMessage{
+               text: "@all",
+               context_info: %ContextInfo{
+                 non_jid_mentions: 1,
+                 mentioned_jid: []
+               }
+             }
+           } =
+             Builder.build(%{
+               text: "@all",
+               mention_all: true
+             })
+  end
+
+  test "builds rc10 album messages with expected media counts" do
+    assert %Message{
+             album_message: %Message.AlbumMessage{
+               expected_image_count: 2,
+               expected_video_count: 1,
+               context_info: %ContextInfo{
+                 mentioned_jid: ["15557654321@s.whatsapp.net"]
+               }
+             }
+           } =
+             Builder.build(%{
+               album: %{expected_image_count: 2, expected_video_count: 1},
+               mentions: ["15557654321@s.whatsapp.net"]
+             })
+  end
+
+  test "builds rc10 media album child association metadata" do
+    secret = <<77::256>>
+
+    assert %Message{
+             image_message: %Message.ImageMessage{},
+             message_context_info: %MessageContextInfo{
+               message_secret: ^secret,
+               message_association: %MessageAssociation{
+                 association_type: :MEDIA_ALBUM,
+                 parent_message_key: %MessageKey{
+                   id: "album-parent",
+                   remote_jid: "120363001234567890@g.us",
+                   from_me: true
+                 }
+               }
+             }
+           } =
+             Builder.build(
+               %{
+                 image: {:file, "/tmp/photo.jpg"},
+                 album_parent_key: %{
+                   id: "album-parent",
+                   remote_jid: "120363001234567890@g.us",
+                   from_me: true
+                 },
+                 media_upload: %{
+                   media_url: "https://mmg.whatsapp.net/mms/image/abc",
+                   direct_path: "/mms/image/abc"
+                 }
+               },
+               message_secret: secret
+             )
   end
 
   test "auto-generates a link preview when get_url_info is configured" do

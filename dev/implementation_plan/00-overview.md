@@ -2,11 +2,11 @@
 
 ## Vision
 
-**Behaviour-accurate Elixir port of Baileys 7.00rc9** (WhatsApp Web API). The goal is a
+**Behaviour-accurate Elixir port of Baileys v7.0.0-rc13** (WhatsApp Web API). The goal is a
 **drop-in replacement** for Elixir apps currently using Baileys (Node.js) as a sidecar.
 Same wire behaviour, same protocol semantics, idiomatic Elixir implementation.
 
-Baileys 7.00rc9 (`dev/reference/Baileys-master/`) is the authoritative reference for
+Baileys v7.0.0-rc13 (`dev/reference/Baileys-master/`) is the authoritative reference for
 all wire behaviour, protocol semantics, message formats, handshake flows, feature
 scope, and compatibility-facing behaviour. The *what* comes from Baileys; the *how*
 is SOTA Elixir.

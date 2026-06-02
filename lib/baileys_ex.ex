@@ -75,6 +75,7 @@ defmodule BaileysEx do
   alias BaileysEx.Connection.Store, as: RuntimeStore
   alias BaileysEx.Connection.Supervisor, as: ConnectionSupervisor
   alias BaileysEx.Connection.Version, as: ConnectionVersion
+  alias BaileysEx.Feature.Account
   alias BaileysEx.Feature.AppState
   alias BaileysEx.Feature.Business
   alias BaileysEx.Feature.Call
@@ -269,6 +270,23 @@ defmodule BaileysEx do
   @spec fetch_latest_wa_web_version(keyword()) :: map()
   def fetch_latest_wa_web_version(opts \\ []),
     do: ConnectionVersion.fetch_latest_wa_web_version(opts)
+
+  @doc "Fetch the current account reachout timelock restriction state."
+  @spec fetch_account_reachout_timelock(connection(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def fetch_account_reachout_timelock(connection, opts \\ []) when is_list(opts) do
+    with_runtime(connection, opts, fn queryable, runtime_opts ->
+      Account.fetch_account_reachout_timelock(queryable, runtime_opts)
+    end)
+  end
+
+  @doc "Fetch the current account new-chat message cap quota and usage."
+  @spec fetch_new_chat_message_cap(connection(), keyword()) :: {:ok, map()} | {:error, term()}
+  def fetch_new_chat_message_cap(connection, opts \\ []) when is_list(opts) do
+    with_runtime(connection, opts, fn queryable, runtime_opts ->
+      Account.fetch_new_chat_message_cap(queryable, runtime_opts)
+    end)
+  end
 
   @doc "Send an availability or chatstate update."
   @spec send_presence_update(connection(), Presence.presence(), String.t() | nil, keyword()) ::

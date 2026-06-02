@@ -25,6 +25,15 @@ defmodule BaileysEx.Message.RetryTest do
              Retry.should_recreate_session(ref, "15551234567@s.whatsapp.net", true)
   end
 
+  test "parse_retry_error_code/1 mirrors rc10 retry reason parsing" do
+    assert Retry.parse_retry_error_code(nil) == nil
+    assert Retry.parse_retry_error_code("") == nil
+    assert Retry.parse_retry_error_code("4") == :SIGNAL_ERROR_INVALID_MESSAGE
+    assert Retry.parse_retry_error_code("7") == :SIGNAL_ERROR_BAD_MAC
+    assert Retry.parse_retry_error_code("not-an-int") == nil
+    assert Retry.parse_retry_error_code("999") == :UNKNOWN_ERROR
+  end
+
   test "recent-message cache stores, looks up, and prunes to the configured size" do
     {:ok, store} = Store.start_link()
     ref = Store.wrap(store)
@@ -51,6 +60,48 @@ defmodule BaileysEx.Message.RetryTest do
              Retry.get_recent_message(ref, "15551234567@s.whatsapp.net", "c")
 
     assert Retry.get_recent_message(ref, "15551234567@s.whatsapp.net", "a") == nil
+  end
+
+  test "base-key cache mirrors rc10 ghost-session retry tracking" do
+    {:ok, store} = Store.start_link()
+    ref = Store.wrap(store)
+    addr = "15551234567:1@s.whatsapp.net"
+    msg_id = "retry-msg-1"
+    base_key = <<1::256>>
+
+    refute Retry.has_same_base_key?(ref, addr, msg_id, base_key)
+
+    assert :ok = Retry.save_base_key(ref, addr, msg_id, base_key, now_ms: fn -> 1_000 end)
+    assert Retry.has_same_base_key?(ref, addr, msg_id, base_key, now_ms: fn -> 1_001 end)
+    refute Retry.has_same_base_key?(ref, addr, msg_id, <<2::256>>, now_ms: fn -> 1_001 end)
+
+    refute Retry.has_same_base_key?(ref, addr, msg_id, binary_part(base_key, 0, 31),
+             now_ms: fn -> 1_001 end
+           )
+
+    assert :ok = Retry.delete_base_key(ref, addr, msg_id)
+    refute Retry.has_same_base_key?(ref, addr, msg_id, base_key, now_ms: fn -> 1_002 end)
+  end
+
+  test "base-key cache expires entries using the rc10 TTL" do
+    {:ok, store} = Store.start_link()
+    ref = Store.wrap(store)
+
+    assert :ok =
+             Retry.save_base_key(ref, "addr", "msg", <<3::256>>,
+               now_ms: fn -> 1_000 end,
+               ttl_ms: 10
+             )
+
+    assert Retry.has_same_base_key?(ref, "addr", "msg", <<3::256>>,
+             now_ms: fn -> 1_010 end,
+             ttl_ms: 10
+           )
+
+    refute Retry.has_same_base_key?(ref, "addr", "msg", <<3::256>>,
+             now_ms: fn -> 1_011 end,
+             ttl_ms: 10
+           )
   end
 
   test "schedule_phone_request/5 debounces prior timers and cancel_phone_request/2 prevents callback delivery" do

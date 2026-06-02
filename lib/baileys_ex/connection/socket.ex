@@ -992,7 +992,7 @@ defmodule BaileysEx.Connection.Socket do
           |> Map.put(:qr_refs, remaining_refs)
           |> Map.put(:next_qr_timeout_ms, Config.pairing_qr_refresh_timeout(data.config))
 
-        emit_event(data, :connection_update, %{qr: QR.generate(ref, data.auth_state)})
+        emit_event(data, :connection_update, %{qr: QR.generate(ref, data.auth_state, data.config)})
 
         {:ok, schedule_pairing_qr(data, Config.pairing_qr_initial_timeout(data.config))}
     end
@@ -1000,7 +1000,7 @@ defmodule BaileysEx.Connection.Socket do
 
   defp refresh_pairing_qr(%__MODULE__{qr_refs: [ref | remaining_refs]} = data) do
     data = %{data | qr_timer: nil, qr_refs: remaining_refs}
-    emit_event(data, :connection_update, %{qr: QR.generate(ref, data.auth_state)})
+    emit_event(data, :connection_update, %{qr: QR.generate(ref, data.auth_state, data.config)})
     {:keep_state, schedule_pairing_qr(data, data.next_qr_timeout_ms)}
   end
 

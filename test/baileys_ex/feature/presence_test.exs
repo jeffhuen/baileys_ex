@@ -111,7 +111,9 @@ defmodule BaileysEx.Feature.PresenceTest do
 
     assert :ok =
              Store.set(store, %{
-               tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{token: "tc-token", timestamp: "4102444800"}
+               }
              })
 
     parent = self()
@@ -152,7 +154,8 @@ defmodule BaileysEx.Feature.PresenceTest do
               presences: %{
                 "15551234567@s.whatsapp.net" => %{
                   last_known_presence: :unavailable,
-                  last_seen: 1_710_000_700
+                  last_seen: 1_710_000_700,
+                  group_online_count: 17
                 }
               }
             }} =
@@ -162,7 +165,8 @@ defmodule BaileysEx.Feature.PresenceTest do
                  attrs: %{
                    "from" => "15551234567@s.whatsapp.net",
                    "type" => "unavailable",
-                   "last" => "1710000700"
+                   "last" => "1710000700",
+                   "count" => "17"
                  },
                  content: nil
                },
@@ -176,7 +180,8 @@ defmodule BaileysEx.Feature.PresenceTest do
                         presences: %{
                           "15551234567@s.whatsapp.net" => %{
                             last_known_presence: :unavailable,
-                            last_seen: 1_710_000_700
+                            last_seen: 1_710_000_700,
+                            group_online_count: 17
                           }
                         }
                       }

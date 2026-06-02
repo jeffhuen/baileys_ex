@@ -174,10 +174,15 @@ defmodule BaileysEx.Message.Decode do
          %{addressing_mode: addressing_mode, sender_alt: sender_alt}
        ) do
     {remote_jid, from_me} =
-      if recipient && same_user?(from, me_id, me_lid) do
-        {recipient, true}
-      else
-        {from, false}
+      cond do
+        recipient && same_user?(from, me_id, me_lid) ->
+          {recipient, true}
+
+        same_user?(from, me_id, me_lid) ->
+          {from, true}
+
+        true ->
+          {from, false}
       end
 
     %{

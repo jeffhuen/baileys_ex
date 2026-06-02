@@ -42,6 +42,11 @@ defmodule BaileysEx.Syncd.CodecTest do
     end
   end
 
+  defp flip_last_byte(binary) when is_binary(binary) and byte_size(binary) > 0 do
+    binary_part(binary, 0, byte_size(binary) - 1) <>
+      <<Bitwise.bxor(:binary.last(binary), 0x01)>>
+  end
+
   defp valid_mute_mutation do
     keys = test_keys()
     index = ~s(["mute","user@s.whatsapp.net"])
@@ -205,17 +210,21 @@ defmodule BaileysEx.Syncd.CodecTest do
       refute Map.has_key?(result.index_value_map, Base.encode64(<<1::256>>))
     end
 
-    test "REMOVE without previous SET raises" do
+    test "REMOVE without previous SET is skipped like Baileys rc10" do
       state = Codec.new_lt_hash_state()
       gen = Codec.init_lt_hash_generator(state)
 
-      assert_raise RuntimeError, ~r/tried remove/, fn ->
+      gen =
         Codec.mix_mutation(gen, %{
           index_mac: <<1::256>>,
           value_mac: <<2::256>>,
           operation: :remove
         })
-      end
+
+      assert Codec.finish_lt_hash_generator(gen) == %{
+               hash: state.hash,
+               index_value_map: %{}
+             }
     end
 
     test "replacing a value (SET overwrites previous SET)" do
@@ -423,7 +432,7 @@ defmodule BaileysEx.Syncd.CodecTest do
       assert result.hash != state.hash
     end
 
-    test "key not found returns error" do
+    test "missing app-state key returns error" do
       mutation = %Syncd.SyncdMutation{
         operation: :set,
         record: %Syncd.SyncdRecord{
@@ -439,15 +448,74 @@ defmodule BaileysEx.Syncd.CodecTest do
                Codec.decode_syncd_mutations(
                  [mutation],
                  state,
-                 fn _b64 -> {:error, :not_found} end,
+                 fn b64 -> {:error, {:key_not_found, b64}} end,
                  fn _ -> :ok end,
                  false
                )
     end
+
+    test "skips records with invalid value MAC and continues decoding later records" do
+      valid = valid_mute_mutation()
+      invalid_blob = flip_last_byte(valid.record.value.blob)
+
+      invalid = %{
+        valid
+        | record: %{valid.record | value: %Syncd.SyncdValue{blob: invalid_blob}}
+      }
+
+      state = Codec.new_lt_hash_state()
+      on_mutation = fn mutation -> send(self(), {:decoded_mutation, mutation}) end
+
+      assert {:ok, result} =
+               Codec.decode_syncd_mutations(
+                 [invalid, valid],
+                 state,
+                 &mock_get_key/1,
+                 on_mutation,
+                 true
+               )
+
+      assert_received {:decoded_mutation, mutation}
+      assert mutation.index == ["mute", "user@s.whatsapp.net"]
+      refute_receive {:decoded_mutation, _}
+      assert result.hash != state.hash
+    end
+
+    test "skips records that cannot decrypt and continues decoding later records" do
+      keys = test_keys()
+      valid = valid_mute_mutation()
+      enc_content = <<0x33::128, 0x99>>
+      value_mac = Codec.generate_mac(:set, enc_content, @key_id_bin, keys.value_mac_key)
+
+      corrupt = %Syncd.SyncdMutation{
+        operation: :set,
+        record: %Syncd.SyncdRecord{
+          index: %Syncd.SyncdIndex{blob: <<0::256>>},
+          value: %Syncd.SyncdValue{blob: <<enc_content::binary, value_mac::binary>>},
+          key_id: %Syncd.KeyId{id: @key_id_bin}
+        }
+      }
+
+      state = Codec.new_lt_hash_state()
+      on_mutation = fn mutation -> send(self(), {:decoded_mutation, mutation}) end
+
+      assert {:ok, _result} =
+               Codec.decode_syncd_mutations(
+                 [corrupt, valid],
+                 state,
+                 &mock_get_key/1,
+                 on_mutation,
+                 true
+               )
+
+      assert_received {:decoded_mutation, mutation}
+      assert mutation.index == ["mute", "user@s.whatsapp.net"]
+      refute_receive {:decoded_mutation, _}
+    end
   end
 
   describe "mailbox isolation" do
-    test "decode_syncd_snapshot/5 does not leave mutation messages behind on verification failure" do
+    test "decode_syncd_snapshot/5 continues with partial state on snapshot MAC mismatch" do
       mutation = valid_mute_mutation()
 
       snapshot = %Syncd.SyncdSnapshot{
@@ -457,13 +525,14 @@ defmodule BaileysEx.Syncd.CodecTest do
         key_id: %Syncd.KeyId{id: @key_id_bin}
       }
 
-      assert {:error, :invalid_snapshot_mac} =
+      assert {:ok, %{mutation_map: mutation_map, mutation_order: [decoded]}} =
                Codec.decode_syncd_snapshot(:regular_high, snapshot, &mock_get_key/1, nil, true)
 
-      refute_receive {:syncd_mutation, _, _}
+      assert decoded.index == ["mute", "user@s.whatsapp.net"]
+      assert %{"[\"mute\",\"user@s.whatsapp.net\"]" => ^decoded} = mutation_map
     end
 
-    test "decode_patches/7 does not leave patch mutation messages behind on verification failure" do
+    test "decode_patches/7 stops remaining patches after LTHash mismatch but keeps decoded mutations" do
       patch_create = %{
         type: :regular_high,
         index: ["mute", "user@s.whatsapp.net"],
@@ -487,7 +556,7 @@ defmodule BaileysEx.Syncd.CodecTest do
       patch = %{patch | version: %Syncd.SyncdVersion{version: encoded_state.version}}
       wrong_initial_state = %{Codec.new_lt_hash_state() | hash: :binary.copy(<<0x11>>, 128)}
 
-      assert {:error, :invalid_snapshot_mac} =
+      assert {:ok, %{mutation_map: mutation_map, mutation_order: [decoded]}} =
                Codec.decode_patches(
                  :regular_high,
                  [patch],
@@ -497,7 +566,8 @@ defmodule BaileysEx.Syncd.CodecTest do
                  true
                )
 
-      refute_receive {:syncd_patch_mutation, _, _}
+      assert decoded.index == ["mute", "user@s.whatsapp.net"]
+      assert %{"[\"mute\",\"user@s.whatsapp.net\"]" => ^decoded} = mutation_map
     end
   end
 
@@ -822,7 +892,7 @@ defmodule BaileysEx.Syncd.CodecTest do
       assert decoded_mutation.sync_action.value.mute_action.muted == true
     end
 
-    test "decode_patches/7 still validates inner mutation MACs when validate_macs=false" do
+    test "decode_patches/7 skips outer and inner MAC checks when validate_macs=false" do
       keys = test_keys()
       index = ~s(["mute","user@s.whatsapp.net"])
 
@@ -864,7 +934,7 @@ defmodule BaileysEx.Syncd.CodecTest do
         key_id: %Syncd.KeyId{id: @key_id_bin}
       }
 
-      assert {:error, :hmac_content_verification_failed} =
+      assert {:ok, %{mutation_map: mutation_map}} =
                Codec.decode_patches(
                  :regular_high,
                  [patch],
@@ -873,6 +943,10 @@ defmodule BaileysEx.Syncd.CodecTest do
                  nil,
                  false
                )
+
+      assert %{"[\"mute\",\"user@s.whatsapp.net\"]" => decoded_mutation} = mutation_map
+      assert decoded_mutation.index == ["mute", "user@s.whatsapp.net"]
+      assert decoded_mutation.sync_action.value.mute_action.muted == true
     end
   end
 end

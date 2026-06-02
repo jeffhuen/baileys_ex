@@ -39,7 +39,9 @@ defmodule BaileysEx.Parity.FeatureTest do
 
     assert :ok =
              Store.set(store, %{
-               tctoken: %{"15551234567@s.whatsapp.net" => %{token: "tc-token"}}
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{token: "tc-token", timestamp: "4102444800"}
+               }
              })
 
     parent = self()

@@ -35,7 +35,9 @@ defmodule BaileysEx.Message.Sender do
           optional(:send_node_fun) => (BinaryNode.t() -> :ok | {:error, term()}),
           optional(:socket) => GenServer.server(),
           optional(:cached_group_metadata) => (String.t() -> {:ok, map()} | nil),
-          optional(:group_metadata_fun) => (String.t() -> {:ok, map()} | {:error, term()})
+          optional(:group_metadata_fun) => (String.t() -> {:ok, map()} | {:error, term()}),
+          optional(:privacy_token_on_1to1?) => boolean(),
+          optional(:tc_token_issue_fun) => (String.t(), proto_message(), keyword() -> term())
         }
 
   @type proto_message :: struct()
@@ -119,6 +121,13 @@ defmodule BaileysEx.Message.Sender do
            ),
          :ok <- log_relay_node(relay_node),
          :ok <- relay(updated_context, relay_node),
+         :ok <-
+           maybe_issue_tc_token_after_send(
+             updated_context,
+             jid,
+             proto_message,
+             Keyword.put(opts, :message_id, message_id)
+           ),
          :ok <-
            maybe_cache_recent_message(updated_context, jid, message_id, proto_message, opts) do
       {:ok,
@@ -566,7 +575,7 @@ defmodule BaileysEx.Message.Sender do
         from_me: true
       })
 
-    tc_token_node = trusted_contact_token_node(context, jid, opts[:participant])
+    tc_token_node = trusted_contact_token_node(context, jid, opts)
 
     %BinaryNode{
       tag: "message",
@@ -589,15 +598,65 @@ defmodule BaileysEx.Message.Sender do
     }
   end
 
-  defp trusted_contact_token_node(%{signal_store: %Store{} = store}, %JID{} = jid, participant) do
-    if JIDUtil.group?(jid) or JIDUtil.status_broadcast?(jid) or retry_resend?(participant) do
-      nil
-    else
+  defp trusted_contact_token_node(%{signal_store: %Store{} = store} = context, %JID{} = jid, opts) do
+    if direct_one_to_one_send?(jid, opts) and privacy_token_on_1to1?(context) do
       TcToken.build_node(store, JIDUtil.to_string(jid))
+    else
+      nil
     end
   end
 
-  defp trusted_contact_token_node(_context, _jid, _participant), do: nil
+  defp trusted_contact_token_node(_context, _jid, _opts), do: nil
+
+  defp maybe_issue_tc_token_after_send(
+         %{tc_token_issue_fun: issue_fun},
+         %JID{} = jid,
+         %Message{} = message,
+         opts
+       )
+       when is_function(issue_fun, 3) do
+    destination_jid = JIDUtil.to_string(jid)
+
+    if post_send_tc_token_eligible?(destination_jid, jid, message, opts) do
+      case issue_fun.(destination_jid, message, opts) do
+        {:error, reason} ->
+          require Logger
+          Logger.debug("failed to issue post-send tctoken: #{inspect(reason)}")
+          :ok
+
+        _result ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_issue_tc_token_after_send(_context, _jid, _message, _opts), do: :ok
+
+  defp post_send_tc_token_eligible?(destination_jid, %JID{} = jid, %Message{} = message, opts) do
+    direct_one_to_one_send?(jid, opts) and
+      not protocol_message?(message) and
+      TcToken.regular_user?(destination_jid)
+  end
+
+  defp direct_one_to_one_send?(%JID{} = jid, opts) do
+    not JIDUtil.group?(jid) and
+      not JIDUtil.status_broadcast?(jid) and
+      not JIDUtil.newsletter?(jid) and
+      not retry_resend?(opts[:participant]) and
+      not peer_message?(opts)
+  end
+
+  defp peer_message?(opts) do
+    attrs = opts[:additional_attributes] || %{}
+    Map.get(attrs, "category") == "peer" or Map.get(attrs, :category) == "peer"
+  end
+
+  defp privacy_token_on_1to1?(context), do: Map.get(context, :privacy_token_on_1to1?, true)
+
+  defp protocol_message?(%Message{protocol_message: %Message.ProtocolMessage{}}), do: true
+  defp protocol_message?(%Message{}), do: false
 
   defp retry_resend?(%{jid: jid}) when is_binary(jid), do: true
   defp retry_resend?(_participant), do: false

@@ -7,6 +7,7 @@ defmodule BaileysEx.Message.Builder do
   alias BaileysEx.Message.Parser
   alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Protocol.Proto.MessageAssociation
   alias BaileysEx.Protocol.Proto.MessageContextInfo
   alias BaileysEx.Protocol.Proto.MessageKey
 
@@ -21,6 +22,7 @@ defmodule BaileysEx.Message.Builder do
   def build(content, opts) when is_map(content) and is_list(opts) do
     content
     |> do_build(opts)
+    |> maybe_add_album_parent_key(content)
     |> maybe_add_reporting_secret(opts)
   end
 
@@ -332,6 +334,28 @@ defmodule BaileysEx.Message.Builder do
     }
   end
 
+  defp do_build(%{album: album} = content, _opts) when is_map(album) do
+    %Message{
+      album_message: %Message.AlbumMessage{
+        expected_image_count:
+          map_get_any(album, [
+            :expected_image_count,
+            :expectedImageCount,
+            "expected_image_count",
+            "expectedImageCount"
+          ]),
+        expected_video_count:
+          map_get_any(album, [
+            :expected_video_count,
+            :expectedVideoCount,
+            "expected_video_count",
+            "expectedVideoCount"
+          ]),
+        context_info: build_context_info(content)
+      }
+    }
+  end
+
   defp do_build(%{product: %{title: _title} = product}, _opts) do
     %Message{
       product_message: %Message.ProductMessage{
@@ -515,7 +539,8 @@ defmodule BaileysEx.Message.Builder do
         mentioned_jid: Enum.map(content[:mentions] || [], &jid_to_string/1),
         expiration: content[:ephemeral_expiration],
         is_forwarded: content[:is_forwarded],
-        forwarding_score: content[:forwarding_score]
+        forwarding_score: content[:forwarding_score],
+        non_jid_mentions: if(mention_all?(content), do: 1)
       }
 
     context_info =
@@ -529,6 +554,32 @@ defmodule BaileysEx.Message.Builder do
       nil
     else
       context_info
+    end
+  end
+
+  defp maybe_add_album_parent_key(%Message{} = message, content) do
+    case map_get_any(content, [
+           :album_parent_key,
+           :albumParentKey,
+           "album_parent_key",
+           "albumParentKey"
+         ]) do
+      nil ->
+        message
+
+      key ->
+        %MessageContextInfo{} = context_info = existing_message_context_info(message)
+
+        %Message{
+          message
+          | message_context_info: %MessageContextInfo{
+              context_info
+              | message_association: %MessageAssociation{
+                  association_type: :MEDIA_ALBUM,
+                  parent_message_key: build_message_key(key)
+                }
+            }
+        }
     end
   end
 
@@ -613,6 +664,19 @@ defmodule BaileysEx.Message.Builder do
   defp jid_to_string(nil), do: nil
   defp jid_to_string(%JID{} = jid), do: JIDUtil.to_string(jid)
   defp jid_to_string(jid) when is_binary(jid), do: jid
+
+  defp mention_all?(content) do
+    map_get_any(content, [:mention_all, :mentionAll, "mention_all", "mentionAll"]) == true
+  end
+
+  defp map_get_any(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      case Map.fetch(map, key) do
+        {:ok, value} -> value
+        :error -> nil
+      end
+    end)
+  end
 
   defp now_ms(opts) do
     case opts[:now_ms] do

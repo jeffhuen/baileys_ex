@@ -583,6 +583,41 @@ defmodule BaileysEx.Feature.CommunityTest do
     assert {:ok, nil} = Community.create(query_fun, "Phase 11 Community", "Body")
   end
 
+  test "metadata accepts group-shaped community responses from the server" do
+    query_fun = fn
+      %BinaryNode{
+        attrs: %{"to" => "1234567890@g.us"},
+        content: [%BinaryNode{tag: "query", attrs: %{"request" => "interactive"}}]
+      },
+      _timeout ->
+        {:ok, group_backed_community_result_node("1234567890")}
+    end
+
+    assert {:ok,
+            %{
+              id: "1234567890@g.us",
+              subject: "Phase 11 Community",
+              is_community: true,
+              participants: [%{id: "15550001111@s.whatsapp.net"}]
+            }} = Community.metadata(query_fun, "1234567890@g.us")
+  end
+
+  test "fetch_all_participating accepts group-shaped responses and filters regular groups" do
+    query_fun = fn
+      %BinaryNode{attrs: %{"to" => "@g.us"}, content: [%BinaryNode{tag: "participating"}]},
+      _timeout ->
+        {:ok, group_backed_participating_result_node()}
+    end
+
+    assert {:ok,
+            %{
+              "1234567890@g.us" => %{
+                subject: "Phase 11 Community",
+                is_community: true
+              }
+            }} = Community.fetch_all_participating(query_fun)
+  end
+
   defp created_group_result_node(id) do
     %BinaryNode{
       tag: "iq",
@@ -602,6 +637,62 @@ defmodule BaileysEx.Feature.CommunityTest do
           content: [community_result_node("1234567890").content |> List.first()]
         }
       ]
+    }
+  end
+
+  defp group_backed_participating_result_node do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"type" => "result"},
+      content: [
+        %BinaryNode{
+          tag: "groups",
+          attrs: %{},
+          content: [
+            group_backed_community_node("1234567890", community?: true),
+            group_backed_community_node("2233445566", community?: false)
+          ]
+        }
+      ]
+    }
+  end
+
+  defp group_backed_community_result_node(id) do
+    %BinaryNode{
+      tag: "iq",
+      attrs: %{"type" => "result"},
+      content: [group_backed_community_node(id, community?: true)]
+    }
+  end
+
+  defp group_backed_community_node(id, opts) do
+    community_content =
+      [
+        %BinaryNode{
+          tag: "description",
+          attrs: %{"id" => "desc-123"},
+          content: [%BinaryNode{tag: "body", attrs: %{}, content: "Community body"}]
+        },
+        %BinaryNode{tag: "participant", attrs: %{"jid" => "15550001111@s.whatsapp.net"}}
+      ]
+
+    content =
+      if Keyword.fetch!(opts, :community?) do
+        [%BinaryNode{tag: "parent", attrs: %{}} | community_content]
+      else
+        community_content
+      end
+
+    %BinaryNode{
+      tag: "group",
+      attrs: %{
+        "id" => id,
+        "subject" =>
+          if(Keyword.fetch!(opts, :community?), do: "Phase 11 Community", else: "Regular Group"),
+        "s_t" => "1710000000",
+        "creation" => "1709999999"
+      },
+      content: content
     }
   end
 

@@ -51,6 +51,11 @@ defmodule BaileysEx.Message.Receiver do
           optional(:get_message_fun) => (map() -> map() | nil),
           optional(atom()) => term()
         }
+  @type bad_ack_context :: %{
+          required(:event_emitter) => GenServer.server(),
+          optional(:fetch_reachout_timelock_fun) => (-> {:ok, map()} | {:error, term()}),
+          optional(atom()) => term()
+        }
 
   @doc """
   Decrypts, validates, normalizes, and emits incoming text/media messages.
@@ -67,9 +72,6 @@ defmodule BaileysEx.Message.Receiver do
 
         {:error, :missing_encrypted_content} ->
           process_missing_encrypted_content(node, envelope, context, opts)
-
-        {:error, reason} ->
-          {:error, reason}
       end
     end
   end
@@ -157,7 +159,7 @@ defmodule BaileysEx.Message.Receiver do
   @doc """
   Converts remote error ACKs into message error events.
   """
-  @spec handle_bad_ack(BinaryNode.t(), GenServer.server() | context()) :: :ok
+  @spec handle_bad_ack(BinaryNode.t(), GenServer.server() | bad_ack_context()) :: :ok
   def handle_bad_ack(%BinaryNode{} = node, event_emitter)
       when is_pid(event_emitter) or is_atom(event_emitter) or is_tuple(event_emitter) do
     handle_bad_ack(node, %{event_emitter: event_emitter})
@@ -279,7 +281,7 @@ defmodule BaileysEx.Message.Receiver do
           id: attrs["id"],
           remote_jid: envelope.remote_jid,
           remote_jid_alt: envelope[:remote_jid_alt],
-          participant: envelope.participant,
+          participant: envelope[:participant],
           participant_alt: envelope[:participant_alt],
           from_me: envelope.from_me
         }
@@ -288,7 +290,7 @@ defmodule BaileysEx.Message.Receiver do
       message: proto_message,
       message_timestamp: parse_timestamp(attrs["t"]),
       sender_jid: envelope.author_jid,
-      participant: envelope.participant,
+      participant: envelope[:participant],
       push_name: attrs["notify"],
       verified_biz_name: verified_biz_name(node)
     }
@@ -301,7 +303,7 @@ defmodule BaileysEx.Message.Receiver do
           id: attrs["id"],
           remote_jid: envelope.remote_jid,
           remote_jid_alt: envelope[:remote_jid_alt],
-          participant: envelope.participant,
+          participant: envelope[:participant],
           participant_alt: envelope[:participant_alt],
           from_me: envelope.from_me
         }
@@ -310,7 +312,7 @@ defmodule BaileysEx.Message.Receiver do
       message: nil,
       message_timestamp: parse_timestamp(attrs["t"]),
       sender_jid: envelope.author_jid,
-      participant: envelope.participant,
+      participant: envelope[:participant],
       push_name: attrs["notify"],
       verified_biz_name: verified_biz_name(node),
       message_stub_type: :CIPHERTEXT,
@@ -462,50 +464,53 @@ defmodule BaileysEx.Message.Receiver do
     Logger.debug(fn ->
       msg = received_message[:message]
 
-      msg_type =
-        cond do
-          is_nil(msg) ->
-            "nil_message"
-
-          is_struct(msg) ->
-            msg.__struct__ |> Module.split() |> List.last()
-
-          is_map(msg) ->
-            "map(#{Map.keys(msg) |> Enum.reject(&is_nil(Map.get(msg, &1))) |> inspect()})"
-
-          true ->
-            inspect(msg)
-        end
-
-      # Find the non-nil content field in the proto message
-      content_fields =
-        if is_struct(msg) do
-          msg
-          |> Map.from_struct()
-          |> Enum.filter(fn {_k, v} -> v != nil and v != "" and v != [] and v != 0 end)
-          |> Enum.map(fn {k, _v} -> k end)
-        else
-          []
-        end
-
       "[Receiver] message emitted — id=#{received_message[:key][:id]}, " <>
         "from=#{received_message[:key][:remote_jid]}, " <>
         "from_me=#{inspect(received_message[:key][:from_me])}, " <>
         "push_name=#{inspect(received_message[:push_name])}, " <>
-        "msg_type=#{msg_type}, content_fields=#{inspect(content_fields)}"
+        "msg_type=#{debug_message_type(msg)}, " <>
+        "content_fields=#{inspect(debug_content_fields(msg))}"
     end)
 
     :ok
   end
 
-  defp send_receipt(%BinaryNode{attrs: attrs}, envelope, received_message, context) do
+  defp debug_message_type(nil), do: "nil_message"
+  defp debug_message_type(%_module{} = msg), do: msg.__struct__ |> Module.split() |> List.last()
+
+  defp debug_message_type(msg) when is_map(msg) do
+    "map(#{Map.keys(msg) |> Enum.reject(&is_nil(Map.get(msg, &1))) |> inspect()})"
+  end
+
+  defp debug_message_type(msg), do: inspect(msg)
+
+  defp debug_content_fields(%_module{} = msg) do
+    msg
+    |> Map.from_struct()
+    |> Enum.filter(fn {_key, value} ->
+      value != nil and value != "" and value != [] and value != 0
+    end)
+    |> Enum.map(fn {key, _value} -> key end)
+  end
+
+  defp debug_content_fields(_msg), do: []
+
+  defp send_receipt(%BinaryNode{attrs: attrs} = node, envelope, received_message, context) do
+    if JIDUtil.newsletter?(envelope.remote_jid) do
+      send_message_ack(node, context)
+    else
+      send_standard_receipt(attrs, envelope, received_message, context)
+    end
+  end
+
+  defp send_standard_receipt(attrs, envelope, received_message, context) do
     case Map.get(context, :send_receipt_fun) do
       fun when is_function(fun, 1) ->
         with :ok <-
                Receipt.send_receipt(
                  fun,
                  envelope.remote_jid,
-                 envelope.participant,
+                 envelope[:participant],
                  [attrs["id"]],
                  receipt_type(attrs["category"])
                ) do

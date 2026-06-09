@@ -1601,6 +1601,83 @@ defmodule BaileysEx.Message.ReceiverTest do
     assert {:ok, %{verified_biz_name: "Acme Co"}, _context} = Receiver.process_node(node, context)
   end
 
+  test "process_node/3 decodes newsletter messages without participants and sends only an ack" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "msg-newsletter-1",
+        "from" => "120363422625047596@newsletter",
+        "server_id" => "277",
+        "t" => "1710000010"
+      },
+      content: [
+        %BinaryNode{
+          tag: "plaintext",
+          attrs: %{},
+          content: Message.encode(Builder.build(%{text: "hello newsletter"}))
+        }
+      ]
+    }
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      me_lid: "15550001111@lid",
+      send_node_fun: fn ack_node ->
+        send(parent, {:ack, ack_node})
+        :ok
+      end,
+      send_receipt_fun: fn receipt_node ->
+        send(parent, {:receipt, receipt_node})
+        :ok
+      end
+    }
+
+    assert {:ok,
+            %{
+              key: %{
+                id: "msg-newsletter-1",
+                remote_jid: "120363422625047596@newsletter",
+                participant: nil,
+                from_me: false,
+                server_id: "277"
+              },
+              participant: nil,
+              message: %Message{
+                extended_text_message: %Message.ExtendedTextMessage{text: "hello newsletter"}
+              }
+            }, _context} = Receiver.process_node(node, context)
+
+    assert_receive {:ack,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{
+                        "id" => "msg-newsletter-1",
+                        "to" => "120363422625047596@newsletter",
+                        "class" => "message"
+                      }
+                    }}
+
+    refute_receive {:receipt, _receipt_node}, 20
+
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        messages: [%{key: %{remote_jid: "120363422625047596@newsletter"}}]
+                      }
+                    }}
+
+    unsubscribe.()
+  end
+
   test "process_node/3 normalizes hosted JIDs and emits reaction updates from the receiver perspective" do
     {:ok, emitter} = EventEmitter.start_link()
     parent = self()

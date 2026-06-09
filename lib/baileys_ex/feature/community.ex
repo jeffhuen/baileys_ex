@@ -377,18 +377,8 @@ defmodule BaileysEx.Feature.Community do
            ]) do
       communities =
         result
-        |> BinaryNodeUtil.child("communities")
-        |> BinaryNodeUtil.children("community")
-        |> Enum.reduce(%{}, fn community_node, acc ->
-          metadata =
-            extract_metadata(%BinaryNode{
-              tag: "result",
-              attrs: %{},
-              content: [community_node]
-            })
-
-          Map.put(acc, metadata.id, metadata)
-        end)
+        |> participating_community_nodes()
+        |> Enum.reduce(%{}, &put_participating_community/2)
 
       emit_groups_update(opts, Map.values(communities))
       {:ok, communities}
@@ -419,7 +409,7 @@ defmodule BaileysEx.Feature.Community do
   @doc "Extract Baileys-aligned community metadata from a community IQ result node."
   @spec extract_metadata(BinaryNode.t()) :: map()
   def extract_metadata(%BinaryNode{} = result) do
-    community = BinaryNodeUtil.child(result, "community")
+    community = BinaryNodeUtil.child(result, "community") || BinaryNodeUtil.child(result, "group")
     desc_child = BinaryNodeUtil.child(community, "description")
 
     %{
@@ -475,6 +465,33 @@ defmodule BaileysEx.Feature.Community do
         admin: participant.attrs["type"]
       }
     end)
+  end
+
+  defp participating_community_nodes(%BinaryNode{} = result) do
+    case BinaryNodeUtil.child(result, "communities") do
+      %BinaryNode{} = communities ->
+        BinaryNodeUtil.children(communities, "community")
+
+      nil ->
+        result
+        |> BinaryNodeUtil.child("groups")
+        |> BinaryNodeUtil.children("group")
+    end
+  end
+
+  defp put_participating_community(%BinaryNode{} = community_node, acc) do
+    metadata =
+      extract_metadata(%BinaryNode{
+        tag: "result",
+        attrs: %{},
+        content: [community_node]
+      })
+
+    if community_node.tag == "group" and not metadata.is_community do
+      acc
+    else
+      Map.put(acc, metadata.id, metadata)
+    end
   end
 
   defp community_query(conn, jid, type, content, opts \\ []) do

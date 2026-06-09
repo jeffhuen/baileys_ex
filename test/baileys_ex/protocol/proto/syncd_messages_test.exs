@@ -123,7 +123,7 @@ defmodule BaileysEx.Protocol.Proto.SyncdTest do
       encoded = Syncd.SyncdPatch.encode(patch)
       assert {:ok, decoded} = Syncd.SyncdPatch.decode(encoded)
       assert decoded.version.version == 10
-      assert length(decoded.mutations) == 1
+      assert [_mutation] = decoded.mutations
       assert decoded.snapshot_mac == patch.snapshot_mac
       assert decoded.patch_mac == patch.patch_mac
       assert decoded.key_id.id == <<3, 4, 5>>
@@ -172,7 +172,7 @@ defmodule BaileysEx.Protocol.Proto.SyncdTest do
       encoded = Syncd.SyncdSnapshot.encode(snapshot)
       assert {:ok, decoded} = Syncd.SyncdSnapshot.decode(encoded)
       assert decoded.version.version == 5
-      assert length(decoded.records) == 1
+      assert [_record] = decoded.records
       assert decoded.mac == snapshot.mac
     end
   end
@@ -302,9 +302,9 @@ defmodule BaileysEx.Protocol.Proto.SyncdTest do
 
       encoded = Syncd.SyncdMutations.encode(mutations)
       assert {:ok, decoded} = Syncd.SyncdMutations.decode(encoded)
-      assert length(decoded.mutations) == 2
-      assert Enum.at(decoded.mutations, 0).operation == :set
-      assert Enum.at(decoded.mutations, 1).operation == :remove
+      assert [set_mutation, remove_mutation] = decoded.mutations
+      assert set_mutation.operation == :set
+      assert remove_mutation.operation == :remove
     end
   end
 

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11] - 2026-06-09
+
+Release closeout for the remaining GitHub issue reports and PR parity checks.
+
+### Fixed
+
+- Community metadata parsing now accepts WhatsApp's live `<groups>/<group>`
+  response shape while keeping the Baileys `<communities>/<community>` shape
+  supported.
+- Participating-community fetches now filter regular groups when WhatsApp
+  returns mixed group responses.
+- Newsletter messages that omit `:participant` no longer crash the receive
+  path, and newsletter delivery handling now follows the Baileys rc13 ACK-only
+  behavior.
+
 ## [0.1.0-alpha.10] - 2026-06-02
 
 Maintenance release focused on reducing receive-path overhead and improving

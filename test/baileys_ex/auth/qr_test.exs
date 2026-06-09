@@ -2,8 +2,8 @@ defmodule BaileysEx.Auth.QRTest do
   use ExUnit.Case, async: true
 
   alias BaileysEx.Auth.QR
-  alias BaileysEx.Connection.Config
   alias BaileysEx.Auth.State
+  alias BaileysEx.Connection.Config
 
   test "generate/2 emits the rc13 linked-devices URL payload" do
     state = auth_state(1)

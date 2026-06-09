@@ -466,7 +466,7 @@ defmodule BaileysEx.Message.StubSideEffectsTest do
         })
 
       assert [{:group_participants_update, payload}] = effects
-      assert length(payload.participants) == 2
+      assert [_, _] = payload.participants
     end
   end
 end

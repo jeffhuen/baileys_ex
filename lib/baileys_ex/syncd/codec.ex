@@ -307,32 +307,37 @@ defmodule BaileysEx.Syncd.Codec do
 
     with {:ok, key_id_bin} <- extract_key_id(record),
          {:ok, keys, cache} <- get_cached_keys(key_id_bin, get_key_fn, cache) do
-      case decode_mutation_payload(record, operation, key_id_bin, keys, validate_macs) do
-        {:ok, mutation, index_mac, value_mac} ->
-          new_gen =
-            mix_mutation(gen, %{
-              index_mac: index_mac,
-              value_mac: value_mac,
-              operation: operation
-            })
-
-          {:ok, mutation, new_gen, cache}
-
-        {:error, reason} = err ->
-          if skippable_mutation_error?(reason) do
-            {:skip, gen, cache}
-          else
-            err
-          end
-      end
+      record
+      |> decode_mutation_payload(operation, key_id_bin, keys, validate_macs)
+      |> handle_mutation_payload_result(operation, gen, cache)
     else
-      {:error, reason} = err ->
-        if missing_key_error?(reason) do
-          err
-        else
-          {:skip, gen, cache}
-        end
+      {:error, _reason} = err ->
+        handle_mutation_setup_error(err, gen, cache)
     end
+  end
+
+  defp handle_mutation_payload_result(
+         {:ok, mutation, index_mac, value_mac},
+         operation,
+         gen,
+         cache
+       ) do
+    new_gen =
+      mix_mutation(gen, %{
+        index_mac: index_mac,
+        value_mac: value_mac,
+        operation: operation
+      })
+
+    {:ok, mutation, new_gen, cache}
+  end
+
+  defp handle_mutation_payload_result({:error, reason} = err, _operation, gen, cache) do
+    if skippable_mutation_error?(reason), do: {:skip, gen, cache}, else: err
+  end
+
+  defp handle_mutation_setup_error({:error, reason} = err, gen, cache) do
+    if missing_key_error?(reason), do: err, else: {:skip, gen, cache}
   end
 
   defp decode_mutation_payload(record, operation, key_id_bin, keys, validate_macs) do
@@ -983,20 +988,25 @@ defmodule BaileysEx.Syncd.Codec do
         {:error, :invalid_snapshot_mac} ->
           {:break, verified_state, next_mutation_map, next_mutation_order_reversed}
 
-        {:error, reason} = err ->
-          if missing_key_error?(reason) do
-            err
-          else
-            {:skip_patch, state, mutation_map, mutation_order_reversed}
-          end
+        {:error, _reason} = err ->
+          handle_patch_decode_error(err, state, mutation_map, mutation_order_reversed)
       end
     else
-      {:error, reason} = err ->
-        if missing_key_error?(reason) do
-          err
-        else
-          {:skip_patch, state, mutation_map, mutation_order_reversed}
-        end
+      {:error, _reason} = err ->
+        handle_patch_decode_error(err, state, mutation_map, mutation_order_reversed)
+    end
+  end
+
+  defp handle_patch_decode_error(
+         {:error, reason} = err,
+         state,
+         mutation_map,
+         mutation_order_reversed
+       ) do
+    if missing_key_error?(reason) do
+      err
+    else
+      {:skip_patch, state, mutation_map, mutation_order_reversed}
     end
   end
 

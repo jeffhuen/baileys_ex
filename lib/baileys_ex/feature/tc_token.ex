@@ -359,15 +359,13 @@ defmodule BaileysEx.Feature.TcToken do
   defp storage_jid(%Store{} = store, jid) do
     normalized = normalized_jid(jid)
 
-    cond do
-      JID.lid?(normalized) or JID.hosted_lid?(normalized) ->
-        normalized
-
-      true ->
-        case LIDMappingStore.get_lid_for_pn(store, normalized) do
-          {:ok, lid} when is_binary(lid) -> lid
-          _ -> normalized
-        end
+    if JID.lid?(normalized) or JID.hosted_lid?(normalized) do
+      normalized
+    else
+      case LIDMappingStore.get_lid_for_pn(store, normalized) do
+        {:ok, lid} when is_binary(lid) -> lid
+        _ -> normalized
+      end
     end
   rescue
     ArgumentError -> normalized_jid(jid)

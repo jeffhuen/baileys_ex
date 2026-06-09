@@ -36,7 +36,7 @@ defmodule BaileysEx.Signal.PreKeyTest do
     assert identity_public == state.signed_identity_key.public
 
     assert %BinaryNode{tag: "list"} = list_node = Enum.find(content, &(&1.tag == "list"))
-    assert length(BinaryNodeUtil.children(list_node, "key")) == 3
+    assert [_, _, _] = BinaryNodeUtil.children(list_node, "key")
     assert %BinaryNode{tag: "skey"} = Enum.find(content, &(&1.tag == "skey"))
 
     assert Map.keys(Store.get(store, :"pre-key", ["1", "2", "3"])) == ["1", "2", "3"]

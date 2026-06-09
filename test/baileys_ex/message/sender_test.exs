@@ -96,7 +96,7 @@ defmodule BaileysEx.Message.SenderTest do
     assert %BinaryNode{tag: "participants", content: participants} =
              Enum.find(content, &match?(%BinaryNode{tag: "participants"}, &1))
 
-    assert 4 == length(participants)
+    assert [_, _, _, _] = participants
 
     assert Enum.any?(
              content,

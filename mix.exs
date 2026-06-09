@@ -4,7 +4,7 @@ defmodule BaileysEx.MixProject do
   def project do
     [
       app: :baileys_ex,
-      version: "0.1.0-alpha.9",
+      version: "0.1.0-alpha.11",
       description: description(),
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
@@ -48,7 +48,7 @@ defmodule BaileysEx.MixProject do
       # Dev
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:ex_slop, "~> 0.4.1", only: :dev, runtime: false},
+      {:ex_slop, "~> 0.4.2", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end

@@ -1498,23 +1498,7 @@ defmodule BaileysEx.Connection.Coordinator do
       {{:ok, socket_pid}, %SignalStore{} = signal_store, task_supervisor}
       when not is_nil(task_supervisor) ->
         fn jid ->
-          Task.Supervisor.start_child(task_supervisor, fn ->
-            opts = [
-              issue_to_lid?: tc_token_issue_to_lid?(state),
-              now: System.os_time(:second)
-            ]
-
-            case TcToken.reissue_after_identity_change(
-                   {state.socket_module, socket_pid},
-                   signal_store,
-                   jid,
-                   opts
-                 ) do
-              :ok -> :ok
-              {:error, reason} -> Logger.debug("failed to re-issue tctoken: #{inspect(reason)}")
-            end
-          end)
-
+          start_tc_token_reissue_task(state, task_supervisor, socket_pid, signal_store, jid)
           :ok
         end
 
@@ -1528,30 +1512,54 @@ defmodule BaileysEx.Connection.Coordinator do
       {{:ok, socket_pid}, %SignalStore{} = signal_store, task_supervisor}
       when not is_nil(task_supervisor) ->
         fn jid, _message, _opts ->
-          Task.Supervisor.start_child(task_supervisor, fn ->
-            opts = [
-              issue_to_lid?: tc_token_issue_to_lid?(state),
-              query_timeout: state.config.default_query_timeout_ms,
-              now: System.os_time(:second)
-            ]
-
-            case TcToken.issue_after_outgoing_message(
-                   {state.socket_module, socket_pid},
-                   signal_store,
-                   jid,
-                   opts
-                 ) do
-              :ok -> :ok
-              {:error, reason} -> Logger.debug("failed to issue tctoken: #{inspect(reason)}")
-            end
-          end)
-
+          start_tc_token_issue_task(state, task_supervisor, socket_pid, signal_store, jid)
           :ok
         end
 
       _other ->
         nil
     end
+  end
+
+  defp start_tc_token_reissue_task(state, task_supervisor, socket_pid, signal_store, jid) do
+    Task.Supervisor.start_child(task_supervisor, fn ->
+      reissue_tc_token(state, socket_pid, signal_store, jid)
+    end)
+  end
+
+  defp reissue_tc_token(state, socket_pid, signal_store, jid) do
+    opts = [
+      issue_to_lid?: tc_token_issue_to_lid?(state),
+      now: System.os_time(:second)
+    ]
+
+    {state.socket_module, socket_pid}
+    |> TcToken.reissue_after_identity_change(signal_store, jid, opts)
+    |> log_tc_token_result("re-issue")
+  end
+
+  defp start_tc_token_issue_task(state, task_supervisor, socket_pid, signal_store, jid) do
+    Task.Supervisor.start_child(task_supervisor, fn ->
+      issue_tc_token(state, socket_pid, signal_store, jid)
+    end)
+  end
+
+  defp issue_tc_token(state, socket_pid, signal_store, jid) do
+    opts = [
+      issue_to_lid?: tc_token_issue_to_lid?(state),
+      query_timeout: state.config.default_query_timeout_ms,
+      now: System.os_time(:second)
+    ]
+
+    {state.socket_module, socket_pid}
+    |> TcToken.issue_after_outgoing_message(signal_store, jid, opts)
+    |> log_tc_token_result("issue")
+  end
+
+  defp log_tc_token_result(:ok, _action), do: :ok
+
+  defp log_tc_token_result({:error, reason}, action) do
+    Logger.debug("failed to #{action} tctoken: #{inspect(reason)}")
   end
 
   defp tc_token_issue_to_lid?(%State{} = state) do
@@ -1765,36 +1773,48 @@ defmodule BaileysEx.Connection.Coordinator do
   defp launch_blocked_app_state_sync(%State{} = state, blocked) do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} ->
-        collections = MapSet.to_list(blocked)
-        coordinator_pid = self()
-
-        case Task.Supervisor.start_child(state.task_supervisor, fn ->
-               result =
-                 run_app_state_resync(state, collections,
-                   initial_sync: false,
-                   socket_pid: socket_pid,
-                   coordinator_pid: coordinator_pid
-                 )
-
-               case normalize_sync_result(result) do
-                 :ok ->
-                   :ok
-
-                 {:error, reason} ->
-                   Logger.warning("blocked app state resync failed: #{inspect(reason)}")
-               end
-             end) do
-          {:ok, _pid} ->
-            state
-
-          {:error, reason} ->
-            Logger.warning("failed to start blocked app state resync: #{inspect(reason)}")
-            %{state | blocked_app_state_collections: blocked}
-        end
+        start_blocked_app_state_sync(state, blocked, socket_pid)
 
       :error ->
         %{state | blocked_app_state_collections: blocked}
     end
+  end
+
+  defp start_blocked_app_state_sync(state, blocked, socket_pid) do
+    collections = MapSet.to_list(blocked)
+    task_fun = blocked_app_state_sync_fun(state, collections, socket_pid, self())
+
+    case Task.Supervisor.start_child(state.task_supervisor, task_fun) do
+      {:ok, _pid} ->
+        state
+
+      {:error, reason} ->
+        Logger.warning("failed to start blocked app state resync: #{inspect(reason)}")
+        %{state | blocked_app_state_collections: blocked}
+    end
+  end
+
+  defp blocked_app_state_sync_fun(state, collections, socket_pid, coordinator_pid) do
+    fn ->
+      run_blocked_app_state_sync(state, collections, socket_pid, coordinator_pid)
+    end
+  end
+
+  defp run_blocked_app_state_sync(state, collections, socket_pid, coordinator_pid) do
+    state
+    |> run_app_state_resync(collections,
+      initial_sync: false,
+      socket_pid: socket_pid,
+      coordinator_pid: coordinator_pid
+    )
+    |> normalize_sync_result()
+    |> log_blocked_app_state_sync_result()
+  end
+
+  defp log_blocked_app_state_sync_result(:ok), do: :ok
+
+  defp log_blocked_app_state_sync_result({:error, reason}) do
+    Logger.warning("blocked app state resync failed: #{inspect(reason)}")
   end
 
   defp maybe_launch_initial_app_state_sync(%State{} = state) do

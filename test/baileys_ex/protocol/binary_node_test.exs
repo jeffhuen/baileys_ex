@@ -56,7 +56,6 @@ defmodule BaileysEx.Protocol.BinaryNodeTest do
       encoded = BinaryNodeCodec.encode(node)
       assert {:ok, decoded} = BinaryNodeCodec.decode(encoded)
       assert decoded.tag == "iq"
-      assert length(decoded.content) == 2
       [child1, child2] = decoded.content
       assert child1.tag == "query"
       assert child2.tag == "list"

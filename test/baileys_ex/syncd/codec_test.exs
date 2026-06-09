@@ -274,9 +274,7 @@ defmodule BaileysEx.Syncd.CodecTest do
       assert byte_size(patch.patch_mac) == 32
       assert byte_size(patch.snapshot_mac) == 32
       assert patch.key_id.id == @key_id_bin
-      assert length(patch.mutations) == 1
-
-      mutation = hd(patch.mutations)
+      assert [mutation] = patch.mutations
       assert mutation.operation == :set
       assert byte_size(mutation.record.index.blob) == 32
       assert byte_size(mutation.record.value.blob) > 32
@@ -653,7 +651,7 @@ defmodule BaileysEx.Syncd.CodecTest do
       assert :regular_high in names
       assert :regular_low in names
       assert :regular in names
-      assert length(names) == 5
+      assert [_, _, _, _, _] = names
     end
   end
 

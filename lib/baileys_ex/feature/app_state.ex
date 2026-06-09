@@ -101,13 +101,7 @@ defmodule BaileysEx.Feature.AppState do
            }) do
         {:ok,
          %{global_mutation_map: final_mutations, global_mutation_order: final_mutation_order}} ->
-          app_state_diag(fn ->
-            "resync complete " <>
-              "initial_sync=#{is_initial_sync} " <>
-              "mutation_count=#{length(final_mutation_order)} " <>
-              "push_name_mutation=#{push_name_mutation?(final_mutation_order)} " <>
-              "mutation_heads=#{inspect(diagnostic_mutation_heads(final_mutation_order))}"
-          end)
+          log_resync_complete(is_initial_sync, final_mutation_order)
 
           emit_mutation_map(
             event_emitter,
@@ -127,6 +121,16 @@ defmodule BaileysEx.Feature.AppState do
           Logger.warning("[AppStateDiag] resync loop unexpected return: #{inspect(other)}")
           {:error, {:unexpected_return, other}}
       end
+    end)
+  end
+
+  defp log_resync_complete(is_initial_sync, final_mutation_order) do
+    app_state_diag(fn ->
+      "resync complete " <>
+        "initial_sync=#{is_initial_sync} " <>
+        "mutation_count=#{length(final_mutation_order)} " <>
+        "push_name_mutation=#{push_name_mutation?(final_mutation_order)} " <>
+        "mutation_heads=#{inspect(diagnostic_mutation_heads(final_mutation_order))}"
     end)
   end
 
@@ -850,20 +854,13 @@ defmodule BaileysEx.Feature.AppState do
 
   defp handle_collection_failure(loop_state, _state_store, name, reason) do
     attempts = Map.get(loop_state.attempts_map, name, 0) + 1
-    missing_key? = missing_key_error?(reason)
-    blocked? = missing_key? and attempts >= @max_sync_attempts
-    irrecoverable? = not missing_key? and attempts >= @max_sync_attempts
+    outcome = collection_failure_outcome(reason, attempts)
 
     Logger.info(
-      "failed to sync #{name}: #{inspect(reason)}" <>
-        cond do
-          blocked? -> ", parking until key arrives"
-          irrecoverable? -> ""
-          true -> ", retrying with snapshot"
-        end
+      "failed to sync #{name}: #{inspect(reason)}" <> collection_failure_log_suffix(outcome)
     )
 
-    if blocked? do
+    if outcome == :blocked do
       notify_blocked_collection(loop_state, name)
     end
 
@@ -871,17 +868,35 @@ defmodule BaileysEx.Feature.AppState do
       loop_state
       | attempts_map: Map.put(loop_state.attempts_map, name, attempts),
         force_snapshot_collections:
-          if(blocked? or irrecoverable?,
-            do: loop_state.force_snapshot_collections,
-            else: MapSet.put(loop_state.force_snapshot_collections, name)
-          ),
-        remaining:
-          if(blocked? or irrecoverable?,
-            do: List.delete(loop_state.remaining, name),
-            else: loop_state.remaining
-          )
+          maybe_force_snapshot_collection(loop_state.force_snapshot_collections, name, outcome),
+        remaining: maybe_remove_failed_collection(loop_state.remaining, name, outcome)
     }
   end
+
+  defp collection_failure_outcome(reason, attempts) do
+    missing_key? = missing_key_error?(reason)
+
+    cond do
+      missing_key? and attempts >= @max_sync_attempts -> :blocked
+      not missing_key? and attempts >= @max_sync_attempts -> :irrecoverable
+      true -> :retry
+    end
+  end
+
+  defp collection_failure_log_suffix(:blocked), do: ", parking until key arrives"
+  defp collection_failure_log_suffix(:irrecoverable), do: ""
+  defp collection_failure_log_suffix(:retry), do: ", retrying with snapshot"
+
+  defp maybe_force_snapshot_collection(collections, name, :retry),
+    do: MapSet.put(collections, name)
+
+  defp maybe_force_snapshot_collection(collections, _name, _outcome), do: collections
+
+  defp maybe_remove_failed_collection(remaining, name, outcome)
+       when outcome in [:blocked, :irrecoverable],
+       do: List.delete(remaining, name)
+
+  defp maybe_remove_failed_collection(remaining, _name, :retry), do: remaining
 
   defp ensure_lt_hash_state_version(%{version: version} = state) when is_integer(version),
     do: state

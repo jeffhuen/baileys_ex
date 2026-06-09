@@ -47,7 +47,7 @@ defmodule BaileysEx.Syncd.KeysTest do
         result.patch_mac_key
       ]
 
-      assert length(Enum.uniq(keys)) == 5
+      assert [_, _, _, _, _] = Enum.uniq(keys)
     end
 
     test "deterministic — same input always produces same output" do

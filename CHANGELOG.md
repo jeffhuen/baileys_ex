@@ -8,14 +8,15 @@ Release closeout for the remaining GitHub issue reports and PR parity checks.
 
 ### Fixed
 
-- Community metadata parsing now accepts WhatsApp's live `<groups>/<group>`
-  response shape while keeping the Baileys `<communities>/<community>` shape
-  supported.
-- Participating-community fetches now filter regular groups when WhatsApp
-  returns mixed group responses.
+- Community metadata parsing and participating-community fetches now accept
+  WhatsApp's live `<groups>/<group>` response shape, keep the Baileys
+  `<communities>/<community>` shape supported, and filter regular groups from
+  mixed group responses (#13) by [@sh41](https://github.com/sh41)
+  [(#13)](https://github.com/jeffhuen/baileys_ex/pull/13).
 - Newsletter messages that omit `:participant` no longer crash the receive
   path, and newsletter delivery handling now follows the Baileys rc13 ACK-only
-  behavior.
+  behavior (#17) by [@camilohollanda](https://github.com/camilohollanda)
+  [(#17)](https://github.com/jeffhuen/baileys_ex/pull/17).
 
 ## [0.1.0-alpha.10] - 2026-06-02
 
@@ -106,6 +107,13 @@ contact tokens, device lists, newsletters, groups, and account-limit handling.
 
 ### Fixed
 
+- Syncd patch encoding/decoding now uses the fully qualified
+  `ExternalBlobReference` module, preventing regular app-state resync crashes
+  (#11) by [@sh41](https://github.com/sh41)
+  [(#11)](https://github.com/jeffhuen/baileys_ex/pull/11).
+- Remove mutations for unknown app-state indexes no longer crash fresh
+  `regular_low` sync (#15) by [@sh41](https://github.com/sh41)
+  [(#15)](https://github.com/jeffhuen/baileys_ex/pull/15).
 - Linked-device sync messages routed by WhatsApp as outgoing self stanzas are
   now treated as `from_me`, even when the stanza omits an explicit `recipient`.
   This prevents valid history sync, app-state key-share, LID mapping, and

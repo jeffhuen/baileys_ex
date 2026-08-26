@@ -461,14 +461,24 @@ BaileysEx.Connection.Config.new(browser: {"Linux", "Chrome", "122.0.0"})
 
 The platform tuple BaileysEx advertises during login.
 
+Baileys rc14 also supports an experimental Android companion identity:
+
+```elixir
+BaileysEx.Connection.Config.new(browser: {"BaileysEx", "Android", ""})
+```
+
+Android selection is case-insensitive on the tuple's second element. It uses
+the Android client platform, omits Web-only client info, registers as an Android
+phone companion, and logs an experimental-use warning when the socket starts.
+
 ### `version`
 
 - **Type:** `[non_neg_integer()]`
-- **Default:** `[2, 3000, 1_033_846_690]`
+- **Default:** `[2, 3000, 1_043_857_760]`
 - **Example:**
 
 ```elixir
-BaileysEx.Connection.Config.new(version: [2, 3000, 1_033_846_690])
+BaileysEx.Connection.Config.new(version: [2, 3000, 1_043_857_760])
 ```
 
 The WhatsApp Web version tuple sent during login.

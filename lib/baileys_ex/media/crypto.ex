@@ -85,7 +85,7 @@ defmodule BaileysEx.Media.Crypto do
   defp process_encrypt_chunk(chunk, state) when is_binary(chunk) do
     data = state.carry <> chunk
     encrypt_size = div(byte_size(data), @block_size) * @block_size
-    <<to_encrypt::binary-size(encrypt_size), carry::binary>> = data
+    <<to_encrypt::binary-size(^encrypt_size), carry::binary>> = data
 
     state =
       %{
@@ -140,7 +140,7 @@ defmodule BaileysEx.Media.Crypto do
 
   defp split_ciphertext_and_mac(encrypted_data) when byte_size(encrypted_data) > @mac_size do
     ciphertext_size = byte_size(encrypted_data) - @mac_size
-    <<ciphertext::binary-size(ciphertext_size), mac::binary-size(@mac_size)>> = encrypted_data
+    <<ciphertext::binary-size(^ciphertext_size), mac::binary-size(@mac_size)>> = encrypted_data
     {:ok, ciphertext, mac}
   end
 

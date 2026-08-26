@@ -292,18 +292,18 @@ defmodule BaileysEx.Protocol.BinaryNode do
 
   defp decode_content_tag(@binary_8, data) do
     {len, data} = read_byte(data)
-    <<bytes::binary-size(len), rest::binary>> = data
+    <<bytes::binary-size(^len), rest::binary>> = data
     {{:binary, bytes}, rest}
   end
 
   defp decode_content_tag(@binary_20, data) do
     {len, data} = read_int20(data)
-    <<bytes::binary-size(len), rest::binary>> = data
+    <<bytes::binary-size(^len), rest::binary>> = data
     {{:binary, bytes}, rest}
   end
 
   defp decode_content_tag(@binary_32, <<len::32-big, data::binary>>) do
-    <<bytes::binary-size(len), rest::binary>> = data
+    <<bytes::binary-size(^len), rest::binary>> = data
     {{:binary, bytes}, rest}
   end
 
@@ -341,19 +341,19 @@ defmodule BaileysEx.Protocol.BinaryNode do
 
   defp read_string(@binary_8, data) do
     {len, data} = read_byte(data)
-    <<str::binary-size(len), rest::binary>> = data
+    <<str::binary-size(^len), rest::binary>> = data
     {str, rest}
   end
 
   defp read_string(@binary_20, data) do
     {len, data} = read_int20(data)
-    <<str::binary-size(len), rest::binary>> = data
+    <<str::binary-size(^len), rest::binary>> = data
     {str, rest}
   end
 
   defp read_string(@binary_32, data) do
     <<len::32-big, rest::binary>> = data
-    <<str::binary-size(len), rest::binary>> = rest
+    <<str::binary-size(^len), rest::binary>> = rest
     {str, rest}
   end
 

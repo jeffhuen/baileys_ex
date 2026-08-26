@@ -1,6 +1,6 @@
-# Baileys rc13 vs BaileysEx Surface Matrix
+# Baileys rc14 vs BaileysEx Surface Matrix
 
-Current comparison reference target for Baileys v7.0.0-rc13 source in
+Current comparison reference target for Baileys v7.0.0-rc14 source in
 `dev/reference/Baileys-master/`.
 
 Purpose:
@@ -9,10 +9,27 @@ Purpose:
 - distinguish true source-backed gaps from false positives
 - track top-level facade parity separately from lower-level implementation parity
 
-Updated: 2026-06-02
+Updated: 2026-08-26
 
 Note: this matrix was originally closed against rc9 in Phase 14. Phase 17 now
 records the rc10-rc13 delta audit against the rc13 reference source.
+
+## Phase 18 rc14 Classification
+
+The official rc13-to-rc14 comparison contains three observable runtime
+clusters. All are ported:
+
+| Category | BaileysEx status | User-visible impact |
+|---|---|---|
+| WhatsApp Web version | Ported | Login/registration payloads advertise `[2, 3000, 1043857760]`, including the matching registration build hash. |
+| Query trusted-contact tokens | Ported | Profile-picture and presence query tokens carry the stored `t` timestamp; missing-timestamp entries are cleaned. Profile tokens are nested under `picture` and limited to eligible non-self PN/LID JIDs. |
+| Direct relay trusted-contact tokens | Audited unchanged | Message relay uses a separate upstream callsite and retains empty token attributes. |
+| Android companion identity | Ported | Android browser tuples select Android user-agent platform `0`, omit WebInfo, use Android-phone device props `16`, and emit the upstream experimental warning. |
+| Type-only import and release automation | Not applicable | TypeScript type erasure and NPM workflow changes have no Elixir runtime equivalent. |
+
+Focused parity coverage includes timestamped presence query nodes, nested
+profile-picture query nodes, direct-relay non-regression, and encoded Android
+login/registration payloads.
 
 ---
 

@@ -53,6 +53,8 @@ defmodule BaileysEx.Feature.Presence do
   """
   @spec subscribe(term(), String.t(), keyword()) :: :ok | {:error, term()}
   def subscribe(sendable, to_jid, opts \\ []) when is_binary(to_jid) and is_list(opts) do
+    normalized_jid = JID.normalized_user(to_jid)
+
     node = %BinaryNode{
       tag: "presence",
       attrs: %{
@@ -60,10 +62,16 @@ defmodule BaileysEx.Feature.Presence do
         "id" => message_tag(opts),
         "type" => "subscribe"
       },
-      content: TcToken.build_content(opts[:signal_store], to_jid)
+      content: presence_tc_token_content(opts[:signal_store], normalized_jid)
     }
 
     send_node(sendable, node)
+  end
+
+  defp presence_tc_token_content(signal_store, jid) do
+    if JID.user?(jid) or JID.lid?(jid) do
+      TcToken.build_content(signal_store, jid)
+    end
   end
 
   @doc """

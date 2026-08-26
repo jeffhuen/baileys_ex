@@ -2,7 +2,7 @@ defmodule BaileysEx.Connection.Socket do
   @moduledoc """
   Connection state machine for the WebSocket and Noise transport lifecycle.
 
-  The socket mirrors Baileys rc.9's `makeSocket` boundary: transport startup,
+  The socket mirrors Baileys rc14's `makeSocket` boundary: transport startup,
   Noise handshake, post-handshake frame IO, connection updates, keep-alive,
   unified session startup, routing updates, and explicit logout.
   """
@@ -29,6 +29,9 @@ defmodule BaileysEx.Connection.Socket do
   @print_qr_in_terminal_warning """
   The `print_qr_in_terminal` option is deprecated. QR codes are not printed automatically.
   Listen to the `connection.update` event and handle the `qr` payload yourself.
+  """
+  @android_browser_warning """
+  ⚠️ Using the Android browser is experimental and may lead to unexpected behavior. Use at your own risk.
   """
 
   @type state ::
@@ -311,6 +314,10 @@ defmodule BaileysEx.Connection.Socket do
 
     if data.config.print_qr_in_terminal do
       Logger.warning(@print_qr_in_terminal_warning)
+    end
+
+    if Config.android_browser?(data.config) do
+      Logger.warning(@android_browser_warning)
     end
 
     {:ok, :disconnected, data}

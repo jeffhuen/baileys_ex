@@ -717,6 +717,8 @@ defmodule BaileysEx.Message.SenderTest do
     assert is_integer(additional_index)
     assert reporting_index < tc_token_index
     assert tc_token_index < additional_index
+
+    assert %BinaryNode{attrs: %{}} = Enum.at(content, tc_token_index)
   end
 
   test "send/4 triggers post-send tc token issuance for eligible direct 1:1 messages" do

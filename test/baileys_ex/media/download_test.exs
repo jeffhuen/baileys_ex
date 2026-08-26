@@ -388,7 +388,7 @@ defmodule BaileysEx.Media.DownloadTest do
     Stream.unfold(binary, fn
       <<>> -> nil
       data when byte_size(data) <= chunk_size -> {data, <<>>}
-      <<chunk::binary-size(chunk_size), rest::binary>> -> {chunk, rest}
+      <<chunk::binary-size(^chunk_size), rest::binary>> -> {chunk, rest}
     end)
     |> Enum.to_list()
   end

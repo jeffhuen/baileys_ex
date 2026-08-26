@@ -90,7 +90,7 @@ defmodule BaileysEx.Connection.Transport.MintWebSocketTest do
 
     assert_receive {:http_connect, :https, "web.whatsapp.com", 443}
     assert_receive {:websocket_upgrade, :wss, "/ws/chat", []}
-    assert state != nil
+    assert %MintWebSocket{} = state
   end
 
   test "connect/2 appends ED routing info when provided" do

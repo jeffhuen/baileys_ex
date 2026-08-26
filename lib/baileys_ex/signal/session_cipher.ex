@@ -412,8 +412,6 @@ defmodule BaileysEx.Signal.SessionCipher do
     end
   end
 
-  defp maybe_drop_sending_chain(session, nil), do: session
-
   defp maybe_drop_sending_chain(session, %{public: public}) do
     update_in(session.chains, &Map.delete(&1, Base.encode64(public)))
   end

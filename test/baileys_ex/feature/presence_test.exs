@@ -138,9 +138,45 @@ defmodule BaileysEx.Feature.PresenceTest do
                         "type" => "subscribe"
                       },
                       content: [
-                        %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "tc-token"}}
+                        %BinaryNode{
+                          tag: "tctoken",
+                          attrs: %{"t" => "4102444800"},
+                          content: {:binary, "tc-token"}
+                        }
                       ]
                     }}
+  end
+
+  test "subscribe/3 omits tc tokens for non-user JIDs" do
+    {:ok, store} = Store.start_link()
+
+    assert :ok =
+             Store.set(store, %{
+               tctoken: %{
+                 "120363001234567890@g.us" => %{token: "group", timestamp: "4102444800"},
+                 "120363009876543210@newsletter" => %{
+                   token: "newsletter",
+                   timestamp: "4102444800"
+                 }
+               }
+             })
+
+    parent = self()
+
+    sendable = fn node ->
+      send(parent, {:node, node})
+      :ok
+    end
+
+    Enum.each(["120363001234567890@g.us", "120363009876543210@newsletter"], fn jid ->
+      assert :ok =
+               Presence.subscribe(sendable, jid,
+                 signal_store: store,
+                 message_tag_fun: fn -> "presence-sub-non-user" end
+               )
+
+      assert_receive {:node, %BinaryNode{attrs: %{"to" => ^jid}, content: nil}}
+    end)
   end
 
   test "handle_update/2 parses presence and chatstate updates and emits presence_update" do

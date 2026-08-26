@@ -1081,7 +1081,7 @@ defmodule BaileysEx.Message.Receiver do
   defp history_sync_latest?(context) do
     case context[:store_ref] && ConnectionStore.get(context.store_ref, :creds, %{}) do
       %{processed_history_messages: []} -> true
-      %{processed_history_messages: processed} when is_list(processed) -> processed == []
+      %{processed_history_messages: [_ | _]} -> false
       _ -> true
     end
   end

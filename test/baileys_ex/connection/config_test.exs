@@ -24,7 +24,7 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert config.enable_auto_session_recreation == true
     assert config.enable_recent_message_cache == true
     assert config.browser == {"Mac OS", "Chrome", "14.4.1"}
-    assert config.version == [2, 3000, 1_035_194_821]
+    assert config.version == [2, 3000, 1_043_857_760]
     assert config.country_code == "US"
     assert config.sync_full_history == true
     assert config.validate_snapshot_macs == false
@@ -89,11 +89,22 @@ defmodule BaileysEx.Connection.ConfigTest do
   end
 
   test "platform_type/1 maps browsers and host platforms to the expected atoms" do
+    assert Config.platform_type("Android") == :ANDROID
     assert Config.platform_type("Chrome") == :CHROME
     assert Config.platform_type("Firefox") == :FIREFOX
     assert Config.platform_type("Mac OS") == :DARWIN
     assert Config.platform_type("Linux") == :LINUX
     assert Config.platform_type("Something Else") == :UNKNOWN
+  end
+
+  test "Android browser detection matches rc14's case-insensitive substring behavior" do
+    assert Config.android_browser?({"Baileys", "Android", ""})
+    assert Config.android_browser?({"Custom", "Experimental ANDROID Phone", "1"})
+    assert Config.android_browser?(Config.new(browser: {"Baileys", "android", ""}))
+    refute Config.android_browser?({"Mac OS", "Chrome", "14.4.1"})
+
+    assert Config.device_props_platform_type("Android") == 16
+    assert Config.device_props_platform_type("Android Phone") == 1
   end
 
   test "single pairing_qr_timeout_ms override matches Baileys semantics for initial and refresh" do

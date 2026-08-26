@@ -8,6 +8,8 @@ import { encodeWAM } from '../reference/Baileys-master/src/WAM/encode.ts'
 import { getPlatformId } from '../reference/Baileys-master/src/Utils/browser-utils.ts'
 import { aesEncryptCTR, derivePairingCodeKey } from '../reference/Baileys-master/src/Utils/crypto.ts'
 import { generateWAMessageContent } from '../reference/Baileys-master/src/Utils/messages.ts'
+import { buildTcTokenFromJid } from '../reference/Baileys-master/src/Utils/tc-token-utils.ts'
+import { buildProfilePictureQueryContent } from '../reference/Baileys-master/src/Socket/chats.ts'
 import { decodeBinaryNode, encodeBinaryNode } from '../reference/Baileys-master/src/WABinary/index.ts'
 import {
 	areJidsSameUser,
@@ -75,6 +77,8 @@ async function runOperation(request: RunnerRequest) {
 			return runFeaturePresenceSubscribe(request.input)
 		case 'feature.presence_parse':
 			return runFeaturePresenceParse(request.input)
+		case 'feature.profile_picture_query':
+			return runFeatureProfilePictureQuery(request.input)
 		case 'feature.privacy_query':
 			return runFeaturePrivacyQuery(request.input)
 		case 'wam.registry_counts':
@@ -323,10 +327,10 @@ function runFeaturePresenceSend(input: Record<string, unknown>) {
 	}
 }
 
-function runFeaturePresenceSubscribe(input: Record<string, unknown>) {
+async function runFeaturePresenceSubscribe(input: Record<string, unknown>) {
 	const toJid = assertString(input.to_jid, 'input.to_jid')
 	const messageTag = assertString(input.message_tag, 'input.message_tag')
-	const tcToken = input.tc_token_base64 ? decodeBase64Field(input.tc_token_base64, 'input.tc_token_base64') : null
+	const tcTokenContent = await buildReferenceTcTokenContent(input, toJid)
 
 	return {
 		node: normalizeJsonNode({
@@ -336,15 +340,7 @@ function runFeaturePresenceSubscribe(input: Record<string, unknown>) {
 				id: messageTag,
 				type: 'subscribe'
 			},
-			content: tcToken
-				? [
-						{
-							tag: 'tctoken',
-							attrs: {},
-							content: tcToken
-						}
-					]
-				: undefined
+			content: tcTokenContent
 		})
 	}
 }
@@ -356,6 +352,55 @@ function runFeaturePresenceParse(input: Record<string, unknown>) {
 	return {
 		update
 	}
+}
+
+async function runFeatureProfilePictureQuery(input: Record<string, unknown>) {
+	const jid = jidNormalizedUser(assertString(input.jid, 'input.jid'))
+	const type = assertString(input.type, 'input.type')
+	if (type !== 'preview' && type !== 'image') {
+		throw new Error('input.type must be preview or image')
+	}
+
+	const tcTokenContent = await buildReferenceTcTokenContent(input, jid)
+
+	return {
+		node: normalizeJsonNode({
+			tag: 'iq',
+			attrs: {
+				target: jid,
+				to: 's.whatsapp.net',
+				type: 'get',
+				xmlns: 'w:profile:picture'
+			},
+			content: buildProfilePictureQueryContent(type, tcTokenContent)
+		})
+	}
+}
+
+async function buildReferenceTcTokenContent(input: Record<string, unknown>, jid: string) {
+	const normalizedJid = jidNormalizedUser(jid)
+	const token = input.tc_token_base64
+		? decodeBase64Field(input.tc_token_base64, 'input.tc_token_base64')
+		: undefined
+	const timestamp =
+		input.tc_token_timestamp === undefined
+			? undefined
+			: assertString(input.tc_token_timestamp, 'input.tc_token_timestamp')
+	const entry = token ? { token, timestamp } : undefined
+
+	const keys = {
+		get: async (type: string, ids: string[]) =>
+			Object.fromEntries(
+				ids.map(id => [id, type === 'tctoken' && id === normalizedJid ? entry : undefined])
+			),
+		set: async (_data: unknown) => undefined
+	}
+
+	return buildTcTokenFromJid({
+		authState: { keys: keys as any },
+		jid: normalizedJid,
+		getLIDForPN: async () => null
+	})
 }
 
 function runFeaturePrivacyQuery(input: Record<string, unknown>) {

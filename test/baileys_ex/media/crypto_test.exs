@@ -71,7 +71,7 @@ defmodule BaileysEx.Media.CryptoTest do
              )
 
     encrypted = File.read!(encrypted_path)
-    <<prefix::binary-size(byte_size(encrypted) - 1), last>> = encrypted
+    <<prefix::binary-size(byte_size(^encrypted) - 1), last>> = encrypted
     tampered = prefix <> <<Bitwise.bxor(last, 0xFF)>>
 
     assert {:error, :mac_mismatch} = Crypto.decrypt(tampered, media_key, :audio)

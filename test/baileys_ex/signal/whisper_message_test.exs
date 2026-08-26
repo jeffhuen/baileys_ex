@@ -66,7 +66,7 @@ defmodule BaileysEx.Signal.WhisperMessageTest do
 
     # Last 8 bytes should be MAC
     mac_start = byte_size(serialized) - 8
-    <<_message::binary-size(mac_start), mac::binary-8>> = serialized
+    <<_message::binary-size(^mac_start), mac::binary-8>> = serialized
     assert byte_size(mac) == 8
   end
 

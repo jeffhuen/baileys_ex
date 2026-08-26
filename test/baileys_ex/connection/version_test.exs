@@ -26,6 +26,17 @@ defmodule BaileysEx.Connection.VersionTest do
              )
   end
 
+  test "fetch_latest_baileys_version/1 uses the rc14 default when no override is supplied" do
+    assert %{
+             version: [2, 3000, 1_043_857_760],
+             is_latest: false,
+             error: :timeout
+           } =
+             Version.fetch_latest_baileys_version(
+               fetch_fun: fn _url, _opts -> {:error, :timeout} end
+             )
+  end
+
   test "fetch_latest_wa_web_version/1 parses the service worker client revision" do
     body = ~s(self.__WB_MANIFEST=[]; var data = {"client_revision": 987654321};)
 

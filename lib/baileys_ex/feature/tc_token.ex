@@ -17,7 +17,7 @@ defmodule BaileysEx.Feature.TcToken do
   @bot_phone_regex ~r/^1313555\d{4}$|^131655500\d{2}$/
 
   @doc """
-  Append a stored TC token node to the provided content list.
+  Append a stored query-side TC token node to the provided content list.
 
   Mirrors Baileys `buildTcTokenFromJid`: if no token exists, returns the
   existing content when present or `nil` when it is empty.
@@ -28,7 +28,7 @@ defmodule BaileysEx.Feature.TcToken do
 
   def build_content(%Store{} = store, jid, base_content, opts)
       when is_binary(jid) and is_list(base_content) do
-    case build_node(store, jid, opts) do
+    case build_query_node(store, jid, opts) do
       %BinaryNode{} = node -> base_content ++ [node]
       nil when base_content == [] -> nil
       nil -> base_content
@@ -46,12 +46,29 @@ defmodule BaileysEx.Feature.TcToken do
 
   def build_node(%Store{} = store, jid, opts) when is_binary(jid) do
     case safe_get_token(store, jid, opts) do
-      {:ok, token} -> %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, token}}
-      :error -> nil
+      {:ok, token, _timestamp} ->
+        %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, token}}
+
+      :error ->
+        nil
     end
   end
 
   def build_node(_store, _jid, _opts), do: nil
+
+  defp build_query_node(%Store{} = store, jid, opts) do
+    case safe_get_token(store, jid, opts) do
+      {:ok, token, timestamp} ->
+        %BinaryNode{
+          tag: "tctoken",
+          attrs: %{"t" => to_string(timestamp)},
+          content: {:binary, token}
+        }
+
+      :error ->
+        nil
+    end
+  end
 
   @doc """
   Fetch trusted-contact privacy tokens for the given JIDs.
@@ -329,17 +346,18 @@ defmodule BaileysEx.Feature.TcToken do
 
   defp usable_token_entry(store, jid, entry, opts) do
     token = map_value(entry, :token)
+    timestamp = map_value(entry, :timestamp)
 
     cond do
       not (is_binary(token) and byte_size(token) > 0) ->
         :error
 
-      expired?(map_value(entry, :timestamp), opts) ->
+      expired?(timestamp, opts) ->
         clear_expired_token(store, jid, entry)
         :error
 
       true ->
-        {:ok, token}
+        {:ok, token, timestamp}
     end
   end
 

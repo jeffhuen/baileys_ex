@@ -75,7 +75,7 @@ defmodule BaileysEx.Protocol.Proto.Wire do
   def decode_bytes(binary) do
     with {:ok, length, rest} <- decode_varint(binary),
          true <- byte_size(rest) >= length do
-      <<value::binary-size(length), tail::binary>> = rest
+      <<value::binary-size(^length), tail::binary>> = rest
       {:ok, value, tail}
     else
       false -> {:error, :unexpected_eof}

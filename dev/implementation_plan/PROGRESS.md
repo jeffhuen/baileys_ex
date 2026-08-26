@@ -1,7 +1,7 @@
 # BaileysEx Implementation Progress
 
 > Auto-tracked. Update checkboxes as tasks complete.
-> Last updated: 2026-06-02
+> Last updated: 2026-08-26
 > Checkboxes indicate accepted completion against the phase file, delivery gates, and Baileys-reference parity.
 > Prototype files may exist before a task or acceptance criterion is checked off.
 > File status legend: `✅ accepted`, `🟡 prototype exists`, `⬜ not started`
@@ -29,6 +29,7 @@
 | 15 | Persistence Architecture Alignment | 6 | COMPLETE | 7, 12 | — |
 | 16 | Signal Store Transaction Redesign | 6 | COMPLETE | 5, 15 | — |
 | 17 | Baileys rc13 Upstream Refresh | 6 | COMPLETE | 16 | — |
+| 18 | Baileys rc14 Upstream Refresh | 6 | IN PROGRESS | 17 | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -1194,13 +1195,100 @@ surfaces are now closed against the rc13 reference.
 
 ---
 
+## Phase 18: Baileys rc14 Upstream Refresh
+
+**Status:** COMPLETE · **Depends on:** Phase 17 · **Blocks:** —
+
+This phase retargets the project from Baileys v7.0.0-rc13 to
+Baileys v7.0.0-rc14. It refreshes the local authoritative reference and ports
+the bounded rc14 runtime delta: the WhatsApp Web version, timestamped
+query-side trusted-contact tokens and profile-picture nesting, and experimental
+Android companion payload support. Direct message-relay TC-token wire behavior
+remains unchanged.
+
+### Tasks
+
+- [x] 18.1 Pin the local reference to the exact official rc14 source and record the delta audit
+- [x] 18.2 Update the default WhatsApp Web version and synchronized documentation
+- [x] 18.3 Port query TC-token timestamp/profile/presence behavior without changing direct relay
+- [x] 18.4 Port Android browser, client payload, device-props, and warning behavior
+- [x] 18.5 Synchronize the rc14 parity matrix, target docs, and phase trackers
+- [x] 18.6 Run focused parity checks, all delivery gates, and independent reviews
+
+### Acceptance Criteria
+
+- [x] Project-level docs name Baileys v7.0.0-rc14 as the authoritative target
+- [x] All 196 upstream-tracked reference files match the official rc14 tag;
+  generated dependency/build outputs are excluded from the comparison
+- [x] Query TC tokens emit a string timestamp and clean missing-timestamp entries
+- [x] Profile TC tokens are nested and limited to eligible non-self user JIDs
+- [x] Presence TC tokens are limited to user JIDs and use the timestamped query shape
+- [x] Direct message-relay TC tokens retain empty attributes
+- [x] Android login and registration payloads match rc14
+- [x] Android browser detection emits the upstream experimental warning
+- [x] All focused, parity, compile, format, Credo, Dialyzer, full-test, docs, and package gates pass
+
+### Files
+
+| File | Status |
+|------|--------|
+| `AGENTS.md` | ✅ |
+| `CLAUDE.md` | ✅ |
+| `README.md` | ✅ |
+| `CHANGELOG.md` | ✅ |
+| `dev/implementation_plan/00-overview.md` | ✅ |
+| `dev/implementation_plan/CLAUDE.md` | ✅ |
+| `dev/implementation_plan/PROGRESS.md` | ✅ |
+| `dev/implementation_plan/18-rc14-upstream-refresh.md` | ✅ |
+| `dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md` | ✅ |
+| `dev/reference/Baileys-master/` | ✅ |
+| `dev/tools/run_baileys_reference.mts` | ✅ |
+| `user_docs/reference/configuration.md` | ✅ |
+| `lib/baileys_ex.ex` | ✅ |
+| `lib/baileys_ex/connection/config.ex` | ✅ |
+| `lib/baileys_ex/connection/frame.ex` | ✅ |
+| `lib/baileys_ex/auth/connection_validator.ex` | ✅ |
+| `lib/baileys_ex/connection/socket.ex` | ✅ |
+| `lib/baileys_ex/crypto.ex` | ✅ |
+| `lib/baileys_ex/feature/presence.ex` | ✅ |
+| `lib/baileys_ex/feature/tc_token.ex` | ✅ |
+| `lib/baileys_ex/feature/profile.ex` | ✅ |
+| `lib/baileys_ex/media/crypto.ex` | ✅ |
+| `lib/baileys_ex/media/download.ex` | ✅ |
+| `lib/baileys_ex/media/thumbnail.ex` | ✅ |
+| `lib/baileys_ex/message/receiver.ex` | ✅ |
+| `lib/baileys_ex/protocol/binary_node.ex` | ✅ |
+| `lib/baileys_ex/protocol/noise.ex` | ✅ |
+| `lib/baileys_ex/protocol/proto/noise_messages.ex` | ✅ |
+| `lib/baileys_ex/signal/group/sender_key_message.ex` | ✅ |
+| `lib/baileys_ex/signal/session_cipher.ex` | ✅ |
+| `lib/baileys_ex/signal/whisper_message.ex` | ✅ |
+| `test/baileys_ex/auth/connection_validator_test.exs` | ✅ |
+| `test/baileys_ex/connection/config_test.exs` | ✅ |
+| `test/baileys_ex/connection/socket_test.exs` | ✅ |
+| `test/baileys_ex/connection/transport/mint_web_socket_test.exs` | ✅ |
+| `test/baileys_ex/connection/version_test.exs` | ✅ |
+| `test/baileys_ex/feature/presence_test.exs` | ✅ |
+| `test/baileys_ex/feature/tc_token_test.exs` | ✅ |
+| `test/baileys_ex/feature/profile_test.exs` | ✅ |
+| `test/baileys_ex/media/crypto_test.exs` | ✅ |
+| `test/baileys_ex/media/download_test.exs` | ✅ |
+| `test/baileys_ex/message/sender_test.exs` | ✅ |
+| `test/baileys_ex/native/noise_test.exs` | ✅ |
+| `test/baileys_ex/parity/feature_test.exs` | ✅ |
+| `test/baileys_ex/protocol/noise_test.exs` | ✅ |
+| `test/baileys_ex/public_api_test.exs` | ✅ |
+| `test/baileys_ex/signal/whisper_message_test.exs` | ✅ |
+
+---
+
 ## Totals
 
 | Metric | Count |
 |--------|-------|
-| Phases | 17 |
-| Tasks | 133 |
-| Acceptance Criteria | 231 |
+| Phases | 18 |
+| Tasks | 139 |
+| Acceptance Criteria | 240 |
 | Source Files | ~110 |
 | Test Files | ~45 |
 | GAP items resolved | 48/48 |

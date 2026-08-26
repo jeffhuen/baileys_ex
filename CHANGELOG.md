@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the compatibility target and default WhatsApp Web version to Baileys
+  `v7.0.0-rc14`.
+- Profile-picture and presence query TC tokens now include their stored
+  timestamps. Profile-picture tokens are nested under the `picture` node and
+  omitted for self and non-user JIDs; direct message-relay token nodes retain
+  their existing wire shape.
+- Android browser tuples now use Baileys rc14's experimental Android user-agent
+  and companion-device payload semantics.
+
 ## [0.1.0-alpha.11] - 2026-06-09
 
 Release closeout for the remaining GitHub issue reports and PR parity checks.

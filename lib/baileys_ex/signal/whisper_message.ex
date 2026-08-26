@@ -62,7 +62,7 @@ defmodule BaileysEx.Signal.WhisperMessage do
   @spec decode(binary()) :: {:ok, t()} | {:error, term()}
   def decode(binary) when byte_size(binary) > @mac_length do
     message_size = byte_size(binary) - @mac_length
-    <<message::binary-size(message_size), _mac::binary-size(@mac_length)>> = binary
+    <<message::binary-size(^message_size), _mac::binary-size(@mac_length)>> = binary
 
     case message do
       <<@version_byte, payload::binary>> ->
@@ -93,7 +93,7 @@ defmodule BaileysEx.Signal.WhisperMessage do
   @spec verify_mac(t(), binary(), binary(), binary()) :: boolean()
   def verify_mac(%__MODULE__{serialized: serialized}, mac_key, sender_identity, receiver_identity) do
     message_size = byte_size(serialized) - @mac_length
-    <<message::binary-size(message_size), mac::binary-size(@mac_length)>> = serialized
+    <<message::binary-size(^message_size), mac::binary-size(@mac_length)>> = serialized
     expected_mac = compute_mac(mac_key, sender_identity, receiver_identity, message)
     :crypto.hash_equals(expected_mac, mac)
   end

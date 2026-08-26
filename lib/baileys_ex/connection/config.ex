@@ -2,7 +2,7 @@ defmodule BaileysEx.Connection.Config do
   @moduledoc """
   Connection configuration defaults and platform mapping.
 
-  `print_qr_in_terminal` remains only as a compatibility knob with Baileys rc.9.
+  `print_qr_in_terminal` remains only as a compatibility knob with Baileys rc14.
   It is deprecated and does not print QR codes automatically; consumers should
   handle `connection.update.qr` themselves.
   """
@@ -14,6 +14,7 @@ defmodule BaileysEx.Connection.Config do
   @type cached_group_metadata_fun :: (String.t() -> map() | {:ok, map()} | nil)
   @type platform ::
           :CHROME
+          | :ANDROID
           | :FIREFOX
           | :SAFARI
           | :EDGE
@@ -54,6 +55,7 @@ defmodule BaileysEx.Connection.Config do
         }
 
   @platforms %{
+    "Android" => :ANDROID,
     "Chrome" => :CHROME,
     "Firefox" => :FIREFOX,
     "Safari" => :SAFARI,
@@ -66,6 +68,7 @@ defmodule BaileysEx.Connection.Config do
   }
 
   @device_props_platform_types %{
+    "ANDROID" => 16,
     "CHROME" => 1,
     "FIREFOX" => 2,
     "IE" => 3,
@@ -99,7 +102,7 @@ defmodule BaileysEx.Connection.Config do
             enable_recent_message_cache: true,
             cached_group_metadata: nil,
             browser: {"Mac OS", "Chrome", "14.4.1"},
-            version: [2, 3000, 1_035_194_821],
+            version: [2, 3000, 1_043_857_760],
             country_code: "US",
             sync_full_history: true,
             should_sync_history_message: &__MODULE__.default_should_sync_history_message/1,
@@ -130,9 +133,9 @@ defmodule BaileysEx.Connection.Config do
   @spec should_reconnect?(t(), term(), non_neg_integer()) :: boolean()
   def should_reconnect?(%__MODULE__{reconnect_policy: :disabled}, _reason, _attempt), do: false
 
-  def should_reconnect?(%__MODULE__{} = config, _reason, attempt)
+  def should_reconnect?(%__MODULE__{max_retries: max_retries}, _reason, attempt)
       when is_integer(attempt) and attempt <= 0,
-      do: config.reconnect_policy != :disabled and config.max_retries > 0
+      do: max_retries > 0
 
   def should_reconnect?(%__MODULE__{max_retries: max_retries}, _reason, attempt)
       when is_integer(attempt) and attempt > max_retries,
@@ -186,6 +189,24 @@ defmodule BaileysEx.Connection.Config do
     |> String.upcase()
     |> then(&Map.get(@device_props_platform_types, &1, 1))
   end
+
+  @doc """
+  Returns whether a browser tuple selects Baileys' experimental Android client.
+
+  Detection intentionally matches rc14's case-insensitive substring check on
+  the tuple's browser-name element.
+  """
+  @spec android_browser?(t() | browser()) :: boolean()
+  def android_browser?(%__MODULE__{browser: browser}), do: android_browser?(browser)
+
+  def android_browser?({_platform_name, browser_name, _platform_version})
+      when is_binary(browser_name) do
+    browser_name
+    |> String.downcase()
+    |> String.contains?("android")
+  end
+
+  def android_browser?(_browser), do: false
 
   @doc """
   Returns the numeric sub-platform ID for web client features (e.g. Mac/Windows).

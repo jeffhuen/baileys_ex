@@ -23,7 +23,11 @@ defmodule BaileysEx.Feature.TcTokenTest do
 
     assert [
              %BinaryNode{tag: "picture", attrs: %{"type" => "preview"}},
-             %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "tc-token"}}
+             %BinaryNode{
+               tag: "tctoken",
+               attrs: %{"t" => "4102444800"},
+               content: {:binary, "tc-token"}
+             }
            ] = TcToken.build_content(store, "15551234567@s.whatsapp.net", base_content)
 
     assert %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "tc-token"}} =
@@ -79,6 +83,30 @@ defmodule BaileysEx.Feature.TcTokenTest do
 
     assert %{
              "15551234567@s.whatsapp.net" => %{token: "", sender_timestamp: 9_900_000}
+           } = Store.get(store, :tctoken, ["15551234567@s.whatsapp.net"])
+  end
+
+  test "build_content/4 rejects tokens without timestamps and preserves sender state" do
+    {:ok, store} = Store.start_link()
+
+    assert :ok =
+             Store.set(store, %{
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{
+                   token: "timestamp-free-token",
+                   sender_timestamp: 4_102_444_700
+                 }
+               }
+             })
+
+    assert nil ==
+             TcToken.build_content(store, "15551234567@s.whatsapp.net", [], now: 4_102_444_800)
+
+    assert %{
+             "15551234567@s.whatsapp.net" => %{
+               token: "",
+               sender_timestamp: 4_102_444_700
+             }
            } = Store.get(store, :tctoken, ["15551234567@s.whatsapp.net"])
   end
 

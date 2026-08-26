@@ -251,9 +251,9 @@ defmodule BaileysEx.Protocol.Noise do
   end
 
   defp do_process_server_hello(state, %ServerHello{} = server_hello, noise_key_pair) do
-    with true <- is_binary(server_hello.ephemeral) and server_hello.ephemeral != nil,
-         true <- is_binary(server_hello.static) and server_hello.static != nil,
-         true <- is_binary(server_hello.payload) and server_hello.payload != nil,
+    with true <- is_binary(server_hello.ephemeral),
+         true <- is_binary(server_hello.static),
+         true <- is_binary(server_hello.payload),
          {:ok, state} <- server_hello_ephemeral(state, server_hello.ephemeral),
          {:ok, state, server_static} <- decrypt_handshake(state, server_hello.static),
          {:ok, shared_static} <-
@@ -321,7 +321,7 @@ defmodule BaileysEx.Protocol.Noise do
 
   defp do_decode_frames(state, <<length::24-big, rest::binary>>, acc)
        when byte_size(rest) >= length do
-    <<frame::binary-size(length), tail::binary>> = rest
+    <<frame::binary-size(^length), tail::binary>> = rest
 
     with {:ok, state, decoded_frame} <- maybe_decrypt_transport(state, frame) do
       do_decode_frames(state, tail, [decoded_frame | acc])
@@ -347,8 +347,6 @@ defmodule BaileysEx.Protocol.Noise do
         error
     end
   end
-
-  defp finish_transport(%__MODULE__{transport: %TransportState{}} = state), do: {:ok, state}
 
   defp finish_transport(%__MODULE__{} = state) do
     with {:ok, write_key, read_key} <- local_hkdf(state.salt, @empty) do

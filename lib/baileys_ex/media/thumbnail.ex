@@ -274,7 +274,6 @@ defmodule BaileysEx.Media.Thumbnail do
   end
 
   defp decode_pcm_samples(<<_trailing::binary>>, acc), do: Enum.reverse(acc)
-  defp decode_pcm_samples(<<>>, acc), do: Enum.reverse(acc)
 
   defp waveform_values(values, samples, block_size) do
     filtered =
@@ -380,7 +379,7 @@ defmodule BaileysEx.Media.Thumbnail do
 
   defp parse_jpeg_dimensions(<<0xFF, _marker, segment_length::16-big, rest::binary>>)
        when segment_length >= 2 and byte_size(rest) >= segment_length - 2 do
-    <<_segment::binary-size(segment_length - 2), tail::binary>> = rest
+    <<_segment::binary-size(^segment_length - 2), tail::binary>> = rest
     parse_jpeg_dimensions(tail)
   end
 

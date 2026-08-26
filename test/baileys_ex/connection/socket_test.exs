@@ -118,6 +118,22 @@ defmodule BaileysEx.Connection.SocketTest do
     assert log =~ "connection.update"
   end
 
+  test "Android browser selection emits the rc14 experimental warning" do
+    log =
+      capture_log(fn ->
+        assert {:ok, pid} =
+                 Socket.start_link(
+                   config: Config.new(browser: {"Baileys", "Android", ""}),
+                   auth_state: %{creds: %{}}
+                 )
+
+        assert :disconnected == Socket.state(pid)
+      end)
+
+    assert log =~ "Android browser is experimental"
+    assert log =~ "Use at your own risk"
+  end
+
   test "connect/1 waits for a transport connected event before starting the noise handshake" do
     client_noise_key_pair = x25519_key_pair(101)
     root_key_pair = x25519_key_pair(102)
@@ -2000,15 +2016,15 @@ defmodule BaileysEx.Connection.SocketTest do
 
     cond do
       String.starts_with?(frame, noise_header) ->
-        <<_intro_header::binary-size(noise_header_size), rest::binary>> = frame
+        <<_intro_header::binary-size(^noise_header_size), rest::binary>> = frame
         rest
 
       String.starts_with?(frame, "ED") ->
         <<"ED", 0, 1, routing_length_high, routing_length_low::16-big, rest::binary>> = frame
         routing_length = routing_length_high * 65_536 + routing_length_low
 
-        <<_routing_info::binary-size(routing_length),
-          _noise_header::binary-size(noise_header_size), tail::binary>> = rest
+        <<_routing_info::binary-size(^routing_length),
+          _noise_header::binary-size(^noise_header_size), tail::binary>> = rest
 
         tail
 

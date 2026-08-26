@@ -52,7 +52,9 @@ defmodule BaileysEx.Crypto do
   def aes_gcm_decrypt(key, iv, ciphertext_with_tag, aad \\ <<>>) do
     tag_size = 16
     ciphertext_size = byte_size(ciphertext_with_tag) - tag_size
-    <<ciphertext::binary-size(ciphertext_size), tag::binary-size(tag_size)>> = ciphertext_with_tag
+
+    <<ciphertext::binary-size(^ciphertext_size), tag::binary-size(^tag_size)>> =
+      ciphertext_with_tag
 
     case :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, ciphertext, aad, tag, false) do
       :error -> {:error, :decrypt_failed}

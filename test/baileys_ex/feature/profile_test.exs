@@ -5,7 +5,7 @@ defmodule BaileysEx.Feature.ProfileTest do
   alias BaileysEx.Feature.Profile
   alias BaileysEx.Signal.Store
 
-  test "picture_url/4 appends the stored tc token and returns the picture url" do
+  test "picture_url/4 nests the timestamped tc token and returns the picture url" do
     {:ok, store} = Store.start_link()
 
     assert :ok =
@@ -53,11 +53,75 @@ defmodule BaileysEx.Feature.ProfileTest do
                         %BinaryNode{
                           tag: "picture",
                           attrs: %{"type" => "image", "query" => "url"},
-                          content: nil
-                        },
-                        %BinaryNode{tag: "tctoken", attrs: %{}, content: {:binary, "tc-token"}}
+                          content: [
+                            %BinaryNode{
+                              tag: "tctoken",
+                              attrs: %{"t" => "4102444800"},
+                              content: {:binary, "tc-token"}
+                            }
+                          ]
+                        }
                       ]
                     }, 12_345}
+  end
+
+  test "picture_url/4 omits tc tokens for self, groups, newsletters, and a disabled AB gate" do
+    {:ok, store} = Store.start_link()
+
+    assert :ok =
+             Store.set(store, %{
+               tctoken: %{
+                 "15550001111@s.whatsapp.net" => %{token: "self-pn", timestamp: "4102444800"},
+                 "123456789012345@lid" => %{token: "self-lid", timestamp: "4102444800"},
+                 "120363001234567890@g.us" => %{token: "group", timestamp: "4102444800"},
+                 "120363009876543210@newsletter" => %{
+                   token: "newsletter",
+                   timestamp: "4102444800"
+                 },
+                 "15551234567@s.whatsapp.net" => %{
+                   token: "disabled",
+                   timestamp: "4102444800"
+                 }
+               }
+             })
+
+    me = %{id: "15550001111@s.whatsapp.net", lid: "123456789012345@lid"}
+
+    cases = [
+      {"15550001111@s.whatsapp.net", [me: me]},
+      {"123456789012345@lid", [me: me]},
+      {"120363001234567890@g.us", []},
+      {"120363009876543210@newsletter", []},
+      {"15551234567@s.whatsapp.net", [profile_pic_privacy_token: false]}
+    ]
+
+    Enum.each(cases, fn {jid, opts} ->
+      parent = self()
+
+      query_fun = fn node, timeout ->
+        send(parent, {:query, node, timeout})
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+      end
+
+      assert {:ok, nil} =
+               Profile.picture_url(
+                 query_fun,
+                 jid,
+                 :preview,
+                 Keyword.merge([signal_store: store], opts)
+               )
+
+      assert_receive {:query,
+                      %BinaryNode{
+                        content: [
+                          %BinaryNode{
+                            tag: "picture",
+                            attrs: %{"type" => "preview", "query" => "url"},
+                            content: nil
+                          }
+                        ]
+                      }, 60_000}
+    end)
   end
 
   test "picture_url/4 normalizes the target jid and omits tc tokens when none exist" do

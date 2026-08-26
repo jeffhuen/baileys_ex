@@ -471,8 +471,8 @@ defmodule BaileysEx do
           {:ok, String.t() | nil} | {:error, term()}
   def profile_picture_url(connection, jid, type \\ :preview, opts \\ [])
       when is_binary(jid) and is_list(opts) do
-    with_queryable(connection, fn queryable ->
-      Profile.picture_url(queryable, jid, type, maybe_put_signal_store(opts, connection))
+    with_runtime(connection, opts, fn queryable, runtime_opts ->
+      Profile.picture_url(queryable, jid, type, runtime_opts)
     end)
   end
 

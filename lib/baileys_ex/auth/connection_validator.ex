@@ -1,6 +1,6 @@
 defmodule BaileysEx.Auth.ConnectionValidator do
   @moduledoc """
-  Builds the rc.9 login and registration client payloads sent after Noise handshake.
+  Builds the rc14 login and registration client payloads sent after Noise handshake.
   """
 
   alias BaileysEx.Auth.State
@@ -16,6 +16,7 @@ defmodule BaileysEx.Auth.ConnectionValidator do
   alias BaileysEx.Protocol.Proto.DeviceProps.HistorySyncConfig
 
   @key_bundle_type <<5>>
+  @user_agent_platform_android 0
   @user_agent_platform_web 14
   @user_agent_release_channel_release 0
   @connect_type_wifi_unknown 1
@@ -107,7 +108,7 @@ defmodule BaileysEx.Auth.ConnectionValidator do
         secondary: secondary,
         tertiary: tertiary
       },
-      platform: @user_agent_platform_web,
+      platform: user_agent_platform(config),
       release_channel: @user_agent_release_channel_release,
       os_version: "0.1",
       device: "Desktop",
@@ -119,8 +120,18 @@ defmodule BaileysEx.Auth.ConnectionValidator do
     }
   end
 
+  defp user_agent_platform(%Config{} = config) do
+    if Config.android_browser?(config),
+      do: @user_agent_platform_android,
+      else: @user_agent_platform_web
+  end
+
   defp web_info(%Config{} = config) do
-    %WebInfo{web_sub_platform: Config.web_sub_platform(config)}
+    if Config.android_browser?(config) do
+      nil
+    else
+      %WebInfo{web_sub_platform: Config.web_sub_platform(config)}
+    end
   end
 
   defp companion_device_props(%Config{} = config) do

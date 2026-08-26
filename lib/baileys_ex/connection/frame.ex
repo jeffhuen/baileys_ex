@@ -30,7 +30,7 @@ defmodule BaileysEx.Connection.Frame do
 
   defp decode_stream(<<payload_size::unsigned-big-integer-size(24), rest::binary>>, frames)
        when byte_size(rest) >= payload_size do
-    <<payload::binary-size(payload_size), tail::binary>> = rest
+    <<payload::binary-size(^payload_size), tail::binary>> = rest
     decode_stream(tail, [payload | frames])
   end
 

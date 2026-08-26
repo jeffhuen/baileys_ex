@@ -220,7 +220,7 @@ defmodule BaileysEx.Media.Download do
   defp decrypt_chunk(chunk, state, acc, sink_fun) when is_binary(chunk) do
     data = state.pending <> chunk
     decrypt_length = to_smallest_chunk_size(byte_size(data))
-    <<decryptable::binary-size(decrypt_length), pending::binary>> = data
+    <<decryptable::binary-size(^decrypt_length), pending::binary>> = data
 
     {state, decryptable} = maybe_init_cipher_state(state, decryptable)
 
@@ -304,7 +304,7 @@ defmodule BaileysEx.Media.Download do
 
     if byte_size(data) > @aes_chunk_size do
       push_size = byte_size(data) - @aes_chunk_size
-      <<to_push::binary-size(push_size), tail::binary-size(@aes_chunk_size)>> = data
+      <<to_push::binary-size(^push_size), tail::binary-size(@aes_chunk_size)>> = data
 
       with {:ok, acc, bytes_fetched} <-
              push_bytes(

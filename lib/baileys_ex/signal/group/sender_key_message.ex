@@ -46,7 +46,7 @@ defmodule BaileysEx.Signal.Group.SenderKeyMessage do
   @spec decode(binary()) :: {:ok, t()} | {:error, term()}
   def decode(binary) when byte_size(binary) > @signature_length do
     message_size = byte_size(binary) - @signature_length
-    <<message::binary-size(message_size), signature::binary-size(@signature_length)>> = binary
+    <<message::binary-size(^message_size), signature::binary-size(@signature_length)>> = binary
 
     case message do
       <<@version_byte, payload::binary>> ->
@@ -71,7 +71,7 @@ defmodule BaileysEx.Signal.Group.SenderKeyMessage do
   @spec verify_signature(t(), binary()) :: boolean()
   def verify_signature(%__MODULE__{serialized: serialized, signature: signature}, public_key) do
     message_size = byte_size(serialized) - byte_size(signature)
-    <<message::binary-size(message_size), _::binary>> = serialized
+    <<message::binary-size(^message_size), _::binary>> = serialized
     Curve.verify(public_key, message, signature)
   end
 

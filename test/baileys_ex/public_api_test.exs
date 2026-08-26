@@ -10,6 +10,7 @@ defmodule BaileysEx.PublicApiTest do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.EventEmitter
+  alias BaileysEx.Connection.Store, as: RuntimeStore
   alias BaileysEx.Connection.Supervisor
   alias BaileysEx.Crypto
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
@@ -234,6 +235,74 @@ defmodule BaileysEx.PublicApiTest do
     assert_receive {:startup_on_connection, %{connection: :connecting}}
     assert_receive {:startup_on_qr, "startup-qr"}
     assert_receive :fake_socket_connect
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "profile_picture_url/4 receives runtime self identity and profile-token AB props" do
+    query_handler = fn _node, _timeout ->
+      {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+    end
+
+    me = %{
+      id: "15550001111:1@s.whatsapp.net",
+      lid: "123456789012345:1@lid",
+      name: "Bailey"
+    }
+
+    assert {:ok, connection} =
+             BaileysEx.connect(%{creds: %{me: me}},
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               test_pid: self(),
+               query_handler: query_handler
+             )
+
+    assert_receive :fake_socket_connect
+    assert %Store{} = signal_store = Supervisor.signal_store(connection)
+
+    assert :ok =
+             Store.set(signal_store, %{
+               tctoken: %{
+                 "15550001111@s.whatsapp.net" => %{
+                   token: "self-token",
+                   timestamp: "4102444800"
+                 },
+                 "15551234567@s.whatsapp.net" => %{
+                   token: "other-token",
+                   timestamp: "4102444800"
+                 }
+               }
+             })
+
+    assert {:ok, nil} =
+             BaileysEx.profile_picture_url(
+               connection,
+               "15550001111@s.whatsapp.net",
+               :preview
+             )
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"target" => "15550001111@s.whatsapp.net"},
+                      content: [%BinaryNode{tag: "picture", content: nil}]
+                    }, 60_000}
+
+    runtime_store = connection |> Supervisor.store() |> RuntimeStore.wrap()
+    assert :ok = RuntimeStore.put(runtime_store, :props, %{"9666" => "0"})
+
+    assert {:ok, nil} =
+             BaileysEx.profile_picture_url(
+               connection,
+               "15551234567@s.whatsapp.net",
+               :preview
+             )
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"target" => "15551234567@s.whatsapp.net"},
+                      content: [%BinaryNode{tag: "picture", content: nil}]
+                    }, 60_000}
 
     assert :ok = BaileysEx.disconnect(connection)
   end

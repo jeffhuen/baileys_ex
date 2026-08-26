@@ -63,8 +63,8 @@ defmodule BaileysEx.Native.NoiseTest do
     # Create sessions in a spawned process so they become unreachable on exit
     test_pid = self()
 
-    pid =
-      spawn(fn ->
+    {pid, ref} =
+      spawn_monitor(fn ->
         sessions =
           for _ <- 1..20 do
             {i, r} = complete_raw_handshake()
@@ -74,7 +74,6 @@ defmodule BaileysEx.Native.NoiseTest do
         send(test_pid, {:created, length(sessions) * 2})
       end)
 
-    ref = Process.monitor(pid)
     assert_receive {:created, 40}, 5_000
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
 

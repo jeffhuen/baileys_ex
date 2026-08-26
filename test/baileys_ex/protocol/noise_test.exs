@@ -79,7 +79,7 @@ defmodule BaileysEx.Protocol.NoiseTest do
     assert {:ok, {noise, client_frame}} = Noise.encode_frame(noise, "client ping")
 
     header_size = byte_size(@noise_header)
-    <<intro_header::binary-size(header_size), rest::binary>> = client_frame
+    <<intro_header::binary-size(^header_size), rest::binary>> = client_frame
     assert intro_header == @noise_header
 
     assert {:ok, server_transport, ["client ping"], @empty} =
@@ -156,7 +156,7 @@ defmodule BaileysEx.Protocol.NoiseTest do
                     %{phase: :transport}}
 
     header_size = byte_size(@noise_header)
-    <<_intro_header::binary-size(header_size), rest::binary>> = client_frame
+    <<_intro_header::binary-size(^header_size), rest::binary>> = client_frame
 
     assert {:ok, server_transport, ["client telemetry"], @empty} =
              decode_server_frames(server_transport, rest)
@@ -322,7 +322,7 @@ defmodule BaileysEx.Protocol.NoiseTest do
 
   defp decode_server_frames(transport, <<length::24-big, rest::binary>>, acc)
        when byte_size(rest) >= length do
-    <<ciphertext::binary-size(length), tail::binary>> = rest
+    <<ciphertext::binary-size(^length), tail::binary>> = rest
     {:ok, transport, plaintext} = transport_decrypt(transport, ciphertext)
     decode_server_frames(transport, tail, [plaintext | acc])
   end

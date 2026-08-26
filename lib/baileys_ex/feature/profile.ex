@@ -86,19 +86,24 @@ defmodule BaileysEx.Feature.Profile do
           {:ok, String.t() | nil} | {:error, term()}
   def picture_url(queryable, jid, type \\ :preview, opts \\ [])
       when is_binary(jid) and type in [:preview, :image] and is_list(opts) do
-    base_content = [
-      %BinaryNode{tag: "picture", attrs: %{"type" => Atom.to_string(type), "query" => "url"}}
-    ]
+    normalized_jid = JID.normalized_user(jid)
+    tc_token_content = profile_tc_token_content(opts, normalized_jid)
+
+    picture = %BinaryNode{
+      tag: "picture",
+      attrs: %{"type" => Atom.to_string(type), "query" => "url"},
+      content: tc_token_content
+    }
 
     node = %BinaryNode{
       tag: "iq",
       attrs: %{
-        "target" => JID.normalized_user(jid),
+        "target" => normalized_jid,
         "to" => @s_whatsapp_net,
         "type" => "get",
         "xmlns" => "w:profile:picture"
       },
-      content: TcToken.build_content(opts[:signal_store], jid, base_content)
+      content: [picture]
     }
 
     with {:ok, %BinaryNode{} = response} <-
@@ -215,6 +220,57 @@ defmodule BaileysEx.Feature.Profile do
       %{"id" => id} when is_binary(id) -> JID.normalized_user(id)
       _ -> nil
     end
+  end
+
+  defp profile_tc_token_content(opts, jid) do
+    if profile_tc_token_eligible?(opts, jid) do
+      TcToken.build_content(opts[:signal_store], jid)
+    end
+  end
+
+  defp profile_tc_token_eligible?(opts, jid) do
+    profile_pic_privacy_token?(opts) and
+      (JID.user?(jid) or JID.lid?(jid)) and
+      jid not in current_user_jids(opts)
+  end
+
+  defp current_user_jids(opts) do
+    me = opts[:me] || store_me(opts[:store]) || %{}
+
+    [map_value(me, :id), map_value(me, :lid)]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&JID.normalized_user/1)
+  end
+
+  defp profile_pic_privacy_token?(opts) do
+    case opts[:profile_pic_privacy_token] do
+      value when is_boolean(value) -> value
+      _ -> profile_pic_privacy_token_prop(store_props(opts[:store]))
+    end
+  end
+
+  defp profile_pic_privacy_token_prop(props) do
+    case props["9666"] || props["profile_scraping_privacy_token_in_photo_iq"] do
+      nil -> true
+      value when value in [true, 1, "1", "true"] -> true
+      _ -> false
+    end
+  end
+
+  defp store_props(nil), do: %{}
+  defp store_props(%Store.Ref{} = store), do: Store.get(store, :props, %{}) || %{}
+
+  defp store_props(store) do
+    store
+    |> Store.wrap()
+    |> Store.get(:props, %{})
+    |> Kernel.||(%{})
+  rescue
+    ArgumentError -> %{}
+  end
+
+  defp map_value(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
   end
 
   defp store_me(nil), do: nil

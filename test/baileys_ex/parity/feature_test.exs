@@ -4,6 +4,7 @@ defmodule BaileysEx.Parity.FeatureTest do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Feature.Presence
   alias BaileysEx.Feature.Privacy
+  alias BaileysEx.Feature.Profile
   alias BaileysEx.Signal.Store
 
   test "Baileys sendPresenceUpdate matches Elixir for recording chatstate" do
@@ -63,7 +64,8 @@ defmodule BaileysEx.Parity.FeatureTest do
       run_baileys_reference!("feature.presence_subscribe", %{
         "to_jid" => "15551234567@s.whatsapp.net",
         "message_tag" => "presence-sub-1",
-        "tc_token_base64" => Base.encode64("tc-token")
+        "tc_token_base64" => Base.encode64("tc-token"),
+        "tc_token_timestamp" => "4102444800"
       })
 
     assert normalize_binary_node(node) == expected["node"]
@@ -93,6 +95,42 @@ defmodule BaileysEx.Parity.FeatureTest do
     assert {:ok, update} = Presence.handle_update(node)
 
     assert normalize_presence_update(update) == expected
+  end
+
+  test "Baileys profile-picture query nests timestamped tc tokens like Elixir" do
+    {:ok, store} = Store.start_link()
+
+    assert :ok =
+             Store.set(store, %{
+               tctoken: %{
+                 "15551234567@s.whatsapp.net" => %{
+                   token: "tc-token",
+                   timestamp: "4102444800"
+                 }
+               }
+             })
+
+    parent = self()
+
+    queryable = fn node, _timeout ->
+      send(parent, {:node, node})
+      {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
+    end
+
+    assert {:ok, nil} =
+             Profile.picture_url(queryable, "15551234567:2@c.us", :image, signal_store: store)
+
+    assert_receive {:node, node}
+
+    expected =
+      run_baileys_reference!("feature.profile_picture_query", %{
+        "jid" => "15551234567:2@c.us",
+        "type" => "image",
+        "tc_token_base64" => Base.encode64("tc-token"),
+        "tc_token_timestamp" => "4102444800"
+      })
+
+    assert normalize_binary_node(node) == expected["node"]
   end
 
   test "Baileys privacyQuery node matches Elixir read-receipts updates" do

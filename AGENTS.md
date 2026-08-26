@@ -1,16 +1,16 @@
 # BaileysEx
 
-**Behaviour-accurate Elixir port of [Baileys v7.0.0-rc13](https://github.com/WhiskeySockets/Baileys/releases/tag/v7.0.0-rc13)** —
+**Behaviour-accurate Elixir port of [Baileys v7.0.0-rc14](https://github.com/WhiskeySockets/Baileys/releases/tag/v7.0.0-rc14)** —
 a WhatsApp Web API library. The goal is a **drop-in replacement** for Elixir apps
 currently using Baileys (Node.js) as a sidecar. Same wire behaviour, same protocol
 semantics, idiomatic Elixir implementation. Targets Elixir 1.19+/OTP 28.
 
-Reference source: `dev/reference/Baileys-master/` (pinned at v7.0.0-rc13)
+Reference source: `dev/reference/Baileys-master/` (pinned at v7.0.0-rc14)
 
 ### Baileys Is the Spec
 
 **Do not deliberate about what to implement or how the protocol should behave.**
-Baileys v7.0.0-rc13 (`dev/reference/Baileys-master/`) is the authoritative reference for
+Baileys v7.0.0-rc14 (`dev/reference/Baileys-master/`) is the authoritative reference for
 all wire behaviour, protocol semantics, message formats, handshake flows, feature
 scope, and public compatibility promises. When you are unsure what to do:
 

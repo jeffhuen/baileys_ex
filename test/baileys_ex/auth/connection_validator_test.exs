@@ -7,10 +7,10 @@ defmodule BaileysEx.Auth.ConnectionValidatorTest do
   alias BaileysEx.Protocol.Proto.DeviceProps
   alias BaileysEx.TestSupport.DeterministicAuth
 
-  test "generate_login_node/2 builds the rc9 passive login payload" do
+  test "generate_login_node/2 builds the rc14 passive web login payload" do
     config =
       Config.new(
-        version: [2, 3000, 1_033_846_690],
+        version: [2, 3000, 1_043_857_760],
         country_code: "GB",
         browser: {"Mac OS", "Chrome", "14.4.1"}
       )
@@ -32,7 +32,7 @@ defmodule BaileysEx.Auth.ConnectionValidatorTest do
     assert decoded.user_agent.release_channel == 0
     assert decoded.user_agent.app_version.primary == 2
     assert decoded.user_agent.app_version.secondary == 3000
-    assert decoded.user_agent.app_version.tertiary == 1_033_846_690
+    assert decoded.user_agent.app_version.tertiary == 1_043_857_760
     assert decoded.user_agent.locale_country_iso31661_alpha2 == "GB"
     assert decoded.web_info.web_sub_platform == 0
   end
@@ -71,6 +71,8 @@ defmodule BaileysEx.Auth.ConnectionValidatorTest do
     assert decoded.pull == false
     assert decoded.connect_type == 1
     assert decoded.connect_reason == 1
+    assert decoded.user_agent.platform == 14
+    assert decoded.web_info != nil
 
     assert reg = decoded.device_pairing_data
     assert reg.build_hash == Base.decode16!("E726C7196348EDD7C96653D52DC55933")
@@ -92,5 +94,35 @@ defmodule BaileysEx.Auth.ConnectionValidatorTest do
     assert companion.history_sync_config.inline_initial_payload_in_e2_ee_msg == true
     assert companion.history_sync_config.support_message_association == true
     assert companion.history_sync_config.support_group_history == false
+  end
+
+  test "Android login uses the Android user agent and omits web info" do
+    config = Config.new(browser: {"Baileys", "Experimental Android Phone", ""})
+
+    assert {:ok, payload} =
+             ConnectionValidator.generate_login_node("15551234567@s.whatsapp.net", config)
+
+    assert {:ok, decoded} = payload |> ClientPayload.encode() |> ClientPayload.decode()
+    assert decoded.user_agent.platform == 0
+    assert decoded.web_info == nil
+    assert decoded.user_agent.device == "Desktop"
+  end
+
+  test "Android registration uses ANDROID_PHONE device props and the rc14 build hash" do
+    state = DeterministicAuth.state(81)
+    config = Config.new(browser: {"Baileys", "Android", ""})
+
+    assert {:ok, payload} = ConnectionValidator.generate_registration_node(state, config)
+    assert {:ok, decoded} = payload |> ClientPayload.encode() |> ClientPayload.decode()
+
+    assert decoded.user_agent.platform == 0
+    assert decoded.web_info == nil
+
+    assert decoded.device_pairing_data.build_hash ==
+             Base.decode16!("F6F65C0607A1CDFFD8752B051FC95EDF")
+
+    assert {:ok, companion} = DeviceProps.decode(decoded.device_pairing_data.device_props)
+    assert companion.os == "Baileys"
+    assert companion.platform_type == 16
   end
 end

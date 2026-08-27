@@ -81,6 +81,7 @@ Baileys v7.0.0-rc14 and port every observable runtime delta in the official
 | `CLAUDE.md` | ✅ |
 | `README.md` | ✅ |
 | `CHANGELOG.md` | ✅ |
+| `.github/workflows/parity-internal.yml` | ✅ |
 | `dev/implementation_plan/00-overview.md` | ✅ |
 | `dev/implementation_plan/CLAUDE.md` | ✅ |
 | `dev/implementation_plan/PROGRESS.md` | ✅ |

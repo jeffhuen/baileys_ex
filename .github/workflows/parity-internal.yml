@@ -3,6 +3,9 @@ name: Internal Parity
 on:
   workflow_dispatch:
 
+env:
+  BAILEYS_REFERENCE_COMMIT: 7e7b0757e3f9f3c7789fb1cfd2f241d5002a199a
+
 jobs:
   parity:
     runs-on: ubuntu-latest
@@ -16,6 +19,14 @@ jobs:
         with:
           elixir-version: "1.19.0"
           otp-version: "28.1"
+
+      - name: Check out pinned Baileys reference
+        run: |
+          git init --quiet dev/reference/Baileys-master
+          git -C dev/reference/Baileys-master remote add origin https://github.com/WhiskeySockets/Baileys.git
+          git -C dev/reference/Baileys-master fetch --depth=1 origin "$BAILEYS_REFERENCE_COMMIT"
+          git -C dev/reference/Baileys-master checkout --quiet --detach FETCH_HEAD
+          test "$(git -C dev/reference/Baileys-master rev-parse HEAD)" = "$BAILEYS_REFERENCE_COMMIT"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

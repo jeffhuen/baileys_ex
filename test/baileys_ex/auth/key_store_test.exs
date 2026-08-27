@@ -6,6 +6,8 @@ defmodule BaileysEx.Auth.KeyStoreTest do
   alias BaileysEx.Auth.NativeFilePersistence
   alias BaileysEx.Signal.Store
 
+  @async_timeout 5_000
+
   defmodule TrackingPersistence do
     @behaviour BaileysEx.Auth.Persistence
 
@@ -185,28 +187,31 @@ defmodule BaileysEx.Auth.KeyStoreTest do
       Task.async(fn ->
         Store.transaction(store, "session:alice", fn tx_store ->
           send(parent, :first_entered)
-          Process.sleep(75)
+          assert_receive :finish_first_transaction, @async_timeout
           assert :ok = Store.set(tx_store, %{session: %{"alice.0" => <<1, 2, 3>>}})
-          send(parent, :first_ready_to_commit)
           :first
         end)
       end)
 
-    assert_receive :first_entered
+    assert_receive :first_entered, @async_timeout
 
     second =
       Task.async(fn ->
+        send(parent, :second_transaction_attempting)
+
         Store.transaction(store, "session:alice", fn tx_store ->
           send(parent, {:second_loaded, Store.get(tx_store, :session, ["alice.0"])})
           :second
         end)
       end)
 
+    assert_receive :second_transaction_attempting, @async_timeout
     refute_receive {:second_loaded, _}, 20
 
-    assert_receive :first_ready_to_commit, 250
+    send(first.pid, :finish_first_transaction)
     assert :first = Task.await(first)
-    assert_receive {:second_loaded, %{"alice.0" => <<1, 2, 3>>}}
+
+    assert_receive {:second_loaded, %{"alice.0" => <<1, 2, 3>>}}, @async_timeout
     assert :second = Task.await(second)
   end
 
@@ -222,13 +227,13 @@ defmodule BaileysEx.Auth.KeyStoreTest do
       spawn(fn ->
         Store.transaction(store, "session:alice", fn _tx_store ->
           send(parent, :owner_entered)
-          Process.sleep(:infinity)
+          assert_receive :release_owner, @async_timeout
         end)
       end)
 
     owner_ref = Process.monitor(owner)
 
-    assert_receive :owner_entered
+    assert_receive :owner_entered, @async_timeout
 
     waiter =
       Task.async(fn ->
@@ -242,8 +247,8 @@ defmodule BaileysEx.Auth.KeyStoreTest do
     refute_receive {:waiter_entered, _}, 20
 
     Process.exit(owner, :kill)
-    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :killed}
-    assert_receive {:waiter_entered, %{"alice.0" => <<9, 9, 9>>}}
+    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :killed}, @async_timeout
+    assert_receive {:waiter_entered, %{"alice.0" => <<9, 9, 9>>}}, @async_timeout
     assert :waiter_committed = Task.await(waiter)
     assert %{"alice.0" => <<9, 9, 9>>} = Store.get(store, :session, ["alice.0"])
   end

@@ -3,6 +3,8 @@ defmodule BaileysEx.Signal.StoreTest do
 
   alias BaileysEx.Signal.Store
 
+  @async_timeout 5_000
+
   setup do
     {:ok, store} = Store.new()
     %{store: store}
@@ -47,15 +49,16 @@ defmodule BaileysEx.Signal.StoreTest do
           assert Store.in_transaction?(tx_store)
           assert :ok = Store.set(tx_store, %{:session => %{"alice.0" => <<7, 8, 9>>}})
           send(parent, :written_in_transaction)
-          Process.sleep(50)
+          assert_receive :finish_transaction, @async_timeout
           assert %{"alice.0" => <<7, 8, 9>>} = Store.get(tx_store, :session, ["alice.0"])
           assert Store.get(store, :session, ["alice.0"]) == %{}
           :committed
         end)
       end)
 
-    assert_receive :written_in_transaction
+    assert_receive :written_in_transaction, @async_timeout
     assert Store.get(store, :session, ["alice.0"]) == %{}
+    send(task.pid, :finish_transaction)
     assert :committed = Task.await(task)
     assert %{"alice.0" => <<7, 8, 9>>} = Store.get(store, :session, ["alice.0"])
   end
@@ -84,28 +87,31 @@ defmodule BaileysEx.Signal.StoreTest do
       Task.async(fn ->
         Store.transaction(store, "session:alice", fn tx_store ->
           send(parent, :first_transaction_entered)
-          Process.sleep(75)
+          assert_receive :finish_first_transaction, @async_timeout
           assert :ok = Store.set(tx_store, %{:session => %{"alice.0" => <<1, 2, 3>>}})
-          send(parent, :first_transaction_ready_to_commit)
           :first
         end)
       end)
 
-    assert_receive :first_transaction_entered
+    assert_receive :first_transaction_entered, @async_timeout
 
     second =
       Task.async(fn ->
+        send(parent, :second_transaction_attempting)
+
         Store.transaction(store, "session:alice", fn tx_store ->
           send(parent, {:second_transaction_loaded, Store.get(tx_store, :session, ["alice.0"])})
           :second
         end)
       end)
 
+    assert_receive :second_transaction_attempting, @async_timeout
     refute_receive {:second_transaction_loaded, _}, 20
 
-    assert_receive :first_transaction_ready_to_commit
+    send(first.pid, :finish_first_transaction)
     assert :first = Task.await(first)
-    assert_receive {:second_transaction_loaded, %{"alice.0" => <<1, 2, 3>>}}
+
+    assert_receive {:second_transaction_loaded, %{"alice.0" => <<1, 2, 3>>}}, @async_timeout
     assert :second = Task.await(second)
   end
 
@@ -116,13 +122,13 @@ defmodule BaileysEx.Signal.StoreTest do
       spawn(fn ->
         Store.transaction(store, "session:alice", fn _tx_store ->
           send(parent, :owner_entered)
-          Process.sleep(:infinity)
+          assert_receive :release_owner, @async_timeout
         end)
       end)
 
     owner_ref = Process.monitor(owner)
 
-    assert_receive :owner_entered
+    assert_receive :owner_entered, @async_timeout
 
     waiter =
       Task.async(fn ->
@@ -136,8 +142,8 @@ defmodule BaileysEx.Signal.StoreTest do
     refute_receive {:waiter_entered, _}, 20
 
     Process.exit(owner, :kill)
-    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :killed}
-    assert_receive {:waiter_entered, %{"alice.0" => <<4, 5, 6>>}}
+    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :killed}, @async_timeout
+    assert_receive {:waiter_entered, %{"alice.0" => <<4, 5, 6>>}}, @async_timeout
     assert :waiter_committed = Task.await(waiter)
     assert %{"alice.0" => <<4, 5, 6>>} = Store.get(store, :session, ["alice.0"])
   end

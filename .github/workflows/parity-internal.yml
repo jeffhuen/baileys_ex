@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -28,8 +28,11 @@ jobs:
           git -C dev/reference/Baileys-master checkout --quiet --detach FETCH_HEAD
           test "$(git -C dev/reference/Baileys-master rev-parse HEAD)" = "$BAILEYS_REFERENCE_COMMIT"
 
+      - name: Enable Corepack
+        run: corepack enable
+
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
@@ -43,9 +46,7 @@ jobs:
 
       - name: Install pinned Baileys reference dependencies
         working-directory: dev/reference/Baileys-master
-        run: |
-          corepack enable
-          yarn install --immutable
+        run: yarn install --immutable
 
       - name: Regenerate internal parity fixtures
         run: bash dev/scripts/regenerate_parity_fixtures.sh

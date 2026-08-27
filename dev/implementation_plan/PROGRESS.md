@@ -1243,6 +1243,7 @@ remains unchanged.
 | `CLAUDE.md` | ✅ |
 | `README.md` | ✅ |
 | `CHANGELOG.md` | ✅ |
+| `.github/workflows/ci.yml` | ✅ |
 | `.github/workflows/parity-internal.yml` | ✅ |
 | `dev/implementation_plan/00-overview.md` | ✅ |
 | `dev/implementation_plan/CLAUDE.md` | ✅ |

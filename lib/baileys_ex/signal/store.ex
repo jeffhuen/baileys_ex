@@ -65,13 +65,25 @@ defmodule BaileysEx.Signal.Store do
 
   defstruct [:module, :ref]
 
-  @doc "Initializes and starts the underlying data store process/pool."
-  @spec start_link(keyword()) :: {:ok, t()} | :ignore | {:error, term()}
+  @doc "Start the underlying store process using the standard OTP child contract."
+  @spec start_link(keyword()) :: start_result()
   def start_link(opts \\ []) do
     module = Keyword.get(opts, :module, Memory)
     module_opts = Keyword.delete(opts, :module)
+    module.start_link(module_opts)
+  end
 
-    case module.start_link(module_opts) do
+  @doc """
+  Start a caller-owned store and return its wrapped Signal Store handle.
+
+  This is convenient for tests and scripts. Long-lived stores should be started
+  from a supervision tree with `start_link/1` and wrapped with `wrap_running/1`.
+  """
+  @spec new(keyword()) :: {:ok, t()} | :ignore | {:error, term()}
+  def new(opts \\ []) do
+    module = Keyword.get(opts, :module, Memory)
+
+    case start_link(opts) do
       {:ok, ref} -> {:ok, %__MODULE__{module: module, ref: module.wrap(ref)}}
       other -> other
     end
@@ -114,6 +126,7 @@ defmodule BaileysEx.Signal.Store do
   @spec wrap_running(t() | {module(), term()} | term() | nil) :: t() | nil
   def wrap_running(nil), do: nil
   def wrap_running(%__MODULE__{} = store), do: store
+  def wrap_running(resolver) when is_function(resolver, 0), do: resolver.()
 
   def wrap_running({module, server}) when is_atom(module) do
     pid = GenServer.whereis(server)

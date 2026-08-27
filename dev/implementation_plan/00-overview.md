@@ -17,9 +17,9 @@ or narrowly-scoped Signal helpers only where they are actually required. The
 WhatsApp-specific Noise handler mirrors the Baileys reference in Elixir rather than
 delegating the whole handshake to a generic raw XX engine.
 
-**Baileys source inventory:** ~90 files, ~570+ functions, ~300+ types across 8
-directories (Socket, Signal, Utils, Types, WABinary, WAProto, WAUSync, WAM, Defaults).
-WAM (WhatsApp Analytics/Metrics) is optional — see Phase 12.7.
+**Baileys source inventory:** the pinned source spans Socket, Signal, Utils, Types,
+WABinary, WAProto, WAUSync, WAM, and Defaults. WAM (WhatsApp
+Analytics/Metrics) is optional — see Phase 12.7.
 
 ## Core Principles
 
@@ -54,38 +54,42 @@ WAM (WhatsApp Analytics/Metrics) is optional — see Phase 12.7.
 ## Runtime Supervision
 
 ```
-Caller-owned per-connection Supervisor (:rest_for_one)
+Host-owned per-connection Supervisor (:rest_for_one)
+├── BaileysEx.Connection.EventEmitter (GenServer)
+│   - Ordered internal event lane and independent subscriber delivery
+│   - Bounded queues plus buffer/flush/process behavior
+├── BaileysEx.Connection.Store        (GenServer + ETS)
+│   - Auth state and connection-scoped runtime data
+│   - Concurrent reads and serialized writes
+├── Selected Signal store             (behaviour implementation)
+│   - Signal sessions, sender keys, device lists, and app-state keys
+│   - In-memory or durable backend selected per connection
+├── Task.Supervisor
+│   - Owns delayed and asynchronous connection work
 ├── BaileysEx.Connection.Socket       (:gen_statem)
 │   - Owns WebSocket + Noise transport state
 │   - States: disconnected → connecting → noise_handshake → authenticating → connected
 │   - Mirrors Baileys `makeSocket`: query/send runtime, keep-alive, logout,
 │     unified_session, and transport-level offline/routing callbacks
-├── BaileysEx.Connection.Store        (GenServer + ETS)
-│   - Signal session state, auth credentials
-│   - ETS :read_concurrency for lookups
-│   - GenServer serializes writes + persistence
-├── BaileysEx.Connection.EventEmitter (GenServer)
-│   - Subscriber registry, batched event dispatch, buffer/flush/process API
-│   - Internal tap path for runtime coordination without breaking buffered app delivery
-│   - Mirrors Baileys `makeEventBuffer` semantics during offline processing
-└── Task.Supervisor
-    - Concurrent ops: device discovery, media upload/download
-    - Supervised per connection for fault isolation
+└── BaileysEx.Connection.Coordinator  (GenServer)
+    - Serializes bounded send and runtime-coordination work
+    - Resolves runtime children without storing application-global state
 ```
 
 ### Why :rest_for_one
 
 Child ordering matters:
-1. **Socket** — if it crashes, Store and EventEmitter restart (stale state)
-2. **Store** — if it crashes, EventEmitter restarts (may have stale refs)
-3. **EventEmitter** — if it crashes, only it restarts
-4. **TaskSupervisor** — independent, but ordered last
+1. **EventEmitter** — a crash restarts all later runtime children so none keep a stale event lane
+2. **Connection Store** — a crash restarts the Signal store, tasks, socket, and coordinator
+3. **Signal Store** — a crash restarts tasks, socket, and coordinator
+4. **Task Supervisor** — a crash restarts the socket and coordinator
+5. **Socket** — a crash restarts the coordinator
+6. **Coordinator** — a crash restarts only the coordinator
 
-Reconnect policy belongs to the per-connection runtime wrapper around the socket,
-not to invented raw-socket semantics. Baileys rc.9 recreates the socket in
-consumer code based on `connection.update(connection: 'close')`; the Elixir port
-may internalize that in supervision, but the socket contract must still match the
-reference behavior first.
+The host application owns the outer restart policy through the transient
+`BaileysEx` child specification. Normal disconnect does not restart the runtime;
+abnormal exits follow the host supervisor's policy. The internal `:rest_for_one`
+ordering prevents later children from retaining stale dependencies.
 
 ## Module Architecture
 
@@ -114,7 +118,7 @@ lib/baileys_ex/crypto.ex    # Thin wrappers around :crypto
 
 ```
 lib/baileys_ex/native/
-├── noise.ex      # Noise protocol — no Elixir/Erlang equivalent
+├── noise.ex      # Low-level snow resource wrapper
 └── xeddsa.ex     # Narrow XEdDSA helper used by Noise/Signal verification
 
 native/baileys_nif/
@@ -154,9 +158,12 @@ lib/baileys_ex/connection/
 │   └── mint_web_socket.ex # Real Mint-backed WebSocket transport
 ├── config.ex         # Connection configuration struct
 ├── supervisor.ex     # Per-connection :rest_for_one supervisor
+├── runtime_ref.ex    # Instance-scoped child resolution
+├── coordinator.ex    # Bounded send and coordination lane
 ├── socket.ex         # :gen_statem — WebSocket + Noise transport
-├── store.ex          # GenServer + ETS — Signal sessions, credentials
-└── event_emitter.ex  # GenServer — subscriber registry, event dispatch
+├── store.ex          # GenServer + ETS — auth and runtime state
+├── event_emitter.ex  # GenServer — ordered internal event lane
+└── event_emitter_facade.ex # Opaque public event boundary
 ```
 
 ### Layer 4: Feature Modules (plain functions, no processes)
@@ -300,6 +307,15 @@ Phase 16: Signal Store Transaction Redesign ────────────
   all internal consumers in one pass, with no workflow/API change for
   built-in-helper users
   Depends on: Phase 5 (Signal), Phase 15 (Persistence Alignment)
+
+Phase 17: Baileys rc13 Upstream Refresh ─────────────────────────
+  Retarget from rc9 to rc13 and port the source-backed runtime delta
+  Depends on: Phase 16 (Signal Store Transaction Redesign)
+
+Phase 18: Baileys rc14 Upstream Refresh ─────────────────────────
+  Retarget from rc13 to rc14, port the bounded runtime delta, and complete
+  library/OTP ownership and backpressure remediation
+  Depends on: Phase 17 (Baileys rc13 Upstream Refresh)
 ```
 
 ## Parallelization Opportunities
@@ -336,6 +352,10 @@ Phase 16: Signal Store Transaction Redesign ────────────
             |
    Phase 16 (Signal Store Redesign)
     [contract cleanup over Phase 5]
+            |
+   Phase 17 (rc13 Upstream Refresh)
+            |
+   Phase 18 (rc14 Upstream Refresh)
 ```
 
 Phases 2, 3, and 4 can run in parallel after Phase 1.
@@ -344,14 +364,21 @@ Phase 5 (Signal) depends on Phase 2 (Crypto) but is parallel with Phases 3 and 4
 ## Public API Design (target ergonomics)
 
 ```elixir
-# Start a connection
-{:ok, conn} = BaileysEx.connect(auth_state, opts)
+# Add a long-lived connection to the host application's supervision tree
+conn = MyApp.WhatsApp
+
+children = [
+  Supervisor.child_spec(
+    {BaileysEx, Keyword.merge(opts, auth_state: auth_state, name: conn)},
+    id: conn
+  )
+]
 
 # Subscribe to events
 BaileysEx.subscribe(conn, fn
   {:message, msg} -> handle_message(msg)
   {:group_update, update} -> handle_group(update)
-  {:connection, :open} -> Logger.info("Connected!")
+  {:connection, %{connection: :open}} -> Logger.info("Connected!")
 end)
 
 # Send messages
@@ -369,6 +396,9 @@ BaileysEx.Presence.subscribe(conn, contact_jid)
 # Disconnect
 BaileysEx.disconnect(conn)
 ```
+
+`BaileysEx.connect/2` remains available for scripts, tests, and IEx sessions
+where the caller intentionally owns the runtime.
 
 ## Testing Strategy
 

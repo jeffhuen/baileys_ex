@@ -1,34 +1,40 @@
-defmodule BaileysEx.Connection.EventEmitter do
-  @moduledoc """
-  Buffered connection event emitter modeled after Baileys' `makeEventBuffer`.
-  """
+defmodule BaileysEx.Connection.EventEmitter.Server do
+  @moduledoc false
 
   use GenServer
 
-  @bufferable_events MapSet.new([
-                       :messaging_history_set,
-                       :chats_upsert,
-                       :chats_update,
-                       :chats_delete,
-                       :contacts_upsert,
-                       :contacts_update,
-                       :messages_upsert,
-                       :messages_update,
-                       :messages_delete,
-                       :messages_reaction,
-                       :message_receipt_update,
-                       :groups_update
-                     ])
+  @bufferable_events Map.new(
+                       [
+                         :messaging_history_set,
+                         :chats_upsert,
+                         :chats_update,
+                         :chats_delete,
+                         :contacts_upsert,
+                         :contacts_update,
+                         :messages_upsert,
+                         :messages_update,
+                         :messages_delete,
+                         :messages_reaction,
+                         :message_receipt_update,
+                         :groups_update
+                       ],
+                       &{&1, true}
+                     )
 
   defmodule State do
     @moduledoc false
 
     defstruct subscribers: %{},
               taps: %{},
-              dispatcher_pid: nil,
-              dispatcher_ref: nil,
+              tap_order: [],
+              handler_table: nil,
+              task_supervisor: nil,
               dispatch_queue: :queue.new(),
-              dispatching?: false,
+              dispatch_task: nil,
+              dispatch_entry: nil,
+              task_owners: %{},
+              dispatch_retry_timer: nil,
+              max_dispatch_queue: 1_024,
               ref_fun: nil,
               buffer_timeout_ms: 30_000,
               buffer_timer: nil,
@@ -37,6 +43,22 @@ defmodule BaileysEx.Connection.EventEmitter do
               buffer_count: 0,
               seed: %{},
               buffered_events: %{}
+  end
+
+  defmodule Subscriber do
+    @moduledoc false
+
+    defstruct subscribed?: true,
+              reserved: 0,
+              queue: :queue.new(),
+              task: nil,
+              entry: nil
+  end
+
+  defmodule Tap do
+    @moduledoc false
+
+    defstruct subscribed?: true, pending: 0
   end
 
   @type event ::
@@ -113,7 +135,8 @@ defmodule BaileysEx.Connection.EventEmitter do
   @doc """
   Emit a specific event. Will buffer the event if buffering is currently active.
   """
-  @spec emit(GenServer.server(), event(), term()) :: :ok
+  @spec emit(GenServer.server(), event(), term()) ::
+          :ok | {:error, :dispatch_queue_full}
   def emit(server, event, data), do: GenServer.call(server, {:emit, event, data})
 
   @doc """
@@ -141,7 +164,7 @@ defmodule BaileysEx.Connection.EventEmitter do
   @doc """
   Manually flushes the buffer if active. Returns true if a flush occurred.
   """
-  @spec flush(GenServer.server()) :: boolean()
+  @spec flush(GenServer.server()) :: boolean() | {:error, :dispatch_queue_full}
   def flush(server), do: GenServer.call(server, :flush)
 
   @doc """
@@ -158,12 +181,11 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   @impl true
   def init(opts) do
-    {dispatcher_pid, dispatcher_ref} = start_dispatcher(self())
-
     state = %State{
+      handler_table: :ets.new(__MODULE__, [:set, :protected, read_concurrency: true]),
       buffer_timeout_ms: Keyword.get(opts, :buffer_timeout_ms, 30_000),
-      dispatcher_pid: dispatcher_pid,
-      dispatcher_ref: dispatcher_ref,
+      task_supervisor: Keyword.get(opts, :task_supervisor),
+      max_dispatch_queue: normalize_max_dispatch_queue(Keyword.get(opts, :max_dispatch_queue)),
       ref_fun: Keyword.get(opts, :ref_fun, &make_ref/0)
     }
 
@@ -173,17 +195,30 @@ defmodule BaileysEx.Connection.EventEmitter do
   @impl true
   def handle_call({:process, handler}, _from, %State{} = state) do
     ref = state.ref_fun.()
-    {:reply, ref, %{state | subscribers: Map.put(state.subscribers, ref, handler)}}
+    true = :ets.insert(state.handler_table, {{:subscriber, ref}, handler})
+
+    {:reply, ref, %{state | subscribers: Map.put(state.subscribers, ref, %Subscriber{})}}
   end
 
   def handle_call({:tap, handler}, _from, %State{} = state) do
     ref = state.ref_fun.()
-    {:reply, ref, %{state | taps: Map.put(state.taps, ref, handler)}}
+    true = :ets.insert(state.handler_table, {{:tap, ref}, handler})
+
+    {:reply, ref,
+     %{
+       state
+       | taps: Map.put(state.taps, ref, %Tap{}),
+         tap_order: state.tap_order ++ [ref]
+     }}
   end
 
   def handle_call({:emit, event, data}, _from, %State{} = state) do
-    {state, deliveries} = emit_event(state, event, data)
-    {:reply, :ok, enqueue_dispatch(state, [%{event => data}], deliveries)}
+    {updated_state, deliveries} = emit_event(state, event, data)
+
+    case enqueue_dispatch(updated_state, [%{event => data}], deliveries) do
+      {:ok, updated_state} -> {:reply, :ok, updated_state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:buffer, _from, %State{} = state) do
@@ -209,8 +244,12 @@ defmodule BaileysEx.Connection.EventEmitter do
   end
 
   def handle_call(:flush, _from, %State{} = state) do
-    {state, deliveries} = flush_buffer(state, :stop)
-    {:reply, true, enqueue_dispatch(state, [], deliveries)}
+    {flushed_state, deliveries} = flush_buffer(state, :stop)
+
+    case enqueue_dispatch(flushed_state, [], deliveries) do
+      {:ok, state} -> {:reply, true, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:buffering?, _from, %State{} = state) do
@@ -223,11 +262,11 @@ defmodule BaileysEx.Connection.EventEmitter do
 
   @impl true
   def handle_cast({:unsubscribe, ref}, %State{} = state) do
-    {:noreply, %{state | subscribers: Map.delete(state.subscribers, ref)}}
+    {:noreply, unsubscribe_subscriber(state, ref)}
   end
 
   def handle_cast({:unsubscribe_tap, ref}, %State{} = state) do
-    {:noreply, %{state | taps: Map.delete(state.taps, ref)}}
+    {:noreply, unsubscribe_tap(state, ref)}
   end
 
   @impl true
@@ -236,55 +275,29 @@ defmodule BaileysEx.Connection.EventEmitter do
   end
 
   def handle_info(:buffer_timeout, %State{} = state) do
-    {state, deliveries} = flush_buffer(state, :stop)
-    {:noreply, enqueue_dispatch(state, [], deliveries)}
+    {:noreply, flush_when_dispatch_available(state)}
   end
 
   def handle_info(:flush_pending, %State{buffering?: true, buffer_count: 0} = state) do
-    {state, deliveries} = flush_buffer(state, :stop)
-    {:noreply, enqueue_dispatch(state, [], deliveries)}
+    {:noreply, flush_when_dispatch_available(state)}
   end
 
   def handle_info(:flush_pending, %State{} = state) do
     {:noreply, %{state | flush_pending_timer: nil}}
   end
 
-  def handle_info(
-        {:dispatch_complete, dispatcher_pid, dispatch_id},
-        %State{dispatcher_pid: dispatcher_pid, dispatching?: true} = state
-      ) do
-    case :queue.out(state.dispatch_queue) do
-      {{:value, {^dispatch_id, _taps, _tap_deliveries, _subscribers, _deliveries}}, remaining} ->
-        state =
-          state
-          |> Map.put(:dispatch_queue, remaining)
-          |> Map.put(:dispatching?, false)
-          |> maybe_dispatch_next()
-
-        {:noreply, state}
-
-      _other ->
-        {:noreply, state}
-    end
+  def handle_info({task_ref, :ok}, %State{} = state) when is_reference(task_ref) do
+    {:noreply, complete_task(state, task_ref)}
   end
 
-  # The in-flight dispatch (queue head) may have been partially delivered before the
-  # dispatcher died. Restarting replays it, giving at-least-once delivery semantics
-  # under worker failure — subscribers should be idempotent or tolerant of duplicates.
-  def handle_info(
-        {:DOWN, dispatcher_ref, :process, dispatcher_pid, _reason},
-        %State{dispatcher_ref: dispatcher_ref, dispatcher_pid: dispatcher_pid} = state
-      ) do
-    {new_dispatcher_pid, new_dispatcher_ref} = start_dispatcher(self())
+  # A dispatch task can disappear with its Task.Supervisor. Retain the active
+  # entry and retry it once the supervisor is available again.
+  def handle_info({:DOWN, task_ref, :process, _pid, _reason}, %State{} = state) do
+    {:noreply, fail_task(state, task_ref)}
+  end
 
-    state =
-      state
-      |> Map.put(:dispatcher_pid, new_dispatcher_pid)
-      |> Map.put(:dispatcher_ref, new_dispatcher_ref)
-      |> Map.put(:dispatching?, false)
-      |> maybe_dispatch_next()
-
-    {:noreply, state}
+  def handle_info(:dispatch_retry, %State{} = state) do
+    {:noreply, state |> Map.put(:dispatch_retry_timer, nil) |> maybe_start_dispatches()}
   end
 
   def handle_info(_message, %State{} = state), do: {:noreply, state}
@@ -323,7 +336,7 @@ defmodule BaileysEx.Connection.EventEmitter do
   end
 
   defp emit_event(%State{buffering?: true} = state, event, data) do
-    if MapSet.member?(@bufferable_events, event) do
+    if Map.has_key?(@bufferable_events, event) do
       state =
         update_in(state.buffered_events, fn buffered_events ->
           Map.put(buffered_events, event, data)
@@ -451,97 +464,529 @@ defmodule BaileysEx.Connection.EventEmitter do
   end
 
   defp enqueue_dispatch(%State{} = state, tap_deliveries, deliveries) do
-    if tap_deliveries == [] and deliveries == [] do
-      state
-    else
-      dispatch_entry = {
-        state.ref_fun.(),
-        state.taps,
-        tap_deliveries,
-        state.subscribers,
-        deliveries
-      }
+    tap_refs = active_tap_refs(state)
+    tap_work? = tap_deliveries != [] and tap_refs != []
+    subscriber_work? = deliveries != [] and active_subscribers?(state)
 
-      state
-      |> Map.update!(:dispatch_queue, &:queue.in(dispatch_entry, &1))
-      |> maybe_dispatch_next()
+    do_enqueue_dispatch(
+      state,
+      tap_refs,
+      tap_deliveries,
+      deliveries,
+      tap_work?,
+      subscriber_work?
+    )
+  end
+
+  defp do_enqueue_dispatch(state, _tap_refs, _tap_deliveries, _deliveries, false, false),
+    do: {:ok, state}
+
+  defp do_enqueue_dispatch(
+         %State{} = state,
+         tap_refs,
+         tap_deliveries,
+         deliveries,
+         tap_work?,
+         subscriber_work?
+       ) do
+    gate_subscribers? = tap_work? or (subscriber_work? and dispatch_queue_size(state) > 0)
+
+    if gate_subscribers? and dispatch_queue_size(state) >= state.max_dispatch_queue do
+      {:error, :dispatch_queue_full}
+    else
+      queue_dispatch(state, tap_refs, tap_deliveries, deliveries, gate_subscribers?)
     end
   end
 
-  defp start_dispatcher(owner_pid) when is_pid(owner_pid) do
-    spawn_monitor(fn ->
-      Process.flag(:trap_exit, true)
-      owner_ref = Process.monitor(owner_pid)
-      dispatch_loop(owner_pid, owner_ref)
+  defp queue_dispatch(state, tap_refs, tap_deliveries, deliveries, gate_subscribers?) do
+    {state, subscriber_refs} =
+      prepare_subscribers(state, deliveries, gate_subscribers?)
+
+    state =
+      maybe_enqueue_gated_dispatch(
+        state,
+        tap_refs,
+        tap_deliveries,
+        subscriber_refs,
+        deliveries,
+        gate_subscribers?
+      )
+
+    {:ok, maybe_start_dispatches(state)}
+  end
+
+  defp maybe_enqueue_gated_dispatch(state, _tap_refs, _tap_deliveries, _refs, _deliveries, false),
+    do: state
+
+  defp maybe_enqueue_gated_dispatch(
+         state,
+         tap_refs,
+         tap_deliveries,
+         subscriber_refs,
+         deliveries,
+         true
+       ) do
+    entry = {
+      state.ref_fun.(),
+      tap_refs,
+      tap_deliveries,
+      subscriber_refs,
+      deliveries
+    }
+
+    state
+    |> retain_taps(tap_refs)
+    |> Map.update!(:dispatch_queue, &:queue.in(entry, &1))
+  end
+
+  defp dispatch_queue_size(%State{} = state) do
+    :queue.len(state.dispatch_queue) + if(state.dispatch_task, do: 1, else: 0)
+  end
+
+  defp active_tap_refs(%State{} = state) do
+    Enum.filter(state.tap_order, fn ref ->
+      match?(%Tap{subscribed?: true}, Map.get(state.taps, ref))
     end)
   end
 
-  defp maybe_dispatch_next(%State{dispatching?: true} = state), do: state
+  defp active_subscribers?(%State{} = state) do
+    Enum.any?(state.subscribers, fn {_ref, subscriber} -> subscriber.subscribed? end)
+  end
+
+  defp prepare_subscribers(%State{} = state, [], _gated?), do: {state, []}
+
+  defp prepare_subscribers(%State{} = state, deliveries, gated?) do
+    delivery_count = length(deliveries)
+
+    state.subscribers
+    |> Map.keys()
+    |> Enum.reduce({state, []}, fn ref, {acc, refs} ->
+      case prepare_subscriber(acc, ref, deliveries, delivery_count, gated?) do
+        {:include, updated_state} -> {updated_state, [ref | refs]}
+        {:skip, updated_state} -> {updated_state, refs}
+      end
+    end)
+    |> then(fn {updated_state, refs} -> {updated_state, Enum.reverse(refs)} end)
+  end
+
+  defp prepare_subscriber(state, ref, deliveries, delivery_count, gated?) do
+    case Map.get(state.subscribers, ref) do
+      %Subscriber{subscribed?: true} = subscriber ->
+        prepare_active_subscriber(state, ref, subscriber, deliveries, delivery_count, gated?)
+
+      _ ->
+        {:skip, state}
+    end
+  end
+
+  defp prepare_active_subscriber(state, ref, subscriber, deliveries, delivery_count, gated?) do
+    if subscriber_queue_size(subscriber) + delivery_count > state.max_dispatch_queue do
+      {:skip, drop_subscriber(state, ref, :dispatch_queue_full)}
+    else
+      subscriber = reserve_or_enqueue(subscriber, deliveries, delivery_count, gated?)
+      subscribers = Map.put(state.subscribers, ref, subscriber)
+      {:include, %{state | subscribers: subscribers}}
+    end
+  end
+
+  defp reserve_or_enqueue(subscriber, _deliveries, delivery_count, true),
+    do: %{subscriber | reserved: subscriber.reserved + delivery_count}
+
+  defp reserve_or_enqueue(subscriber, deliveries, _delivery_count, false),
+    do: enqueue_subscriber_deliveries(subscriber, deliveries)
+
+  defp enqueue_subscriber_deliveries(%Subscriber{} = subscriber, deliveries) do
+    queue = Enum.reduce(deliveries, subscriber.queue, &:queue.in/2)
+    %{subscriber | queue: queue}
+  end
+
+  defp subscriber_queue_size(%Subscriber{} = subscriber) do
+    :queue.len(subscriber.queue) + subscriber.reserved + if(subscriber.task, do: 1, else: 0)
+  end
+
+  defp retain_taps(%State{} = state, refs) do
+    taps =
+      Enum.reduce(refs, state.taps, fn ref, taps ->
+        Map.update!(taps, ref, &%{&1 | pending: &1.pending + 1})
+      end)
+
+    %{state | taps: taps}
+  end
+
+  defp maybe_start_dispatches(%State{} = state) do
+    state
+    |> maybe_dispatch_next()
+    |> maybe_start_subscribers()
+  end
+
+  defp maybe_dispatch_next(%State{dispatch_task: %Task{}} = state), do: state
 
   defp maybe_dispatch_next(%State{} = state) do
     case :queue.out(state.dispatch_queue) do
-      {{:value, {dispatch_id, taps, tap_deliveries, subscribers, deliveries}}, _remaining} ->
-        send(
-          state.dispatcher_pid,
-          {:dispatch, self(), dispatch_id, taps, tap_deliveries, subscribers, deliveries}
-        )
-
-        %{state | dispatching?: true}
+      {{:value, entry}, remaining} ->
+        dispatch_entry(state, entry, remaining)
 
       {:empty, _queue} ->
         state
     end
   end
 
-  defp dispatch_loop(owner_pid, owner_ref) do
-    receive do
-      {:dispatch, ^owner_pid, dispatch_id, taps, tap_deliveries, subscribers, deliveries} ->
-        dispatch(taps, tap_deliveries)
-        dispatch(subscribers, deliveries)
-        send(owner_pid, {:dispatch_complete, self(), dispatch_id})
-        dispatch_loop(owner_pid, owner_ref)
+  defp dispatch_entry(
+         state,
+         {_dispatch_id, [], _tap_deliveries, subscriber_refs, deliveries},
+         remaining
+       ) do
+    state
+    |> Map.put(:dispatch_queue, remaining)
+    |> release_subscriber_deliveries(subscriber_refs, deliveries)
+    |> maybe_dispatch_next()
+  end
 
-      {:DOWN, ^owner_ref, :process, ^owner_pid, _reason} ->
-        :ok
+  defp dispatch_entry(
+         state,
+         {_dispatch_id, tap_refs, tap_deliveries, _subscriber_refs, _deliveries} = entry,
+         remaining
+       ) do
+    table = state.handler_table
 
-      {:EXIT, _pid, _reason} ->
-        dispatch_loop(owner_pid, owner_ref)
+    case start_dispatch_task(state, fn ->
+           dispatch_handlers(table, :tap, tap_refs, tap_deliveries)
+         end) do
+      {:ok, task} ->
+        %{
+          state
+          | dispatch_queue: remaining,
+            dispatch_task: task,
+            dispatch_entry: entry,
+            task_owners: Map.put(state.task_owners, task.ref, :tap)
+        }
 
-      _other ->
-        dispatch_loop(owner_pid, owner_ref)
+      :unavailable ->
+        schedule_dispatch_retry(state)
     end
   end
 
-  defp dispatch(_subscribers, []), do: :ok
+  defp maybe_start_subscribers(%State{} = state) do
+    Enum.reduce(Map.keys(state.subscribers), state, &maybe_start_subscriber(&2, &1))
+  end
 
-  defp dispatch(subscribers, deliveries) do
+  defp maybe_start_subscriber(%State{} = state, ref) do
+    case Map.get(state.subscribers, ref) do
+      %Subscriber{task: nil} = subscriber ->
+        start_next_subscriber_delivery(state, ref, subscriber)
+
+      _ ->
+        state
+    end
+  end
+
+  defp start_next_subscriber_delivery(state, ref, subscriber) do
+    case :queue.out(subscriber.queue) do
+      {{:value, delivery}, remaining} ->
+        start_subscriber_delivery(state, ref, subscriber, delivery, remaining)
+
+      {:empty, _queue} ->
+        maybe_remove_subscriber(state, ref)
+    end
+  end
+
+  defp start_subscriber_delivery(state, ref, subscriber, delivery, remaining) do
+    table = state.handler_table
+
+    case start_dispatch_task(state, fn ->
+           dispatch_handlers(table, :subscriber, [ref], [delivery])
+         end) do
+      {:ok, task} ->
+        subscriber = %{subscriber | queue: remaining, task: task, entry: delivery}
+
+        %{
+          state
+          | subscribers: Map.put(state.subscribers, ref, subscriber),
+            task_owners: Map.put(state.task_owners, task.ref, {:subscriber, ref})
+        }
+
+      :unavailable ->
+        schedule_dispatch_retry(state)
+    end
+  end
+
+  defp start_dispatch_task(%State{} = state, fun) do
+    case resolve_runtime_ref(state.task_supervisor) do
+      nil ->
+        :unavailable
+
+      task_supervisor ->
+        try do
+          {:ok, Task.Supervisor.async_nolink(task_supervisor, fun)}
+        catch
+          :exit, _reason -> :unavailable
+        end
+    end
+  end
+
+  defp complete_task(%State{} = state, task_ref) do
+    case Map.pop(state.task_owners, task_ref) do
+      {:tap, task_owners} ->
+        Process.demonitor(task_ref, [:flush])
+
+        state
+        |> Map.put(:task_owners, task_owners)
+        |> complete_tap_dispatch()
+        |> maybe_start_dispatches()
+
+      {{:subscriber, ref}, task_owners} ->
+        Process.demonitor(task_ref, [:flush])
+
+        state
+        |> Map.put(:task_owners, task_owners)
+        |> complete_subscriber_dispatch(ref)
+        |> maybe_start_dispatches()
+
+      {nil, _task_owners} ->
+        state
+    end
+  end
+
+  defp complete_tap_dispatch(%State{dispatch_entry: entry} = state) do
+    {_dispatch_id, tap_refs, _tap_deliveries, subscriber_refs, deliveries} = entry
+
+    state
+    |> Map.put(:dispatch_task, nil)
+    |> Map.put(:dispatch_entry, nil)
+    |> release_taps(tap_refs)
+    |> release_subscriber_deliveries(subscriber_refs, deliveries)
+  end
+
+  defp complete_subscriber_dispatch(%State{} = state, ref) do
+    case Map.get(state.subscribers, ref) do
+      %Subscriber{} = subscriber ->
+        subscriber = %{subscriber | task: nil, entry: nil}
+
+        state
+        |> Map.put(:subscribers, Map.put(state.subscribers, ref, subscriber))
+        |> maybe_remove_subscriber(ref)
+
+      nil ->
+        state
+    end
+  end
+
+  defp fail_task(%State{} = state, task_ref) do
+    case Map.pop(state.task_owners, task_ref) do
+      {:tap, task_owners} ->
+        state
+        |> Map.put(:task_owners, task_owners)
+        |> Map.update!(:dispatch_queue, &:queue.in_r(state.dispatch_entry, &1))
+        |> Map.put(:dispatch_task, nil)
+        |> Map.put(:dispatch_entry, nil)
+        |> maybe_start_dispatches()
+
+      {{:subscriber, ref}, task_owners} ->
+        state = %{state | task_owners: task_owners}
+
+        case Map.get(state.subscribers, ref) do
+          %Subscriber{entry: entry} = subscriber ->
+            subscriber = %{
+              subscriber
+              | queue: :queue.in_r(entry, subscriber.queue),
+                task: nil,
+                entry: nil
+            }
+
+            state
+            |> Map.put(:subscribers, Map.put(state.subscribers, ref, subscriber))
+            |> maybe_start_dispatches()
+
+          nil ->
+            state
+        end
+
+      {nil, _task_owners} ->
+        state
+    end
+  end
+
+  defp release_taps(%State{} = state, refs) do
+    Enum.reduce(refs, state, fn ref, acc ->
+      case Map.get(acc.taps, ref) do
+        %Tap{} = tap ->
+          tap = %{tap | pending: max(tap.pending - 1, 0)}
+          acc = %{acc | taps: Map.put(acc.taps, ref, tap)}
+          maybe_remove_tap(acc, ref)
+
+        nil ->
+          acc
+      end
+    end)
+  end
+
+  defp release_subscriber_deliveries(%State{} = state, refs, deliveries) do
+    delivery_count = length(deliveries)
+
+    Enum.reduce(refs, state, fn ref, acc ->
+      case Map.get(acc.subscribers, ref) do
+        %Subscriber{} = subscriber ->
+          subscriber =
+            subscriber
+            |> Map.update!(:reserved, &max(&1 - delivery_count, 0))
+            |> enqueue_subscriber_deliveries(deliveries)
+
+          %{acc | subscribers: Map.put(acc.subscribers, ref, subscriber)}
+
+        nil ->
+          acc
+      end
+    end)
+  end
+
+  defp unsubscribe_subscriber(%State{} = state, ref) do
+    case Map.get(state.subscribers, ref) do
+      %Subscriber{} = subscriber ->
+        state
+        |> Map.put(
+          :subscribers,
+          Map.put(state.subscribers, ref, %{subscriber | subscribed?: false})
+        )
+        |> maybe_remove_subscriber(ref)
+
+      nil ->
+        state
+    end
+  end
+
+  defp maybe_remove_subscriber(%State{} = state, ref) do
+    case Map.get(state.subscribers, ref) do
+      %Subscriber{subscribed?: false} = subscriber ->
+        if subscriber_queue_size(subscriber) == 0 do
+          true = :ets.delete(state.handler_table, {:subscriber, ref})
+          %{state | subscribers: Map.delete(state.subscribers, ref)}
+        else
+          state
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp drop_subscriber(%State{} = state, ref, reason) do
     require Logger
 
-    Enum.each(deliveries, fn delivery ->
-      Enum.each(subscribers, fn {ref, handler} ->
-        try do
-          handler.(delivery)
-        rescue
-          error ->
-            Logger.error(
-              "[EventEmitter] subscriber #{inspect(ref)} crashed: #{Exception.message(error)}"
-            )
-        catch
-          kind, reason ->
-            Logger.error(
-              "[EventEmitter] subscriber #{inspect(ref)} crashed: " <>
-                Exception.format_banner(kind, reason)
-            )
-        end
-      end)
-    end)
+    Logger.warning(
+      "[EventEmitter] removing overloaded subscriber #{inspect(ref)}: #{inspect(reason)}"
+    )
+
+    state = stop_subscriber_task(state, ref)
+    true = :ets.delete(state.handler_table, {:subscriber, ref})
+    %{state | subscribers: Map.delete(state.subscribers, ref)}
+  end
+
+  defp stop_subscriber_task(%State{} = state, ref) do
+    case Map.get(state.subscribers, ref) do
+      %Subscriber{task: %Task{} = task} ->
+        _ = Task.shutdown(task, :brutal_kill)
+        %{state | task_owners: Map.delete(state.task_owners, task.ref)}
+
+      _ ->
+        state
+    end
+  end
+
+  defp unsubscribe_tap(%State{} = state, ref) do
+    case Map.get(state.taps, ref) do
+      %Tap{} = tap ->
+        state
+        |> Map.put(:taps, Map.put(state.taps, ref, %{tap | subscribed?: false}))
+        |> maybe_remove_tap(ref)
+
+      nil ->
+        state
+    end
+  end
+
+  defp maybe_remove_tap(%State{} = state, ref) do
+    case Map.get(state.taps, ref) do
+      %Tap{subscribed?: false, pending: 0} ->
+        true = :ets.delete(state.handler_table, {:tap, ref})
+
+        %{
+          state
+          | taps: Map.delete(state.taps, ref),
+            tap_order: List.delete(state.tap_order, ref)
+        }
+
+      _ ->
+        state
+    end
+  end
+
+  defp schedule_dispatch_retry(%State{dispatch_retry_timer: nil} = state) do
+    %{state | dispatch_retry_timer: Process.send_after(self(), :dispatch_retry, 10)}
+  end
+
+  defp schedule_dispatch_retry(%State{} = state), do: state
+
+  defp flush_when_dispatch_available(%State{} = state) do
+    {flushed_state, deliveries} = flush_buffer(state, :stop)
+
+    case enqueue_dispatch(flushed_state, [], deliveries) do
+      {:ok, state} ->
+        state
+
+      {:error, _reason} ->
+        %{state | flush_pending_timer: Process.send_after(self(), :flush_pending, 10)}
+    end
+  end
+
+  defp resolve_runtime_ref(resolver) when is_function(resolver, 0), do: resolver.()
+  defp resolve_runtime_ref(ref), do: ref
+
+  defp dispatch_handlers(_table, _kind, _refs, []), do: :ok
+
+  defp dispatch_handlers(table, kind, refs, deliveries) do
+    Enum.each(deliveries, &dispatch_delivery(table, kind, refs, &1))
+
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp dispatch_delivery(table, kind, refs, delivery) do
+    Enum.each(refs, &dispatch_handler(table, kind, &1, delivery))
+  end
+
+  defp dispatch_handler(table, kind, ref, delivery) do
+    case :ets.lookup(table, {kind, ref}) do
+      [{{^kind, ^ref}, handler}] -> invoke_handler(handler, kind, ref, delivery)
+      [] -> :ok
+    end
+  end
+
+  defp invoke_handler(handler, kind, ref, delivery) do
+    require Logger
+
+    try do
+      handler.(delivery)
+    rescue
+      error ->
+        Logger.error(
+          "[EventEmitter] #{kind} #{inspect(ref)} crashed: #{Exception.message(error)}"
+        )
+    catch
+      caught_kind, reason ->
+        Logger.error(
+          "[EventEmitter] #{kind} #{inspect(ref)} crashed: " <>
+            Exception.format_banner(caught_kind, reason)
+        )
+    end
   end
 
   defp register_initial_subscribers(%State{} = state, subscribers) when is_list(subscribers) do
     Enum.reduce(subscribers, state, fn
       handler, %State{} = acc when is_function(handler, 1) ->
         ref = acc.ref_fun.()
-        %{acc | subscribers: Map.put(acc.subscribers, ref, handler)}
+        true = :ets.insert(acc.handler_table, {{:subscriber, ref}, handler})
+        %{acc | subscribers: Map.put(acc.subscribers, ref, %Subscriber{})}
 
       _handler, %State{} = acc ->
         acc
@@ -549,6 +994,9 @@ defmodule BaileysEx.Connection.EventEmitter do
   end
 
   defp register_initial_subscribers(%State{} = state, _subscribers), do: state
+
+  defp normalize_max_dispatch_queue(value) when is_integer(value) and value > 0, do: value
+  defp normalize_max_dispatch_queue(_value), do: 1_024
 
   defp maybe_put(map, _key, _value, false), do: map
   defp maybe_put(map, key, value, true), do: Map.put(map, key, value)

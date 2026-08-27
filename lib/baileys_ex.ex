@@ -9,19 +9,24 @@ defmodule BaileysEx do
 
       {:ok, persisted_auth} =
         NativeFilePersistence.use_native_file_auth_state("tmp/baileys_auth")
-      parent = self()
 
-      {:ok, connection} =
-        BaileysEx.connect(
-          persisted_auth.state,
-          Keyword.merge(persisted_auth.connect_opts, [
-            transport: {MintWebSocket, []},
-            on_qr: fn qr -> IO.puts("Scan QR: \#{qr}") end,
-            on_connection: fn update ->
-              IO.inspect({:connection, update})
-              send(parent, {:connection_update, update})
-            end
-          ])
+      parent = self()
+      connection = MyApp.WhatsApp
+
+      child =
+        {BaileysEx,
+         Keyword.merge(persisted_auth.connect_opts,
+           auth_state: persisted_auth.state,
+           name: connection,
+           transport: {MintWebSocket, []},
+           on_qr: fn qr -> send(parent, {:qr, qr}) end,
+           on_connection: fn update -> send(parent, {:connection_update, update}) end
+         )}
+
+      {:ok, host_supervisor} =
+        Supervisor.start_link(
+          [Supervisor.child_spec(child, id: connection)],
+          strategy: :one_for_one
         )
 
       _creds_unsubscribe =
@@ -39,14 +44,12 @@ defmodule BaileysEx do
       end
 
       unsubscribe =
-        BaileysEx.subscribe(connection, fn
-          {:message, message} -> IO.inspect(message, label: "incoming")
-          {:connection, update} -> IO.inspect(update, label: "connection")
-          _other -> :ok
+        BaileysEx.subscribe(connection, fn event ->
+          send(parent, {:whatsapp_event, event})
         end)
 
       unsubscribe.()
-      :ok = BaileysEx.disconnect(connection)
+      Supervisor.stop(host_supervisor)
 
   ## Persistence Backends
 
@@ -90,6 +93,7 @@ defmodule BaileysEx do
   alias BaileysEx.Media.Download
   alias BaileysEx.Media.Retry, as: MediaRetry
   alias BaileysEx.Message.Receipt
+  alias BaileysEx.MessageRetryManager
   alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.Proto.WebMessageInfo
   alias BaileysEx.Signal.Store, as: SignalStore
@@ -104,7 +108,35 @@ defmodule BaileysEx do
   @type web_message_info :: struct()
 
   @doc """
-  Start a connection runtime and optionally attach convenience callbacks.
+  Return a transient child specification for a host-owned connection runtime.
+
+  Put the returned child under your application's supervisor. A normal
+  `disconnect/1` then stops the connection without the host immediately
+  restarting it, while abnormal exits are still restarted.
+
+      children = [
+        {BaileysEx,
+         [
+           auth_state: persisted_auth.state,
+           transport: {BaileysEx.Connection.Transport.MintWebSocket, []}
+         ]}
+      ]
+
+  Use `Supervisor.child_spec/2` with an explicit `:id` for multiple connections.
+  """
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(opts) when is_list(opts) do
+    opts
+    |> ConnectionSupervisor.child_spec()
+    |> Map.put(:id, __MODULE__)
+  end
+
+  @doc """
+  Start a caller-owned connection runtime and optionally attach convenience callbacks.
+
+  This convenience is intended for scripts, tests, and interactive use. Long-lived
+  application connections should use `{BaileysEx, opts}` in the host application's
+  supervision tree; see `child_spec/1`.
 
   Pass a real `:transport` such as `{BaileysEx.Connection.Transport.MintWebSocket, []}`
   when you want an actual WhatsApp connection. Without it, the default transport
@@ -224,7 +256,7 @@ defmodule BaileysEx do
   @doc """
   Send a message to a WhatsApp JID through the coordinator-managed runtime.
 
-  By default, `connect/2` builds the production Signal adapter when the auth state
+  By default, the connection runtime builds the production Signal adapter when the auth state
   includes `signed_identity_key`, `signed_pre_key`, and `registration_id`. Use
   `:signal_repository` or `:signal_repository_adapter` only to override it.
   """
@@ -239,13 +271,70 @@ defmodule BaileysEx do
   @doc """
   Send a status update through the `status@broadcast` fanout path.
 
-  By default, `connect/2` builds the production Signal adapter when the auth state
+  By default, the connection runtime builds the production Signal adapter when the auth state
   includes `signed_identity_key`, `signed_pre_key`, and `registration_id`. Use
   `:signal_repository` or `:signal_repository_adapter` only to override it.
   """
   @spec send_status(connection(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def send_status(connection, content, opts \\ []) when is_map(content) and is_list(opts) do
     ConnectionSupervisor.send_status(connection, content, opts)
+  end
+
+  @doc """
+  Ask the linked phone to resend the content for an unavailable placeholder message.
+
+  Returns the peer-data request id, `nil` when the request was already pending, or
+  `"RESOLVED"` when the message arrived during the RC14 compatibility delay.
+  """
+  @spec request_placeholder_resend(connection(), map(), map() | nil, keyword()) ::
+          {:ok, String.t() | nil} | {:error, term()}
+  def request_placeholder_resend(connection, message_key, msg_data \\ nil, opts \\ [])
+      when is_map(message_key) and (is_map(msg_data) or is_nil(msg_data)) and is_list(opts) do
+    ConnectionSupervisor.request_placeholder_resend(connection, message_key, msg_data, opts)
+  end
+
+  @doc """
+  ACK or NACK a received binary stanza through the connection's bounded send lane.
+
+  Message-class ACKs include the authenticated device JID in the `from` attribute,
+  matching Baileys RC14 `sendMessageAck`.
+  """
+  @spec send_message_ack(connection(), BaileysEx.BinaryNode.t(), non_neg_integer() | nil) ::
+          :ok | {:error, term()}
+  def send_message_ack(connection, node, error_code \\ nil) do
+    ConnectionSupervisor.send_message_ack(connection, node, error_code)
+  end
+
+  @doc """
+  Request retransmission after a failed message decryption.
+
+  Set `:force_include_keys` when the retry receipt must include a fresh pre-key bundle.
+  Retry counters, session recreation, phone fallback scheduling, and Signal repository
+  updates remain owned by the connection runtime.
+  """
+  @spec send_retry_request(connection(), BaileysEx.BinaryNode.t(), keyword()) ::
+          :ok | {:error, term()}
+  def send_retry_request(connection, node, opts \\ []) when is_list(opts) do
+    ConnectionSupervisor.send_retry_request(
+      connection,
+      node,
+      Keyword.take(opts, [:force_include_keys])
+    )
+  end
+
+  @doc """
+  Return an opaque connection-scoped facade for the RC14 message retry manager.
+
+  The facade never exposes the runtime store or Coordinator process. Operations that
+  read or mutate retry state are serialized with message sends on the connection's
+  bounded work lane.
+  """
+  @spec message_retry_manager(connection()) ::
+          {:ok, MessageRetryManager.t()} | {:error, term()}
+  def message_retry_manager(connection) do
+    with :ok <- ConnectionSupervisor.message_retry_manager_available?(connection) do
+      {:ok, MessageRetryManager.new(connection)}
+    end
   end
 
   @doc "Send a WAM analytics buffer or `BaileysEx.WAM.BinaryInfo` through the active socket."
@@ -1433,20 +1522,9 @@ defmodule BaileysEx do
   defp maybe_emit_callback(_callback, _payload), do: :ok
 
   defp dispatch_public_events(events, handler) do
-    require Logger
-
-    try do
-      events
-      |> ordered_public_events()
-      |> Enum.each(&handler.(&1))
-    rescue
-      error ->
-        Logger.error(
-          "[BaileysEx] dispatch_public_events crashed: #{Exception.message(error)}\n" <>
-            "  events keys: #{inspect(Map.keys(events))}\n" <>
-            "  #{Exception.format_stacktrace(__STACKTRACE__)}"
-        )
-    end
+    events
+    |> ordered_public_events()
+    |> Enum.each(&handler.(&1))
   end
 
   defp ordered_public_events(events) when is_map(events) do
@@ -1650,4 +1728,153 @@ defmodule BaileysEx do
   end
 
   defp normalize_jid(_jid), do: {:error, :invalid_jid}
+end
+
+defmodule BaileysEx.MessageRetryManager do
+  @moduledoc """
+  Opaque, connection-scoped facade for Baileys RC14 message retry state.
+
+  Obtain a value with `BaileysEx.message_retry_manager/1`. State-bearing operations
+  are serialized by the owning connection and return `{:ok, value}` or `{:error, reason}`.
+  """
+
+  alias BaileysEx.Connection.Supervisor, as: ConnectionSupervisor
+  alias BaileysEx.Message.Retry
+
+  @opaque t :: %__MODULE__{connection: GenServer.server()}
+  @enforce_keys [:connection]
+  defstruct [:connection]
+
+  @doc false
+  @spec new(GenServer.server()) :: t()
+  def new(connection), do: %__MODULE__{connection: connection}
+
+  @doc "Cache a recent protocol message for retry handling."
+  @spec add_recent_message(t(), String.t(), String.t(), struct(), keyword()) ::
+          :ok | {:error, term()}
+  def add_recent_message(manager, to, id, message, opts \\ [])
+      when is_binary(to) and is_binary(id) and is_list(opts) do
+    manager
+    |> dispatch({:add_recent_message, to, id, message, opts})
+    |> void_result()
+  end
+
+  @doc "Return a cached recent message and its insertion timestamp."
+  @spec get_recent_message(t(), String.t(), String.t(), keyword()) ::
+          {:ok, map() | nil} | {:error, term()}
+  def get_recent_message(manager, to, id, opts \\ [])
+      when is_binary(to) and is_binary(id) and is_list(opts) do
+    dispatch(manager, {:get_recent_message, to, id, opts})
+  end
+
+  @doc "Determine whether retry handling should recreate a Signal session."
+  @spec should_recreate_session(t(), String.t(), boolean(), atom() | integer() | nil, keyword()) ::
+          {:ok, %{reason: String.t(), recreate: boolean()}} | {:error, term()}
+  def should_recreate_session(manager, jid, has_session?, error_code \\ nil, opts \\ [])
+      when is_binary(jid) and is_boolean(has_session?) and is_list(opts) do
+    dispatch(
+      manager,
+      {:should_recreate_session, jid, has_session?, error_code, opts}
+    )
+  end
+
+  @doc "Parse a retry error attribute into its idiomatic Elixir reason atom."
+  @spec parse_retry_error_code(t(), String.t() | nil) :: atom() | nil
+  def parse_retry_error_code(%__MODULE__{}, error_attr),
+    do: Retry.parse_retry_error_code(error_attr)
+
+  @doc "Return whether a retry reason represents a MAC failure."
+  @spec mac_error?(t(), atom() | integer() | nil) :: boolean()
+  def mac_error?(%__MODULE__{}, error_code), do: Retry.mac_error?(error_code)
+
+  @doc "Increment and return a message's retry count."
+  @spec increment_retry_count(t(), String.t()) :: {:ok, pos_integer()} | {:error, term()}
+  def increment_retry_count(manager, message_id) when is_binary(message_id),
+    do: dispatch(manager, {:increment_retry_count, message_id})
+
+  @doc "Return a message's current retry count."
+  @spec get_retry_count(t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def get_retry_count(manager, message_id) when is_binary(message_id),
+    do: dispatch(manager, {:get_retry_count, message_id})
+
+  @doc "Return whether a message has reached the connection's retry limit."
+  @spec has_exceeded_max_retries?(t(), String.t()) :: {:ok, boolean()} | {:error, term()}
+  def has_exceeded_max_retries?(manager, message_id) when is_binary(message_id),
+    do: dispatch(manager, {:has_exceeded_max_retries, message_id})
+
+  @doc "Mark a retry successful and release its cached state."
+  @spec mark_retry_success(t(), String.t()) :: :ok | {:error, term()}
+  def mark_retry_success(manager, message_id) when is_binary(message_id) do
+    manager
+    |> dispatch({:mark_retry_success, message_id})
+    |> void_result()
+  end
+
+  @doc "Mark a retry failed and release its cached state."
+  @spec mark_retry_failed(t(), String.t()) :: :ok | {:error, term()}
+  def mark_retry_failed(manager, message_id) when is_binary(message_id) do
+    manager
+    |> dispatch({:mark_retry_failed, message_id})
+    |> void_result()
+  end
+
+  @doc "Schedule a connection-owned phone fallback callback."
+  @spec schedule_phone_request(t(), String.t(), (-> term()), keyword()) ::
+          :ok | {:error, term()}
+  def schedule_phone_request(manager, message_id, callback, opts \\ [])
+      when is_binary(message_id) and is_function(callback, 0) and is_list(opts) do
+    manager
+    |> dispatch({:schedule_phone_request, message_id, callback, Keyword.take(opts, [:delay_ms])})
+    |> void_result()
+  end
+
+  @doc "Cancel a pending phone fallback callback."
+  @spec cancel_pending_phone_request(t(), String.t()) :: :ok | {:error, term()}
+  def cancel_pending_phone_request(manager, message_id) when is_binary(message_id) do
+    manager
+    |> dispatch({:cancel_pending_phone_request, message_id})
+    |> void_result()
+  end
+
+  @doc "Clear all message retry-manager state for the connection."
+  @spec clear(t()) :: :ok | {:error, term()}
+  def clear(manager) do
+    manager
+    |> dispatch(:clear)
+    |> void_result()
+  end
+
+  @doc "Cache a Signal base key for retry-collision detection."
+  @spec save_base_key(t(), String.t(), String.t(), binary(), keyword()) ::
+          :ok | {:error, term()}
+  def save_base_key(manager, address, message_id, base_key, opts \\ [])
+      when is_binary(address) and is_binary(message_id) and is_binary(base_key) and is_list(opts) do
+    manager
+    |> dispatch({:save_base_key, address, message_id, base_key, opts})
+    |> void_result()
+  end
+
+  @doc "Return whether the cached and supplied Signal base keys match exactly."
+  @spec has_same_base_key?(t(), String.t(), String.t(), binary(), keyword()) ::
+          {:ok, boolean()} | {:error, term()}
+  def has_same_base_key?(manager, address, message_id, base_key, opts \\ [])
+      when is_binary(address) and is_binary(message_id) and is_binary(base_key) and is_list(opts) do
+    dispatch(manager, {:has_same_base_key, address, message_id, base_key, opts})
+  end
+
+  @doc "Delete a cached Signal base key."
+  @spec delete_base_key(t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def delete_base_key(manager, address, message_id)
+      when is_binary(address) and is_binary(message_id) do
+    manager
+    |> dispatch({:delete_base_key, address, message_id})
+    |> void_result()
+  end
+
+  defp dispatch(%__MODULE__{connection: connection}, operation) do
+    ConnectionSupervisor.message_retry_operation(connection, operation)
+  end
+
+  defp void_result({:ok, :ok}), do: :ok
+  defp void_result({:error, _reason} = error), do: error
 end

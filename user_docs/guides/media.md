@@ -7,7 +7,7 @@ Use this guide when you need to upload or download images, video, audio, documen
 Send a file by passing a media field to `BaileysEx.send_message/4`.
 
 All outbound send examples on this page assume the connection was started with
-`connect/2` with the default Signal credentials in auth state, or override the
+the default Signal credentials in auth state, or override the
 repository explicitly with `:signal_repository` or `:signal_repository_adapter`.
 
 ```elixir

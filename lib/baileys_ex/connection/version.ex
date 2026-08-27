@@ -68,9 +68,6 @@ defmodule BaileysEx.Connection.Version do
 
   @dialyzer {:nowarn_function, default_fetch: 2}
   defp default_fetch(url, opts) do
-    _ = Application.ensure_all_started(:inets)
-    _ = Application.ensure_all_started(:ssl)
-
     headers =
       opts
       |> Keyword.get(:headers, [])

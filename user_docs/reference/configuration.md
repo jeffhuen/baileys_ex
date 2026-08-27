@@ -1,10 +1,13 @@
 # Configuration Reference
 
-This page covers the public connection options for `BaileysEx.connect/2` and every key in `BaileysEx.Connection.Config`.
+This page covers the public options accepted by `{BaileysEx, opts}` and
+`BaileysEx.connect/2`, plus every key in `BaileysEx.Connection.Config`.
 
 For most applications, start from
 `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1` and merge
-the returned `connect_opts` into `BaileysEx.connect/2`. Use
+the returned `connect_opts` into a `{BaileysEx, opts}` child under your
+application supervisor. `BaileysEx.connect/2` is the caller-owned convenience
+for scripts, tests, and IEx. Use
 `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` only when you need
 the Baileys-compatible JSON multi-file helper during a sidecar migration or
 other compatibility rollout. Custom SQL/NoSQL backends remain supported through
@@ -16,7 +19,21 @@ not a `connect/2` option. If you move an existing linked device between the
 built-in JSON and native backends, migrate once with
 `BaileysEx.Auth.PersistenceMigration` or re-pair on the new backend.
 
-## `connect/2` options
+## Connection child options
+
+### `name`
+
+- **Type:** `GenServer.name()`
+- **Default:** the connection supervisor PID
+- **Example:**
+
+```elixir
+name: MyApp.WhatsApp
+```
+
+Give each long-lived connection a stable, unique name. Pass that name to the
+public `BaileysEx` functions. For multiple connections, also give each child a
+unique supervisor child ID.
 
 ### `transport`
 
@@ -59,15 +76,15 @@ Advanced only. Custom `signal_store_module` implementations must follow the
 handle passed into `transaction/3` callbacks. If you use the built-in auth
 helpers, this is already handled for you.
 
-For the built-in persisted setup, prefer one of the auth helpers and pass the
-returned `connect_opts` into `BaileysEx.connect/2`:
+For the built-in persisted setup, prefer one of the auth helpers and merge the
+returned `connect_opts` into the supervised connection options:
 
 - `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1`
   (recommended durable backend)
 - `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1`
   (Baileys-compatible JSON migration bridge)
 
-The callback options below are connection-lifetime subscriptions managed by `connect/2`.
+The callback options below are connection-lifetime subscriptions managed by the runtime.
 If you need to remove a handler without disconnecting, use `BaileysEx.subscribe/2` or
 `BaileysEx.subscribe_raw/2` instead.
 
@@ -82,6 +99,30 @@ signal_store_opts: [table: :baileys_signal_store]
 ```
 
 These options are passed directly to your selected Signal store module.
+
+When using `BaileysEx.Auth.KeyStore`, `:max_commit_queue` bounds pending durable
+writes (default `1024`). The store returns `:commit_queue_full` instead of
+allowing unbounded memory growth.
+
+### `max_send_queue`
+
+- **Type:** `pos_integer()`
+- **Default:** `256`
+
+Maximum number of active and queued outbound message/status/placeholder
+operations per connection. Calls above the limit return `{:error,
+:send_queue_full}`.
+
+### `max_dispatch_queue`
+
+- **Type:** `pos_integer()`
+- **Default:** `1024`
+
+Maximum depth for the ordered internal event lane and for each subscriber's
+independent delivery lane. Internal overload rejects the emit with `{:error,
+:dispatch_queue_full}` so protocol events are never silently dropped. A public
+subscriber that exceeds its own bound is logged and unsubscribed without
+stalling internal protocol handling or other subscribers.
 
 ### `on_connection`
 
@@ -131,7 +172,7 @@ on_event: fn events -> IO.inspect(events, label: "raw events") end
 
 Receives the buffered raw event map before the public facade normalizes it.
 
-By default, `connect/2` builds the built-in production Signal repository adapter
+By default, the connection runtime builds the built-in production Signal repository adapter
 when the auth state includes `signed_identity_key`, `signed_pre_key`, and
 `registration_id`. Use the options below when you need to override that default.
 

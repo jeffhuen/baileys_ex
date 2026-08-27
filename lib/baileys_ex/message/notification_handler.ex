@@ -20,26 +20,29 @@ defmodule BaileysEx.Message.NotificationHandler do
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
 
-  @reachout_enforcement_types MapSet.new([
-                                "BIZ_COMMERCE_VIOLATION_ALCOHOL",
-                                "BIZ_COMMERCE_VIOLATION_ADULT",
-                                "BIZ_COMMERCE_VIOLATION_ANIMALS",
-                                "BIZ_COMMERCE_VIOLATION_BODY_PARTS_FLUIDS",
-                                "BIZ_COMMERCE_VIOLATION_DATING",
-                                "BIZ_COMMERCE_VIOLATION_DIGITAL_SERVICES_PRODUCTS",
-                                "BIZ_COMMERCE_VIOLATION_DRUGS",
-                                "BIZ_COMMERCE_VIOLATION_DRUGS_ONLY_OTC",
-                                "BIZ_COMMERCE_VIOLATION_GAMBLING",
-                                "BIZ_COMMERCE_VIOLATION_HEALTHCARE",
-                                "BIZ_COMMERCE_VIOLATION_REAL_FAKE_CURRENCY",
-                                "BIZ_COMMERCE_VIOLATION_SUPPLEMENTS",
-                                "BIZ_COMMERCE_VIOLATION_TOBACCO",
-                                "BIZ_COMMERCE_VIOLATION_VIOLENT_CONTENT",
-                                "BIZ_COMMERCE_VIOLATION_WEAPONS",
-                                "BIZ_QUALITY",
-                                "DEFAULT",
-                                "WEB_COMPANION_ONLY"
-                              ])
+  @reachout_enforcement_types Map.new(
+                                [
+                                  "BIZ_COMMERCE_VIOLATION_ALCOHOL",
+                                  "BIZ_COMMERCE_VIOLATION_ADULT",
+                                  "BIZ_COMMERCE_VIOLATION_ANIMALS",
+                                  "BIZ_COMMERCE_VIOLATION_BODY_PARTS_FLUIDS",
+                                  "BIZ_COMMERCE_VIOLATION_DATING",
+                                  "BIZ_COMMERCE_VIOLATION_DIGITAL_SERVICES_PRODUCTS",
+                                  "BIZ_COMMERCE_VIOLATION_DRUGS",
+                                  "BIZ_COMMERCE_VIOLATION_DRUGS_ONLY_OTC",
+                                  "BIZ_COMMERCE_VIOLATION_GAMBLING",
+                                  "BIZ_COMMERCE_VIOLATION_HEALTHCARE",
+                                  "BIZ_COMMERCE_VIOLATION_REAL_FAKE_CURRENCY",
+                                  "BIZ_COMMERCE_VIOLATION_SUPPLEMENTS",
+                                  "BIZ_COMMERCE_VIOLATION_TOBACCO",
+                                  "BIZ_COMMERCE_VIOLATION_VIOLENT_CONTENT",
+                                  "BIZ_COMMERCE_VIOLATION_WEAPONS",
+                                  "BIZ_QUALITY",
+                                  "DEFAULT",
+                                  "WEB_COMPANION_ONLY"
+                                ],
+                                &{&1, true}
+                              )
 
   @message_capping_fields [
     {"total_quota", :total_quota},
@@ -260,17 +263,17 @@ defmodule BaileysEx.Message.NotificationHandler do
 
     case Store.get(store, :"device-list", [user]) do
       %{^user => existing_devices} when is_list(existing_devices) and existing_devices != [] ->
-        affected = MapSet.new(Enum.map(entries, & &1.device_id))
+        affected = Map.new(entries, &{&1.device_id, true})
 
         updated_devices =
           case tag do
             "add" ->
               existing_devices
-              |> Enum.reject(&MapSet.member?(affected, &1))
+              |> Enum.reject(&Map.has_key?(affected, &1))
               |> Kernel.++(Enum.map(entries, & &1.device_id))
 
             "remove" ->
-              Enum.reject(existing_devices, &MapSet.member?(affected, &1))
+              Enum.reject(existing_devices, &Map.has_key?(affected, &1))
           end
 
         if updated_devices == [] do
@@ -655,7 +658,7 @@ defmodule BaileysEx.Message.NotificationHandler do
     enforcement_type =
       case payload["enforcement_type"] do
         value when is_binary(value) ->
-          if MapSet.member?(@reachout_enforcement_types, value), do: value, else: "DEFAULT"
+          if Map.has_key?(@reachout_enforcement_types, value), do: value, else: "DEFAULT"
 
         _ ->
           "DEFAULT"

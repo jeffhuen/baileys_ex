@@ -7,7 +7,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   alias BaileysEx.Signal.Store
 
   test "build_content/3 appends the stored trusted-contact token" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert nil == TcToken.build_content(store, "15551234567@s.whatsapp.net")
     assert nil == TcToken.build_node(store, "15551234567@s.whatsapp.net")
@@ -35,7 +35,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "build_node/2 only returns tokens stored for the exact destination jid" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{
@@ -51,7 +51,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "build_node/2 wraps trusted-contact token bytes as binary content" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     token = <<251, 143, 27, 54, 184, 204, 66, 64>>
 
     assert :ok =
@@ -66,7 +66,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "build_node/3 drops expired peer tokens and preserves sender timestamp state" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{
@@ -87,7 +87,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "build_content/4 rejects tokens without timestamps and preserves sender state" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{
@@ -111,7 +111,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "build_node/3 resolves stored peer tokens through known LID mappings" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              LIDMappingStore.store_lid_pn_mappings(store, [
@@ -200,7 +200,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "store_from_iq_result/3 stores returned trusted-contact tokens and preserves sender timestamp" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{
@@ -246,7 +246,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "reissue_after_identity_change/4 reuses stored sender timestamp and stores returned token" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     parent = self()
 
     assert :ok =
@@ -320,7 +320,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "issue_after_outgoing_message/4 sends a fresh token request and records sender timestamp" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     parent = self()
 
     query_fun = fn node, timeout ->
@@ -384,7 +384,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "issue_after_outgoing_message/4 skips when sender timestamp is in the current bucket" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     parent = self()
 
     assert :ok =
@@ -424,7 +424,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "handle_notification/2 stores trusted-contact tokens via callback and signal store" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     parent = self()
 
     notification = %BinaryNode{
@@ -466,7 +466,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "handle_notification/2 ignores non-regular senders and timestamp-less tokens" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     non_regular_notification = %BinaryNode{
       tag: "notification",
@@ -511,7 +511,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "handle_notification/2 keeps newer trusted-contact tokens and ignores older ones" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{
@@ -568,7 +568,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "handle_notification/2 stores trusted-contact tokens under known LID mapping" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              LIDMappingStore.store_lid_pn_mappings(store, [
@@ -602,7 +602,7 @@ defmodule BaileysEx.Feature.TcTokenTest do
   end
 
   test "build_content/3 fails open when the signal store is unavailable" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     base_content = [%BinaryNode{tag: "picture", attrs: %{"type" => "preview"}, content: nil}]
 
     assert %BaileysEx.Signal.Store.Memory.Ref{pid: pid} = store.ref

@@ -7,7 +7,7 @@
 {:error, :signal_repository_not_ready}
 ```
 
-**Why this happens:** `connect/2` could not build the default production Signal
+**Why this happens:** the connection runtime could not build the default production Signal
 repository because the auth state was missing one of `signed_identity_key`,
 `signed_pre_key`, or `registration_id`, and you did not override it with
 `signal_repository:` or `signal_repository_adapter:`.

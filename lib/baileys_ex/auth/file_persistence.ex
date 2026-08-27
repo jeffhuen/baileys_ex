@@ -232,7 +232,7 @@ defmodule BaileysEx.Auth.FilePersistence do
   @typedoc """
   Helper map returned by `use_multi_file_auth_state/1`.
 
-  `connect_opts` is ready to merge into `BaileysEx.connect/2`, and `save_creds`
+  `connect_opts` is ready to merge into the connection child options, and `save_creds`
   persists the latest auth-state snapshot back into the Baileys-compatible JSON
   directory.
   """

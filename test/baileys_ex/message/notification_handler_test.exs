@@ -763,7 +763,7 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
   end
 
   test "process_node/2 applies rc10 cached device-list add and update notifications" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     :ok = Store.set(store, %{:"device-list" => %{"15551234567" => ["0", "2"]}})
 
     add_node =
@@ -804,7 +804,7 @@ defmodule BaileysEx.Message.NotificationHandlerTest do
   end
 
   test "process_node/2 removes cached devices and deletes affected Signal sessions" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     auth_state = DeterministicAuth.state(146)
 
     repo =

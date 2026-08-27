@@ -466,7 +466,5 @@ defmodule BaileysEx.Media.Retry do
   defp emit_messages_update(event_emitter, %WebMessageInfo{key: key} = msg) do
     update = %{key: key, update: %{message: msg.message}}
     EventEmitter.emit(event_emitter, :messages_update, [update])
-  rescue
-    _ -> :ok
   end
 end

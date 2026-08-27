@@ -107,7 +107,7 @@ defmodule BaileysEx.Feature.PresenceTest do
   end
 
   test "subscribe/3 adds a tc token and generated message tag" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{
@@ -148,7 +148,7 @@ defmodule BaileysEx.Feature.PresenceTest do
   end
 
   test "subscribe/3 omits tc tokens for non-user JIDs" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{

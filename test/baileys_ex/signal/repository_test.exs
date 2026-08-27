@@ -161,7 +161,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
   end
 
   defp new_repo(opts \\ []) do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     Repository.new(Keyword.merge([adapter: FakeAdapter, store: store], opts))
   end
 
@@ -378,7 +378,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "trusts first use and loads identity keys through the repository" do
-      {:ok, store} = Store.start_link()
+      {:ok, store} = Store.new()
       repo = new_repo(store: store)
       identity_key = fixed_bytes(32, 5)
       expected_identity_key = <<5, identity_key::binary>>
@@ -394,7 +394,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "clears the canonical session when a trusted identity changes" do
-      {:ok, store} = Store.start_link()
+      {:ok, store} = Store.new()
 
       repo =
         new_repo(
@@ -434,7 +434,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "migrates all open device sessions from PN to LID addresses" do
-      {:ok, store} = Store.start_link()
+      {:ok, store} = Store.new()
       assert :ok = Store.set(store, %{:"device-list" => %{"5511999887766" => ["0", "2", "3"]}})
 
       repo =
@@ -464,7 +464,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "includes the source device even when it is missing from the stored device list" do
-      {:ok, store} = Store.start_link()
+      {:ok, store} = Store.new()
       assert :ok = Store.set(store, %{:"device-list" => %{"5511999887766" => ["0", "2"]}})
 
       repo =
@@ -487,7 +487,7 @@ defmodule BaileysEx.Signal.RepositoryTest do
     end
 
     test "preserves hosted LID targets for hosted companion sessions" do
-      {:ok, store} = Store.start_link()
+      {:ok, store} = Store.new()
       assert :ok = Store.set(store, %{:"device-list" => %{"5511999887766" => ["99"]}})
 
       repo =

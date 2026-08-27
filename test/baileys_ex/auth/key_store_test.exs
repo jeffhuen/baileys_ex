@@ -17,7 +17,9 @@ defmodule BaileysEx.Auth.KeyStoreTest do
           saves: %{},
           deletes: %{},
           fail_once: MapSet.new(),
-          failed: MapSet.new()
+          failed: MapSet.new(),
+          failure_observers: %{},
+          gates: %{}
         }
       end)
     end
@@ -43,11 +45,15 @@ defmodule BaileysEx.Auth.KeyStoreTest do
     end
 
     def save_keys(agent, type, id, data) do
-      Agent.get_and_update(agent, fn state ->
-        key = {:save, type, id}
+      operation = {:save, type, id}
+      maybe_wait_for_gate(agent, operation)
 
-        if MapSet.member?(state.fail_once, key) and not MapSet.member?(state.failed, key) do
-          {{:error, :forced_failure}, %{state | failed: MapSet.put(state.failed, key)}}
+      Agent.get_and_update(agent, fn state ->
+        if MapSet.member?(state.fail_once, operation) and
+             not MapSet.member?(state.failed, operation) do
+          notify_failure(state, operation)
+
+          {{:error, :forced_failure}, %{state | failed: MapSet.put(state.failed, operation)}}
         else
           saves = Map.update(state.saves, {type, id}, 1, &(&1 + 1))
           data_by_type = Map.update(state.data, type, %{id => data}, &Map.put(&1, id, data))
@@ -57,11 +63,15 @@ defmodule BaileysEx.Auth.KeyStoreTest do
     end
 
     def delete_keys(agent, type, id) do
-      Agent.get_and_update(agent, fn state ->
-        key = {:delete, type, id}
+      operation = {:delete, type, id}
+      maybe_wait_for_gate(agent, operation)
 
-        if MapSet.member?(state.fail_once, key) and not MapSet.member?(state.failed, key) do
-          {{:error, :forced_failure}, %{state | failed: MapSet.put(state.failed, key)}}
+      Agent.get_and_update(agent, fn state ->
+        if MapSet.member?(state.fail_once, operation) and
+             not MapSet.member?(state.failed, operation) do
+          notify_failure(state, operation)
+
+          {{:error, :forced_failure}, %{state | failed: MapSet.put(state.failed, operation)}}
         else
           deletes = Map.update(state.deletes, {type, id}, 1, &(&1 + 1))
           data_by_type = Map.update(state.data, type, %{}, &Map.delete(&1, id))
@@ -78,10 +88,44 @@ defmodule BaileysEx.Auth.KeyStoreTest do
       Agent.get(agent, fn state -> Map.get(state.deletes, {type, id}, 0) end)
     end
 
-    def put_fail_once(agent, operation) do
+    def put_fail_once(agent, operation, observer \\ nil) do
       Agent.update(agent, fn state ->
-        %{state | fail_once: MapSet.put(state.fail_once, operation)}
+        %{
+          state
+          | fail_once: MapSet.put(state.fail_once, operation),
+            failure_observers: Map.put(state.failure_observers, operation, observer)
+        }
       end)
+    end
+
+    def gate_once(agent, operation, observer, gate) do
+      Agent.update(agent, fn state ->
+        %{state | gates: Map.put(state.gates, operation, {observer, gate})}
+      end)
+    end
+
+    defp maybe_wait_for_gate(agent, operation) do
+      case Agent.get_and_update(agent, fn state ->
+             {Map.get(state.gates, operation),
+              %{state | gates: Map.delete(state.gates, operation)}}
+           end) do
+        {observer, gate} ->
+          send(observer, {:persistence_blocked, operation, self()})
+
+          receive do
+            {:continue_persistence, ^gate} -> :ok
+          end
+
+        nil ->
+          :ok
+      end
+    end
+
+    defp notify_failure(state, operation) do
+      case Map.get(state.failure_observers, operation) do
+        observer when is_pid(observer) -> send(observer, {:persistence_failed, operation})
+        _other -> :ok
+      end
     end
   end
 
@@ -234,6 +278,165 @@ defmodule BaileysEx.Auth.KeyStoreTest do
     assert Store.get(store, :"device-list", ["alice"]) == %{}
   end
 
+  test "does not retry a commit after its persistence rollback fails" do
+    {:ok, persistence} = TrackingPersistence.start_link()
+
+    TrackingPersistence.put_fail_once(persistence, {:save, :session, "bob.0"})
+    TrackingPersistence.put_fail_once(persistence, {:delete, :session, "alice.0"})
+
+    {:ok, store} =
+      start_store(
+        persistence_module: TrackingPersistence,
+        persistence_context: persistence,
+        max_commit_retries: 2,
+        retry_timer_fun: manual_retry_clock(self())
+      )
+
+    error =
+      assert_raise KeyStore.OperationError, fn ->
+        Store.set(store, %{session: %{"alice.0" => <<1>>, "bob.0" => <<2>>}})
+      end
+
+    assert error.reason == {:rollback_failed, :forced_failure, :forced_failure}
+    refute_received {:retry_scheduled, _target, _message}
+  end
+
+  test "commit retry backoff does not block unrelated transaction locks" do
+    {:ok, persistence} = TrackingPersistence.start_link()
+    operation = {:save, :session, "alice.0"}
+    TrackingPersistence.put_fail_once(persistence, operation, self())
+
+    {:ok, store} =
+      start_store(
+        persistence_module: TrackingPersistence,
+        persistence_context: persistence,
+        max_commit_retries: 2,
+        retry_timer_fun: manual_retry_clock(self())
+      )
+
+    setter = Task.async(fn -> Store.set(store, %{session: %{"alice.0" => <<1>>}}) end)
+    assert_receive {:persistence_failed, ^operation}
+    assert_receive {:retry_scheduled, retry_target, retry_message}
+
+    parent = self()
+
+    transaction =
+      Task.async(fn ->
+        Store.transaction(store, "session:bob", fn _tx_store ->
+          send(parent, :unrelated_lock_acquired)
+          :ok
+        end)
+      end)
+
+    assert_receive :unrelated_lock_acquired
+    send(retry_target, retry_message)
+    assert :ok = Task.await(setter)
+    assert :ok = Task.await(transaction)
+  end
+
+  test "commit queue rejects excess writes during retry backoff" do
+    {:ok, persistence} = TrackingPersistence.start_link()
+    operation = {:save, :session, "alice.0"}
+    TrackingPersistence.put_fail_once(persistence, operation, self())
+
+    {:ok, store} =
+      start_store(
+        persistence_module: TrackingPersistence,
+        persistence_context: persistence,
+        max_commit_retries: 2,
+        max_commit_queue: 1,
+        retry_timer_fun: manual_retry_clock(self())
+      )
+
+    setter = Task.async(fn -> Store.set(store, %{session: %{"alice.0" => <<1>>}}) end)
+    assert_receive {:persistence_failed, ^operation}
+    assert_receive {:retry_scheduled, retry_target, retry_message}
+
+    error =
+      assert_raise KeyStore.OperationError, fn ->
+        Store.set(store, %{session: %{"bob.0" => <<2>>}})
+      end
+
+    assert error.reason == :commit_queue_full
+
+    send(retry_target, retry_message)
+    assert :ok = Task.await(setter)
+  end
+
+  test "slow persistence I/O does not block unrelated transaction locks" do
+    {:ok, persistence} = TrackingPersistence.start_link()
+    operation = {:save, :session, "alice.0"}
+    gate = make_ref()
+    TrackingPersistence.gate_once(persistence, operation, self(), gate)
+
+    {:ok, store} =
+      start_store(persistence_module: TrackingPersistence, persistence_context: persistence)
+
+    setter = Task.async(fn -> Store.set(store, %{session: %{"alice.0" => <<1>>}}) end)
+    assert_receive {:persistence_blocked, ^operation, persistence_task}
+
+    parent = self()
+
+    transaction =
+      Task.async(fn ->
+        Store.transaction(store, "session:bob", fn _tx_store ->
+          send(parent, :lock_acquired_during_slow_io)
+          :ok
+        end)
+      end)
+
+    assert_receive :lock_acquired_during_slow_io
+    send(persistence_task, {:continue_persistence, gate})
+    assert :ok = Task.await(setter)
+    assert :ok = Task.await(transaction)
+  end
+
+  test "dead transaction owner retains its lock until an active retry commits" do
+    {:ok, persistence} = TrackingPersistence.start_link()
+    operation = {:save, :session, "alice.0"}
+    TrackingPersistence.put_fail_once(persistence, operation, self())
+
+    {:ok, store} =
+      start_store(
+        persistence_module: TrackingPersistence,
+        persistence_context: persistence,
+        max_commit_retries: 2,
+        retry_timer_fun: manual_retry_clock(self())
+      )
+
+    parent = self()
+
+    owner =
+      spawn(fn ->
+        Store.transaction(store, "session:alice", fn tx_store ->
+          Store.set(tx_store, %{session: %{"alice.0" => <<1>>}})
+          send(parent, :owner_ready_to_commit)
+          :owner_committed
+        end)
+      end)
+
+    owner_ref = Process.monitor(owner)
+    assert_receive :owner_ready_to_commit
+    assert_receive {:persistence_failed, ^operation}
+    assert_receive {:retry_scheduled, retry_target, retry_message}
+
+    waiter =
+      Task.async(fn ->
+        Store.transaction(store, "session:alice", fn tx_store ->
+          send(parent, {:waiter_entered_after_retry, Store.get(tx_store, :session, ["alice.0"])})
+          :waiter_committed
+        end)
+      end)
+
+    Process.exit(owner, :kill)
+    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :killed}
+    refute_received {:waiter_entered_after_retry, _value}
+
+    send(retry_target, retry_message)
+    assert_receive {:waiter_entered_after_retry, %{"alice.0" => <<1>>}}
+    assert :waiter_committed = Task.await(waiter)
+  end
+
   test "applies Baileys-style pre-key deletion safeguards" do
     {:ok, persistence} =
       TrackingPersistence.start_link(%{
@@ -268,13 +471,24 @@ defmodule BaileysEx.Auth.KeyStoreTest do
     assert 0 == TrackingPersistence.delete_count(persistence, :"pre-key", "3")
   end
 
-  test "defaults to the native persistence backend when no persistence module is configured" do
-    assert {:ok, store_pid} = KeyStore.start_link()
-    assert %{persistence_module: NativeFilePersistence} = :sys.get_state(store_pid)
+  @tag :tmp_dir
+  test "uses native persistence behavior when no persistence module is configured", %{
+    tmp_dir: tmp_dir
+  } do
+    assert {:ok, store} =
+             Store.new(module: KeyStore, persistence_context: tmp_dir, max_commit_retries: 1)
+
+    assert :ok = Store.set(store, %{session: %{"alice.0" => <<1, 2, 3>>}})
+    assert :ok = GenServer.stop(store.ref.pid)
+
+    assert {:ok, reloaded} =
+             Store.new(module: KeyStore, persistence_context: tmp_dir, max_commit_retries: 1)
+
+    assert %{"alice.0" => <<1, 2, 3>>} = Store.get(reloaded, :session, ["alice.0"])
   end
 
   defp start_store(opts) do
-    Store.start_link(
+    Store.new(
       Keyword.merge(
         [
           module: KeyStore,
@@ -284,6 +498,13 @@ defmodule BaileysEx.Auth.KeyStoreTest do
         opts
       )
     )
+  end
+
+  defp manual_retry_clock(test_pid) do
+    fn target, message, _delay_ms ->
+      send(test_pid, {:retry_scheduled, target, message})
+      make_ref()
+    end
   end
 
   defp assert_store_restart_roundtrip(persistence_module, persistence_context) do

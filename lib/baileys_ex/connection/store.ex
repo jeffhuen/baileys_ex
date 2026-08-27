@@ -56,8 +56,6 @@ defmodule BaileysEx.Connection.Store do
       [{^key, value}] -> value
       [] -> default
     end
-  rescue
-    ArgumentError -> default
   end
 
   @doc """

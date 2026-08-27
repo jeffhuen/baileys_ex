@@ -76,6 +76,14 @@ defmodule BaileysEx.Connection.StoreTest do
     end
   end
 
+  test "stale ETS references fail instead of silently returning defaults" do
+    assert {:ok, store} = Store.start_link(auth_state: %{creds: %{}})
+    ref = Store.wrap(store)
+    GenServer.stop(store)
+
+    assert_raise ArgumentError, fn -> Store.get(ref, :creds, :default) end
+  end
+
   test "put_app_state_sync_version/3 deletes an existing version when passed nil" do
     assert {:ok, store} = Store.start_link(auth_state: %{})
     ref = Store.wrap(store)

@@ -14,7 +14,7 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
   defp key_pair(seed), do: Crypto.generate_key_pair(:x25519, private_key: <<seed::256>>)
 
   defp setup_adapter do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     alice_identity = key_pair(100)
     alice_signed_pre_key = key_pair(101)
@@ -110,7 +110,7 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
 
   test "full encrypt/decrypt roundtrip through two adapter instances" do
     # Alice setup
-    {:ok, alice_store} = Store.start_link()
+    {:ok, alice_store} = Store.new()
     alice_identity = key_pair(300)
     alice_signed_pre_key = key_pair(301)
     alice_pre_key = key_pair(302)
@@ -127,7 +127,7 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
       )
 
     # Bob setup
-    {:ok, bob_store} = Store.start_link()
+    {:ok, bob_store} = Store.new()
     bob_identity = key_pair(400)
     bob_signed_pre_key = key_pair(401)
     bob_pre_key = key_pair(402)
@@ -265,7 +265,7 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
 
   test "decrypting a pkmsg with a changed identity replaces the stored session record" do
     # Bob setup
-    {:ok, bob_store} = Store.start_link()
+    {:ok, bob_store} = Store.new()
     bob_identity = key_pair(500)
     bob_signed_pre_key = key_pair(501)
     bob_pre_key_one = key_pair(502)
@@ -358,7 +358,7 @@ defmodule BaileysEx.Signal.Adapter.SignalTest do
   end
 
   defp build_sender_state(seed) do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     identity_key_pair = key_pair(seed)
     signed_pre_key = key_pair(seed + 1)
 

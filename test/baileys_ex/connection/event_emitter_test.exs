@@ -16,22 +16,27 @@ defmodule BaileysEx.Connection.EventEmitterTest do
   end
 
   test "process/2 and tap/2 accept injected refs for deterministic subscriptions" do
-    {:ok, ref_store} = Agent.start_link(fn -> [:process_ref, :tap_ref] end)
+    test_pid = self()
+    {:ok, ref_store} = Agent.start_link(fn -> 0 end)
 
     ref_fun = fn ->
-      Agent.get_and_update(ref_store, fn [next | rest] -> {next, rest} end)
+      Agent.get_and_update(ref_store, fn current -> {{:ref, current}, current + 1} end)
     end
 
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50, ref_fun: ref_fun)
-    unsubscribe = EventEmitter.process(emitter, fn _events -> :ok end)
-    untap = EventEmitter.tap(emitter, fn _events -> :ok end)
+    unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed, &1}))
+    untap = EventEmitter.tap(emitter, &send(test_pid, {:tapped, &1}))
 
-    state = :sys.get_state(emitter)
-    assert Map.has_key?(state.subscribers, :process_ref)
-    assert Map.has_key?(state.taps, :tap_ref)
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :open})
+    assert_receive {:tapped, %{connection_update: %{connection: :open}}}
+    assert_receive {:processed, %{connection_update: %{connection: :open}}}
 
     unsubscribe.()
     untap.()
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :close})
+    refute_receive {:tapped, _events}, 50
+    refute_receive {:processed, _events}, 50
   end
 
   test "buffer/flush buffers bufferable events and flushes them as a batch" do
@@ -256,7 +261,6 @@ defmodule BaileysEx.Connection.EventEmitterTest do
   test "subscriber exits do not crash the emitter" do
     test_pid = self()
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
-    initial_dispatcher = :sys.get_state(emitter).dispatcher_pid
 
     _bad_unsubscribe =
       EventEmitter.process(emitter, fn _events ->
@@ -266,10 +270,6 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :connecting})
     Process.sleep(50)
 
-    assert Process.alive?(emitter)
-    assert Process.alive?(initial_dispatcher)
-    assert :sys.get_state(emitter).dispatcher_pid == initial_dispatcher
-
     _good_unsubscribe =
       EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
 
@@ -277,10 +277,9 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     assert_receive {:processed_events, %{connection_update: %{connection: :open}}}
   end
 
-  test "subscriber throws do not kill the dispatcher" do
+  test "subscriber throws do not kill the emitter" do
     test_pid = self()
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
-    initial_dispatcher = :sys.get_state(emitter).dispatcher_pid
 
     _bad_unsubscribe =
       EventEmitter.process(emitter, fn _events ->
@@ -289,9 +288,6 @@ defmodule BaileysEx.Connection.EventEmitterTest do
 
     assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :connecting})
     Process.sleep(50)
-
-    assert Process.alive?(initial_dispatcher)
-    assert :sys.get_state(emitter).dispatcher_pid == initial_dispatcher
 
     _good_unsubscribe =
       EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
@@ -320,6 +316,54 @@ defmodule BaileysEx.Connection.EventEmitterTest do
 
     assert elapsed < 100
     assert_receive {:subscriber_started, %{connection_update: %{n: 2}}}, 300
+  end
+
+  test "a stuck public subscriber does not stall internal taps or other subscribers" do
+    test_pid = self()
+    gate = make_ref()
+    {:ok, emitter} = EventEmitter.start_link()
+
+    _untap =
+      EventEmitter.tap(emitter, fn events ->
+        send(test_pid, {:tapped, events})
+      end)
+
+    _slow_unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:slow_started, self(), events})
+
+        case events do
+          %{connection_update: %{n: 1}} ->
+            receive do
+              {:continue, ^gate} -> :ok
+            end
+
+          _events ->
+            :ok
+        end
+
+        send(test_pid, {:slow_finished, events})
+      end)
+
+    _fast_unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:fast_finished, events})
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 1})
+    assert_receive {:tapped, %{connection_update: %{n: 1}}}
+    assert_receive {:slow_started, slow_task, %{connection_update: %{n: 1}}}
+    assert_receive {:fast_finished, %{connection_update: %{n: 1}}}
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 2})
+    assert_receive {:tapped, %{connection_update: %{n: 2}}}
+    assert_receive {:fast_finished, %{connection_update: %{n: 2}}}
+    refute_received {:slow_finished, %{connection_update: %{n: 1}}}
+
+    send(slow_task, {:continue, gate})
+    assert_receive {:slow_finished, %{connection_update: %{n: 1}}}
+    assert_receive {:slow_started, _next_task, %{connection_update: %{n: 2}}}
+    assert_receive {:slow_finished, %{connection_update: %{n: 2}}}
   end
 
   test "later emits preserve subscriber delivery order" do
@@ -359,27 +403,200 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     assert_receive {:processed_events, %{connection_update: %{n: 2}}}, 300
   end
 
-  test "dispatcher restarts after unexpected death and continues delivering events" do
+  test "dispatch capacity is bounded and recovers after queued work completes" do
+    test_pid = self()
+    gate = make_ref()
+    {:ok, emitter} = EventEmitter.start_link(max_dispatch_queue: 2)
+
+    _untap =
+      EventEmitter.tap(emitter, fn events ->
+        send(test_pid, {:dispatch_started, self(), events})
+
+        receive do
+          {:continue, ^gate} -> :ok
+        end
+
+        send(test_pid, {:processed_events, events})
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 1})
+    assert_receive {:dispatch_started, first_task, %{connection_update: %{n: 1}}}
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 2})
+
+    assert {:error, :dispatch_queue_full} =
+             EventEmitter.emit(emitter, :connection_update, %{n: 3})
+
+    send(first_task, {:continue, gate})
+    assert_receive {:processed_events, %{connection_update: %{n: 1}}}
+    assert_receive {:dispatch_started, second_task, %{connection_update: %{n: 2}}}
+    send(second_task, {:continue, gate})
+    assert_receive {:processed_events, %{connection_update: %{n: 2}}}
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 4})
+    assert_receive {:dispatch_started, fourth_task, %{connection_update: %{n: 4}}}
+    send(fourth_task, {:continue, gate})
+    assert_receive {:processed_events, %{connection_update: %{n: 4}}}
+    refute_received {:processed_events, %{connection_update: %{n: 3}}}
+  end
+
+  test "queued events retain their emission-time subscriber membership" do
+    test_pid = self()
+    gate = make_ref()
+    {:ok, emitter} = EventEmitter.start_link()
+
+    unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:old_subscriber_started, self(), events})
+
+        case events do
+          %{connection_update: %{n: 1}} ->
+            receive do
+              {:continue, ^gate} -> :ok
+            end
+
+          _events ->
+            :ok
+        end
+
+        send(test_pid, {:old_subscriber_finished, events})
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 1})
+    assert_receive {:old_subscriber_started, first_task, %{connection_update: %{n: 1}}}
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 2})
+
+    unsubscribe.()
+
+    _new_unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:new_subscriber, events})
+      end)
+
+    send(first_task, {:continue, gate})
+    assert_receive {:old_subscriber_finished, %{connection_update: %{n: 1}}}
+    assert_receive {:old_subscriber_started, _second_task, %{connection_update: %{n: 2}}}
+    assert_receive {:old_subscriber_finished, %{connection_update: %{n: 2}}}
+    refute_received {:new_subscriber, %{connection_update: %{n: 2}}}
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 3})
+    assert_receive {:new_subscriber, %{connection_update: %{n: 3}}}
+    refute_received {:old_subscriber_started, _task, %{connection_update: %{n: 3}}}
+  end
+
+  test "subscribers may emit reentrant events without deadlocking delivery" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link()
+
+    _unsubscribe =
+      EventEmitter.process(emitter, fn
+        %{connection_update: %{n: 1}} = events ->
+          send(test_pid, {:processed_events, events})
+
+          send(
+            test_pid,
+            {:nested_emit_result, EventEmitter.emit(emitter, :connection_update, %{n: 2})}
+          )
+
+        events ->
+          send(test_pid, {:processed_events, events})
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 1})
+    assert_receive {:processed_events, %{connection_update: %{n: 1}}}
+    assert_receive {:nested_emit_result, :ok}
+    assert_receive {:processed_events, %{connection_update: %{n: 2}}}
+  end
+
+  test "dispatch work restarts after unexpected task death" do
     test_pid = self()
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
-    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+    gate = make_ref()
 
-    dispatcher = :sys.get_state(emitter).dispatcher_pid
-    ref = Process.monitor(dispatcher)
-    Process.exit(dispatcher, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^dispatcher, :killed}
+    _unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:dispatch_started, self(), events})
+
+        receive do
+          {:continue, ^gate} -> send(test_pid, {:processed_events, events})
+        end
+      end)
 
     assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :open})
+    assert_receive {:dispatch_started, first_task, %{connection_update: %{connection: :open}}}
+
+    task_ref = Process.monitor(first_task)
+    Process.exit(first_task, :kill)
+    assert_receive {:DOWN, ^task_ref, :process, ^first_task, :killed}
+
+    assert_receive {:dispatch_started, retry_task, %{connection_update: %{connection: :open}}}
+    refute retry_task == first_task
+    send(retry_task, {:continue, gate})
     assert_receive {:processed_events, %{connection_update: %{connection: :open}}}, 300
   end
 
-  test "dispatcher exits when the emitter stops" do
+  test "dispatch work survives callback TaskSupervisor restart" do
+    test_pid = self()
+    gate = make_ref()
+    {:ok, emitter} = EventEmitter.start_link()
+
+    _unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:dispatch_started, self(), events})
+
+        receive do
+          {:continue, ^gate} -> send(test_pid, {:processed_events, events})
+        end
+      end)
+
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 1})
+    assert_receive {:dispatch_started, first_task, %{connection_update: %{n: 1}}}
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{n: 2})
+
+    task_supervisor = child_pid!(emitter, Task.Supervisor)
+    task_supervisor_ref = Process.monitor(task_supervisor)
+    Process.exit(task_supervisor, :kill)
+    assert_receive {:DOWN, ^task_supervisor_ref, :process, ^task_supervisor, :killed}
+
+    assert_receive {:dispatch_started, retry_task, %{connection_update: %{n: 1}}}, 500
+    refute retry_task == first_task
+    send(retry_task, {:continue, gate})
+    assert_receive {:processed_events, %{connection_update: %{n: 1}}}
+
+    assert_receive {:dispatch_started, second_task, %{connection_update: %{n: 2}}}
+    send(second_task, {:continue, gate})
+    assert_receive {:processed_events, %{connection_update: %{n: 2}}}
+  end
+
+  test "active dispatch task exits when the emitter stops" do
+    test_pid = self()
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
-    dispatcher = :sys.get_state(emitter).dispatcher_pid
-    dispatcher_ref = Process.monitor(dispatcher)
 
-    GenServer.stop(emitter)
+    _unsubscribe =
+      EventEmitter.process(emitter, fn events ->
+        send(test_pid, {:dispatch_started, self(), events})
+        Process.sleep(:infinity)
+      end)
 
-    assert_receive {:DOWN, ^dispatcher_ref, :process, ^dispatcher, _reason}, 300
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :open})
+    assert_receive {:dispatch_started, task, %{connection_update: %{connection: :open}}}
+    task_ref = Process.monitor(task)
+
+    Supervisor.stop(emitter)
+
+    assert_receive {:DOWN, ^task_ref, :process, ^task, _reason}, 300
+  end
+
+  defp child_pid!(supervisor, child_id) do
+    supervisor
+    |> Supervisor.which_children()
+    |> Enum.find_value(fn
+      {^child_id, pid, _type, _modules} when is_pid(pid) -> pid
+      _child -> nil
+    end)
+    |> case do
+      pid when is_pid(pid) -> pid
+      nil -> flunk("missing child #{inspect(child_id)}")
+    end
   end
 end

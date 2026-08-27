@@ -14,7 +14,7 @@ fn sign<'a>(env: Env<'a>, private_key: Binary<'a>, message: Binary<'a>) -> NifRe
         .map_err(|_| NifError::PrivateKeyMustBe32Bytes)?;
 
     let mut clamped = private_key;
-    clamped[0] &= 248;
+    clamped[0] &= 0xf8;
     clamped[31] &= 127;
     clamped[31] |= 64;
 

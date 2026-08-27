@@ -1,6 +1,6 @@
 # Echo Bot Example
 
-This example shows the smallest runnable bot in the repository. It opens a real WhatsApp connection with `BaileysEx.Connection.Transport.MintWebSocket`, persists credentials, and echoes inbound text messages back to the sender.
+This example shows the smallest runnable bot in the repository. It opens a real WhatsApp connection with `BaileysEx.Connection.Transport.MintWebSocket`, persists credentials and Signal keys, and echoes inbound text messages back to the sender.
 
 ## Run the example
 
@@ -12,8 +12,8 @@ On the first run, scan the QR code or use phone pairing. On later runs, the save
 
 ## What it demonstrates
 
-- loading and saving auth state with `BaileysEx.Auth.FilePersistence`
-- starting a real connection with `BaileysEx.connect/2`
+- loading and saving auth state with `BaileysEx.Auth.NativeFilePersistence`
+- starting a real connection under a host-owned supervisor
 - subscribing to `:creds_update` and incoming messages
 - replying with `BaileysEx.send_message/4`
 

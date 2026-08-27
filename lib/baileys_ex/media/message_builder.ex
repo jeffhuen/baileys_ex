@@ -143,8 +143,6 @@ defmodule BaileysEx.Media.MessageBuilder do
 
   defp maybe_call(module, function, args) do
     apply(module, function, args)
-  rescue
-    _error -> {:error, :derivative_failed}
   end
 
   defp maybe_put_mimetype(content, field, path) do

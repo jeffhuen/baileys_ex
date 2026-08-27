@@ -2,16 +2,14 @@
 
 ## [Unreleased]
 
-### Changed
+## [0.1.0-alpha.12] - 2026-08-26
 
-- Updated the compatibility target and default WhatsApp Web version to Baileys
-  `v7.0.0-rc14`.
-- Profile-picture and presence query TC tokens now include their stored
-  timestamps. Profile-picture tokens are nested under the `picture` node and
-  omitted for self and non-user JIDs; direct message-relay token nodes retain
-  their existing wire shape.
-- Android browser tuples now use Baileys rc14's experimental Android user-agent
-  and companion-device payload semantics.
+- This release matches the behavior of Baileys `v7.0.0-rc14`.
+- `BaileysEx.Signal.Store.start_link/1` now returns a standard OTP process result.
+- Use `BaileysEx.Signal.Store.new/1` to get a wrapped store.
+- The `get_placeholder_resend` lookup is now
+  `BaileysEx.Message.Retry.fetch_placeholder_resend/2`. It returns
+  `{:ok, value} | :error`.
 
 ## [0.1.0-alpha.11] - 2026-06-09
 

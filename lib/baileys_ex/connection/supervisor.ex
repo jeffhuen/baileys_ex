@@ -1,6 +1,7 @@
 defmodule BaileysEx.Connection.Supervisor do
   @moduledoc """
-  Connection runtime supervisor with rc.9-style socket, store, and event layers.
+  Supervised, per-connection runtime for transport, state, events, Signal storage,
+  delayed work, and coordination.
   """
 
   use Elixir.Supervisor
@@ -8,6 +9,7 @@ defmodule BaileysEx.Connection.Supervisor do
   alias BaileysEx.Connection.Config
   alias BaileysEx.Connection.Coordinator
   alias BaileysEx.Connection.EventEmitter
+  alias BaileysEx.Connection.RuntimeRef
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
   alias BaileysEx.Signal.Store, as: SignalStore
@@ -21,6 +23,18 @@ defmodule BaileysEx.Connection.Supervisor do
   def start_link(opts) when is_list(opts) do
     {start_opts, init_opts} = split_start_opts(opts)
     Elixir.Supervisor.start_link(__MODULE__, init_opts, start_opts)
+  end
+
+  @doc "Return a host-supervisor child specification for one connection runtime."
+  @spec child_spec(keyword()) :: Elixir.Supervisor.child_spec()
+  def child_spec(opts) when is_list(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      type: :supervisor,
+      restart: :transient,
+      shutdown: :infinity
+    }
   end
 
   @doc "Start a connection runtime from an auth state payload."
@@ -91,6 +105,10 @@ defmodule BaileysEx.Connection.Supervisor do
   @doc "Return the connection store pid when present."
   @spec store(GenServer.server()) :: pid() | nil
   def store(supervisor), do: child_pid(supervisor, Store)
+
+  @doc false
+  @spec task_supervisor(GenServer.server()) :: pid() | nil
+  def task_supervisor(supervisor), do: child_pid(supervisor, Task.Supervisor)
 
   @doc "Return the `{socket_module, socket_pid}` transport tuple used by feature helpers."
   @spec queryable(GenServer.server()) :: {module(), pid()} | nil
@@ -182,6 +200,61 @@ defmodule BaileysEx.Connection.Supervisor do
     end
   end
 
+  @doc "Request the phone to resend a placeholder message through the peer-data pipeline."
+  @spec request_placeholder_resend(GenServer.server(), map(), map() | nil, keyword()) ::
+          {:ok, String.t() | nil} | {:error, term()}
+  def request_placeholder_resend(supervisor, message_key, msg_data \\ nil, opts \\ [])
+      when is_map(message_key) and (is_map(msg_data) or is_nil(msg_data)) and is_list(opts) do
+    case coordinator(supervisor) do
+      pid when is_pid(pid) ->
+        Coordinator.request_placeholder_resend(pid, message_key, msg_data, opts)
+
+      _ ->
+        {:error, :coordinator_not_available}
+    end
+  end
+
+  @doc "Send an ACK/NACK through the coordinator-managed socket."
+  @spec send_message_ack(GenServer.server(), BaileysEx.BinaryNode.t(), non_neg_integer() | nil) ::
+          :ok | {:error, term()}
+  def send_message_ack(supervisor, %BaileysEx.BinaryNode{} = node, error_code \\ nil) do
+    case coordinator(supervisor) do
+      pid when is_pid(pid) -> Coordinator.send_message_ack(pid, node, error_code)
+      _ -> {:error, :coordinator_not_available}
+    end
+  end
+
+  @doc "Send a failed-decryption retry request through the coordinator-managed socket."
+  @spec send_retry_request(GenServer.server(), BaileysEx.BinaryNode.t(), keyword()) ::
+          :ok | {:error, term()}
+  def send_retry_request(supervisor, %BaileysEx.BinaryNode{} = node, opts \\ [])
+      when is_list(opts) do
+    case coordinator(supervisor) do
+      pid when is_pid(pid) -> Coordinator.send_retry_request(pid, node, opts)
+      _ -> {:error, :coordinator_not_available}
+    end
+  end
+
+  @doc false
+  @spec message_retry_manager_available?(GenServer.server()) :: :ok | {:error, term()}
+  def message_retry_manager_available?(supervisor) do
+    case coordinator(supervisor) do
+      pid when is_pid(pid) -> Coordinator.message_retry_manager_available?(pid)
+      _ -> {:error, :coordinator_not_available}
+    end
+  end
+
+  @doc false
+  @spec message_retry_operation(GenServer.server(), tuple() | :clear) ::
+          {:ok, term()} | {:error, term()}
+  def message_retry_operation(supervisor, operation)
+      when is_tuple(operation) or operation == :clear do
+    case coordinator(supervisor) do
+      pid when is_pid(pid) -> Coordinator.message_retry_operation(pid, operation)
+      _ -> {:error, :coordinator_not_available}
+    end
+  end
+
   @doc "Send a WAM analytics buffer through the active socket."
   @spec send_wam_buffer(GenServer.server(), binary()) ::
           {:ok, BaileysEx.BinaryNode.t()} | {:error, term()}
@@ -197,16 +270,21 @@ defmodule BaileysEx.Connection.Supervisor do
 
   @impl true
   def init(opts) do
-    instance_id = Keyword.get(opts, :name, make_ref())
+    supervisor = self()
+    runtime_refs = RuntimeRef.new()
     config = Keyword.get(opts, :config, Config.new())
     socket_module = Keyword.get(opts, :socket_module, Socket)
     signal_store_module = Keyword.get(opts, :signal_store_module, SignalStoreMemory)
     signal_store_opts = Keyword.get(opts, :signal_store_opts, [])
-    coordinator_name = {:global, {__MODULE__, instance_id, Coordinator}}
-    emitter_name = {:global, {__MODULE__, instance_id, EventEmitter}}
-    store_name = {:global, {__MODULE__, instance_id, Store}}
-    task_supervisor_name = {:global, {__MODULE__, instance_id, Task.Supervisor}}
-    signal_store_name = {:global, {__MODULE__, instance_id, signal_store_module}}
+    event_emitter = runtime_resolver(runtime_refs, EventEmitter)
+    store = runtime_resolver(runtime_refs, Store)
+    task_supervisor = runtime_resolver(runtime_refs, Task.Supervisor)
+
+    signal_store = fn ->
+      signal_store_module
+      |> then(&{&1, RuntimeRef.fetch(runtime_refs, &1)})
+      |> SignalStore.wrap_running()
+    end
 
     socket_opts =
       opts
@@ -215,57 +293,61 @@ defmodule BaileysEx.Connection.Supervisor do
         :socket_module,
         :signal_store_module,
         :signal_store_opts,
-        :initial_event_subscribers
+        :initial_event_subscribers,
+        :max_dispatch_queue,
+        :max_send_queue
       ])
       |> Keyword.put(:config, config)
-      |> Keyword.put_new(:event_emitter, emitter_name)
-      |> Keyword.put_new(:signal_store, {signal_store_module, signal_store_name})
-      |> Keyword.put_new(:task_supervisor, task_supervisor_name)
+      |> Keyword.put_new(:event_emitter, event_emitter)
+      |> Keyword.put_new(:signal_store, signal_store)
+      |> Keyword.put_new(:task_supervisor, task_supervisor)
 
-    children = [
-      Elixir.Supervisor.child_spec({socket_module, socket_opts}, id: socket_module),
-      Elixir.Supervisor.child_spec({Store, [name: store_name, auth_state: opts[:auth_state]]},
-        id: Store
-      ),
-      Elixir.Supervisor.child_spec(
-        {EventEmitter,
-         [
-           name: emitter_name,
-           initial_subscribers: Keyword.get(opts, :initial_event_subscribers, [])
-         ]},
-        id: EventEmitter
-      ),
-      Elixir.Supervisor.child_spec(
-        {signal_store_module, Keyword.put_new(signal_store_opts, :name, signal_store_name)},
-        id: signal_store_module
-      ),
-      Elixir.Supervisor.child_spec({Task.Supervisor, name: task_supervisor_name},
-        id: Task.Supervisor
-      ),
-      Elixir.Supervisor.child_spec(
-        {Coordinator,
-         [
-           name: coordinator_name,
-           config: config,
-           supervisor: self(),
-           event_emitter: emitter_name,
-           store: store_name,
-           signal_store: {signal_store_module, signal_store_name},
-           signal_repository: Keyword.get(opts, :signal_repository),
-           signal_repository_adapter: Keyword.get(opts, :signal_repository_adapter),
-           signal_repository_adapter_state: Keyword.get(opts, :signal_repository_adapter_state),
-           history_sync_download_fun: Keyword.get(opts, :history_sync_download_fun),
-           history_sync_inflate_fun: Keyword.get(opts, :history_sync_inflate_fun),
-           get_message_fun: Keyword.get(opts, :get_message_fun),
-           handle_encrypt_notification_fun: Keyword.get(opts, :handle_encrypt_notification_fun),
-           device_notification_fun: Keyword.get(opts, :device_notification_fun),
-           resync_app_state_fun: Keyword.get(opts, :resync_app_state_fun),
-           socket_module: socket_module,
-           task_supervisor: task_supervisor_name
-         ]},
-        id: Coordinator
-      )
-    ]
+    children =
+      [
+        Elixir.Supervisor.child_spec(
+          {EventEmitter,
+           [
+             initial_subscribers: Keyword.get(opts, :initial_event_subscribers, []),
+             max_dispatch_queue: Keyword.get(opts, :max_dispatch_queue, 1_024)
+           ]},
+          id: EventEmitter
+        ),
+        Elixir.Supervisor.child_spec({Store, [auth_state: opts[:auth_state]]},
+          id: Store
+        ),
+        Elixir.Supervisor.child_spec(
+          {signal_store_module, signal_store_opts},
+          id: signal_store_module
+        ),
+        Elixir.Supervisor.child_spec(Task.Supervisor,
+          id: Task.Supervisor
+        ),
+        Elixir.Supervisor.child_spec({socket_module, socket_opts}, id: socket_module),
+        Elixir.Supervisor.child_spec(
+          {Coordinator,
+           [
+             config: config,
+             supervisor: supervisor,
+             event_emitter: event_emitter,
+             store: store,
+             signal_store: signal_store,
+             signal_repository: Keyword.get(opts, :signal_repository),
+             signal_repository_adapter: Keyword.get(opts, :signal_repository_adapter),
+             signal_repository_adapter_state: Keyword.get(opts, :signal_repository_adapter_state),
+             history_sync_download_fun: Keyword.get(opts, :history_sync_download_fun),
+             history_sync_inflate_fun: Keyword.get(opts, :history_sync_inflate_fun),
+             get_message_fun: Keyword.get(opts, :get_message_fun),
+             handle_encrypt_notification_fun: Keyword.get(opts, :handle_encrypt_notification_fun),
+             device_notification_fun: Keyword.get(opts, :device_notification_fun),
+             resync_app_state_fun: Keyword.get(opts, :resync_app_state_fun),
+             max_send_queue: Keyword.get(opts, :max_send_queue, 256),
+             socket_module: socket_module,
+             task_supervisor: task_supervisor
+           ]},
+          id: Coordinator
+        )
+      ]
+      |> Enum.map(&RuntimeRef.child_spec(&1, runtime_refs))
 
     Elixir.Supervisor.init(children, strategy: :rest_for_one)
   end
@@ -282,6 +364,10 @@ defmodule BaileysEx.Connection.Supervisor do
       _ ->
         {[], opts}
     end
+  end
+
+  defp runtime_resolver(runtime_refs, child_id) do
+    fn -> RuntimeRef.fetch(runtime_refs, child_id) end
   end
 
   defp valid_name?(name) when is_atom(name), do: true

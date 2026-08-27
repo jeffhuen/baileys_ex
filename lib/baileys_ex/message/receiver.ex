@@ -27,11 +27,14 @@ defmodule BaileysEx.Message.Receiver do
   @no_message_found_error_text "Message absent from node"
   @account_restricted_text "Your account has been restricted"
   @placeholder_max_age_seconds 14 * 24 * 60 * 60
-  @excluded_placeholder_unavailable_types MapSet.new([
-                                            "bot_unavailable_fanout",
-                                            "hosted_unavailable_fanout",
-                                            "view_once_unavailable_fanout"
-                                          ])
+  @excluded_placeholder_unavailable_types Map.new(
+                                            [
+                                              "bot_unavailable_fanout",
+                                              "hosted_unavailable_fanout",
+                                              "view_once_unavailable_fanout"
+                                            ],
+                                            &{&1, true}
+                                          )
 
   @type context :: %{
           required(:signal_repository) => Repository.t(),
@@ -43,10 +46,12 @@ defmodule BaileysEx.Message.Receiver do
           optional(:signal_store) => Store.t(),
           optional(:send_receipt_fun) => (BinaryNode.t() -> :ok | {:error, term()}),
           optional(:send_node_fun) => (BinaryNode.t() -> :ok | {:error, term()}),
+          optional(:send_retry_request_fun) => (BinaryNode.t(), String.t(), term() ->
+                                                  {:ok, BinaryNode.t(), Repository.t()}
+                                                  | {:error, term()}),
           optional(:fetch_reachout_timelock_fun) => (-> {:ok, map()} | {:error, term()}),
           optional(:send_placeholder_request_fun) => (struct() ->
-                                                        {:ok, String.t()}
-                                                        | {:ok, String.t(), context()}
+                                                        {:ok, String.t() | nil, context()}
                                                         | {:error, term()}),
           optional(:get_message_fun) => (map() -> map() | nil),
           optional(atom()) => term()
@@ -65,14 +70,24 @@ defmodule BaileysEx.Message.Receiver do
   def process_node(node, context, opts \\ [])
 
   def process_node(%BinaryNode{tag: "message"} = node, %{} = context, opts) do
-    with {:ok, envelope, context} <- Decode.decode_envelope(node, context) do
-      case extract_encrypted_content(node) do
-        {:ok, encrypted_content} ->
-          process_encrypted_node(node, envelope, encrypted_content, context)
+    case Decode.decode_envelope(node, context) do
+      {:ok, envelope, context} ->
+        case extract_encrypted_content(node) do
+          {:ok, %{type: "msmsg"}} ->
+            _ = send_message_ack(node, context, 495)
+            {:error, :missing_message_secret}
 
-        {:error, :missing_encrypted_content} ->
-          process_missing_encrypted_content(node, envelope, context, opts)
-      end
+          {:ok, encrypted_content} ->
+            process_encrypted_node(node, envelope, encrypted_content, context, opts)
+
+          {:error, :missing_encrypted_content} ->
+            process_missing_encrypted_content(node, envelope, context, opts)
+        end
+
+      {:error, reason} = error ->
+        _ = send_message_ack(node, context, 500)
+        Logger.warning("failed to decode message envelope: #{inspect(reason)}")
+        error
     end
   end
 
@@ -83,12 +98,41 @@ defmodule BaileysEx.Message.Receiver do
          %BinaryNode{} = node,
          envelope,
          encrypted_content,
-         context
+         context,
+         opts
        ) do
-    with {:ok, decrypted_repo, plaintext} <-
-           decrypt_content(context.signal_repository, envelope, encrypted_content),
-         {:ok, proto_message} <- Wire.decode(plaintext),
-         {:ok, signal_repository} <-
+    case decrypt_content(context.signal_repository, envelope, encrypted_content) do
+      {:ok, decrypted_repo, plaintext} ->
+        process_decrypted_node(node, envelope, decrypted_repo, plaintext, context, opts)
+
+      {:error, reason} = error ->
+        handle_failed_decryption(node, envelope, context, reason, error, opts)
+    end
+  end
+
+  defp process_decrypted_node(node, envelope, decrypted_repo, plaintext, context, opts) do
+    case Wire.decode(plaintext) do
+      {:ok, proto_message} ->
+        :ok = maybe_cancel_phone_request(context, node.attrs["id"])
+
+        case process_decoded_message(node, envelope, decrypted_repo, proto_message, context) do
+          {:ok, _message, _context} = success ->
+            success
+
+          {:error, reason} = error ->
+            _ = send_message_ack(node, context, 500)
+            Logger.warning("failed to process decrypted message: #{inspect(reason)}")
+            error
+        end
+
+      {:error, reason} = error ->
+        updated_context = %{context | signal_repository: decrypted_repo}
+        handle_failed_decryption(node, envelope, updated_context, reason, error, opts)
+    end
+  end
+
+  defp process_decoded_message(node, envelope, decrypted_repo, proto_message, context) do
+    with {:ok, signal_repository} <-
            maybe_process_sender_key_distribution_message(
              decrypted_repo,
              envelope,
@@ -119,6 +163,78 @@ defmodule BaileysEx.Message.Receiver do
          :ok <- send_receipt(node, envelope, received_message, context) do
       {:ok, received_message, context}
     end
+  end
+
+  defp handle_failed_decryption(node, envelope, context, reason, error, opts) do
+    cond do
+      node.attrs["category"] == "peer" ->
+        error
+
+      reason == :message_key_already_consumed ->
+        _ = send_message_ack(node, context, 487)
+        error
+
+      expired_status_message?(envelope.remote_jid, node, opts) ->
+        _ = send_message_ack(node, context)
+        emit_ciphertext_failure(node, envelope, context, reason)
+
+      true ->
+        {_retry_result, context} = maybe_send_retry_request(node, envelope, context, reason)
+        wait_before_retry_ack(context, opts)
+        _ = send_message_ack(node, context, 500)
+        emit_ciphertext_failure(node, envelope, context, reason)
+    end
+  end
+
+  defp maybe_send_retry_request(node, envelope, context, reason) do
+    case context[:send_retry_request_fun] do
+      fun when is_function(fun, 3) ->
+        case fun.(node, envelope.decryption_jid, reason) do
+          {:ok, receipt, %Repository{} = repository} ->
+            {{:ok, receipt}, %{context | signal_repository: repository}}
+
+          {:error, _reason} = error ->
+            {error, context}
+
+          other ->
+            {{:error, {:invalid_retry_request_result, other}}, context}
+        end
+
+      fun when is_function(fun, 1) ->
+        {fun.(node), context}
+
+      _other ->
+        {{:error, {:retry_request_not_configured, reason}}, context}
+    end
+  end
+
+  defp wait_before_retry_ack(context, opts) do
+    delay_ms =
+      Keyword.get(opts, :retry_request_delay_ms, context[:retry_request_delay_ms] || 250)
+
+    sleep_fun = Keyword.get(opts, :sleep_fun, context[:sleep_fun] || (&Process.sleep/1))
+    if delay_ms > 0, do: sleep_fun.(delay_ms)
+    :ok
+  end
+
+  defp emit_ciphertext_failure(node, envelope, context, reason) do
+    received_message = build_ciphertext_message(node, envelope, reason)
+
+    with :ok <-
+           EventEmitter.emit(context.event_emitter, :messages_upsert, %{
+             type: :notify,
+             messages: [received_message]
+           }) do
+      {:ok, received_message, context}
+    end
+  end
+
+  defp expired_status_message?(remote_jid, node, opts) do
+    JIDUtil.status_broadcast?(remote_jid) and
+      case parse_timestamp(node.attrs["t"]) do
+        timestamp when is_integer(timestamp) -> now_seconds(opts) - timestamp > 86_400
+        _other -> false
+      end
   end
 
   defp process_missing_encrypted_content(
@@ -152,6 +268,7 @@ defmodule BaileysEx.Message.Receiver do
         end
 
       _other ->
+        _ = send_message_ack(node, context, 500)
         {:error, :missing_encrypted_content}
     end
   end
@@ -320,10 +437,32 @@ defmodule BaileysEx.Message.Receiver do
     }
   end
 
-  defp send_message_ack(%BinaryNode{} = node, context) do
+  defp build_ciphertext_message(%BinaryNode{} = node, envelope, reason) do
+    node
+    |> build_unavailable_message(envelope)
+    |> Map.put(:message_stub_parameters, [format_decryption_error(reason)])
+  end
+
+  defp format_decryption_error(%{message: message}) when is_binary(message), do: message
+  defp format_decryption_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp format_decryption_error(reason), do: inspect(reason)
+
+  defp maybe_cancel_phone_request(
+         %{store_ref: %ConnectionStore.Ref{} = store_ref},
+         message_id
+       )
+       when is_binary(message_id),
+       do: Retry.cancel_phone_request(store_ref, message_id)
+
+  defp maybe_cancel_phone_request(_context, _message_id), do: :ok
+
+  defp send_message_ack(%BinaryNode{} = node, context, error_code \\ nil) do
     case context[:send_node_fun] || context[:send_receipt_fun] do
-      fun when is_function(fun, 1) -> fun.(Receipt.build_ack_stanza(node, nil, context[:me_id]))
-      _other -> :ok
+      fun when is_function(fun, 1) ->
+        fun.(Receipt.build_ack_stanza(node, error_code, context[:me_id]))
+
+      _other ->
+        :ok
     end
   end
 
@@ -372,17 +511,23 @@ defmodule BaileysEx.Message.Receiver do
                store_ref,
                message_key,
                msg_data,
-               delay_ms: 0,
+               delay_ms:
+                 Keyword.get(
+                   opts,
+                   :placeholder_resend_delay_ms,
+                   context[:placeholder_resend_delay_ms] || 2_000
+                 ),
+               sleep_fun:
+                 Keyword.get(opts, :sleep_fun, context[:sleep_fun] || (&Process.sleep/1)),
                now_ms: fn -> now_seconds(opts) * 1_000 end,
+               context: context,
+               task_supervisor: context[:task_supervisor],
+               timer_owner: context[:timer_owner],
                send_request_fun: fun
              ) do
           {:ok, request_id, updated_context} ->
             :ok = maybe_emit_placeholder_request_id(event_emitter, message_key, request_id)
             {:ok, updated_context}
-
-          {:ok, request_id} ->
-            :ok = maybe_emit_placeholder_request_id(event_emitter, message_key, request_id)
-            {:ok, context}
 
           {:error, reason} ->
             Logger.warning(
@@ -442,7 +587,7 @@ defmodule BaileysEx.Message.Receiver do
     unavailable_type = attrs["type"]
 
     cond do
-      MapSet.member?(@excluded_placeholder_unavailable_types, unavailable_type) ->
+      Map.has_key?(@excluded_placeholder_unavailable_types, unavailable_type) ->
         false
 
       unavailable_message_age_seconds(received_message, opts) > @placeholder_max_age_seconds ->
@@ -1159,7 +1304,10 @@ defmodule BaileysEx.Message.Receiver do
   defp placeholder_cached_message(context, %WebMessageInfo{} = info) do
     case {context[:store_ref], info.key} do
       {%ConnectionStore.Ref{} = store_ref, %{id: message_id}} when is_binary(message_id) ->
-        Retry.get_placeholder_resend(store_ref, message_id)
+        case Retry.fetch_placeholder_resend(store_ref, message_id) do
+          {:ok, metadata} -> metadata
+          :error -> nil
+        end
 
       _ ->
         nil

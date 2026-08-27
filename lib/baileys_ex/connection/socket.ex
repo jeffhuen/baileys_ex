@@ -1289,10 +1289,9 @@ defmodule BaileysEx.Connection.Socket do
   end
 
   defp start_socket_task(%__MODULE__{} = data, fun) when is_function(fun, 0) do
-    case data.task_supervisor do
+    case resolve_runtime_ref(data.task_supervisor) do
       nil ->
-        {:ok, _pid} = Task.start(fun)
-        :ok
+        {:error, :task_supervisor_not_configured}
 
       task_supervisor ->
         case Task.Supervisor.start_child(task_supervisor, fun) do
@@ -1312,7 +1311,8 @@ defmodule BaileysEx.Connection.Socket do
         :ok
       end,
       upload_key: {:prekey_upload, socket_pid},
-      upload_timeout_ms: 30_000
+      upload_timeout_ms: 30_000,
+      task_supervisor: resolve_runtime_ref(data.task_supervisor)
     ]
   end
 
@@ -1400,10 +1400,29 @@ defmodule BaileysEx.Connection.Socket do
   defp emit_event(%__MODULE__{event_emitter: nil}, _event, _payload), do: :ok
 
   defp emit_event(%__MODULE__{event_emitter: event_emitter}, event, payload) do
-    EventEmitter.emit(event_emitter, event, payload)
-  catch
-    :exit, _reason -> :ok
+    result =
+      try do
+        case resolve_runtime_ref(event_emitter) do
+          nil -> {:error, :event_emitter_not_available}
+          server -> EventEmitter.emit(server, event, payload)
+        end
+      catch
+        :exit, reason -> {:error, {:event_emitter_exit, reason}}
+      end
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("[Socket] event dispatch failed for #{inspect(event)}: #{inspect(reason)}")
+
+        exit({:event_dispatch_failed, reason})
+    end
   end
+
+  defp resolve_runtime_ref(resolver) when is_function(resolver, 0), do: resolver.()
+  defp resolve_runtime_ref(ref), do: ref
 
   defp maybe_emit_socket_notification(
          {:defer_notification_ack, current_state, %__MODULE__{} = data},

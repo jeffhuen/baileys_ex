@@ -1,7 +1,11 @@
 defmodule BaileysEx.Signal.Store.LockManager do
   @moduledoc false
 
-  @type state :: %{required(:locks) => map(), required(:monitor_keys) => map()}
+  @type state :: %{
+          required(:locks) => map(),
+          required(:monitor_keys) => map(),
+          optional(atom()) => term()
+        }
 
   @spec acquire(state(), term(), GenServer.from(), pid()) :: {:acquired | :queued, state()}
   def acquire(state, key, from, owner) do

@@ -172,8 +172,6 @@ defmodule BaileysEx.Media.Thumbnail do
       {:error, reason} -> {:error, {:image_processing_failed, reason}}
       other -> {:error, {:image_processing_failed, other}}
     end
-  rescue
-    error -> {:error, {:image_processing_failed, error}}
   end
 
   defp image_resize(image_module, image, width) do
@@ -188,8 +186,6 @@ defmodule BaileysEx.Media.Thumbnail do
       {:error, reason} -> {:error, {:image_processing_failed, reason}}
       other -> {:error, {:image_processing_failed, other}}
     end
-  rescue
-    error -> {:error, {:image_processing_failed, error}}
   end
 
   defp image_write(image_module, image) do
@@ -198,8 +194,6 @@ defmodule BaileysEx.Media.Thumbnail do
       {:error, reason} -> {:error, {:image_processing_failed, reason}}
       other -> {:error, {:image_processing_failed, other}}
     end
-  rescue
-    error -> {:error, {:image_processing_failed, error}}
   end
 
   defp ffmpeg_executable(opts) do
@@ -237,7 +231,7 @@ defmodule BaileysEx.Media.Thumbnail do
       _ -> {:error, {:ffmpeg_failed, output}}
     end
   rescue
-    error -> {:error, {:ffmpeg_failed, error}}
+    error in [ArgumentError, ErlangError] -> {:error, {:ffmpeg_failed, error}}
   end
 
   defp with_temp_audio_file(audio_binary, opts, fun) when is_binary(audio_binary) do

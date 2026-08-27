@@ -2,10 +2,10 @@ defmodule BaileysEx.Auth.PersistenceMigration do
   @moduledoc """
   Explicit migration helpers between built-in auth persistence backends.
 
-  Phase 15 keeps `BaileysEx.Auth.FilePersistence` as the Baileys-compatible
-  JSON helper and introduces `BaileysEx.Auth.NativeFilePersistence` as the
-  recommended durable backend. This module provides the one-step migration path
-  between those built-in backends without forcing users to re-pair.
+  `BaileysEx.Auth.FilePersistence` is the Baileys-compatible JSON helper, while
+  `BaileysEx.Auth.NativeFilePersistence` is the recommended durable backend.
+  This module provides the one-step migration path between those built-in
+  backends without forcing users to re-pair.
 
   The JSON helper exists as a compatibility bridge for users migrating away
   from Baileys JS sidecars. This module is the explicit off-ramp from that

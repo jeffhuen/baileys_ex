@@ -29,7 +29,7 @@
 | 15 | Persistence Architecture Alignment | 6 | COMPLETE | 7, 12 | — |
 | 16 | Signal Store Transaction Redesign | 6 | COMPLETE | 5, 15 | — |
 | 17 | Baileys rc13 Upstream Refresh | 6 | COMPLETE | 16 | — |
-| 18 | Baileys rc14 Upstream Refresh | 6 | IN PROGRESS | 17 | — |
+| 18 | Baileys rc14 Upstream Refresh | 7 | COMPLETE | 17 | — |
 
 **Parallel-safe pairs:** 2+3+4 (after 1), 5 ∥ 3+4 (after 2), 9 ∥ 10 (after 8)
 
@@ -1214,6 +1214,7 @@ remains unchanged.
 - [x] 18.4 Port Android browser, client payload, device-props, and warning behavior
 - [x] 18.5 Synchronize the rc14 parity matrix, target docs, and phase trackers
 - [x] 18.6 Run focused parity checks, all delivery gates, and independent reviews
+- [x] 18.7 Remediate Elixir library/OTP anti-patterns and complete RC14 placeholder/retry parity
 
 ### Acceptance Criteria
 
@@ -1227,6 +1228,12 @@ remains unchanged.
 - [x] Android login and registration payloads match rc14
 - [x] Android browser detection emits the upstream experimental warning
 - [x] All focused, parity, compile, format, Credo, Dialyzer, full-test, docs, and package gates pass
+- [x] Connection runtimes are host-supervised with owned long-lived processes/tasks,
+  transient normal disconnect behavior, and bounded send/event/commit queues
+- [x] Library code holds no application-global mutable state or runtime-started OTP applications
+- [x] RC14 placeholder resend, failed-decryption retry/ACK, and Syncd pending-collection behavior are complete
+- [x] Task 18.7 behavior tests and all delivery gates pass: 986 full-suite cases
+  (13 properties and 973 tests), plus all 20 dedicated parity cases
 
 ### Files
 
@@ -1243,7 +1250,13 @@ remains unchanged.
 | `dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md` | ✅ |
 | `dev/reference/Baileys-master/` | ✅ |
 | `dev/tools/run_baileys_reference.mts` | ✅ |
+| `examples/echo-bot.md` | ✅ |
+| `examples/echo_bot.exs` | ✅ |
+| `user_docs/README.md` | ✅ |
+| `user_docs/getting-started/first-connection.md` | ✅ |
+| `user_docs/glossary.md` | ✅ |
 | `user_docs/reference/configuration.md` | ✅ |
+| `user_docs/troubleshooting/connection-issues.md` | ✅ |
 | `lib/baileys_ex.ex` | ✅ |
 | `lib/baileys_ex/connection/config.ex` | ✅ |
 | `lib/baileys_ex/connection/frame.ex` | ✅ |
@@ -1287,8 +1300,8 @@ remains unchanged.
 | Metric | Count |
 |--------|-------|
 | Phases | 18 |
-| Tasks | 139 |
-| Acceptance Criteria | 240 |
-| Source Files | ~110 |
-| Test Files | ~45 |
+| Tasks | 140 |
+| Acceptance Criteria | 244 |
+| Library Source Files | 125 |
+| Test Files | 111 |
 | GAP items resolved | 48/48 |

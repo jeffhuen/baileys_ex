@@ -22,8 +22,9 @@ structures with a tag, attributes, and content.
 
 ## Connection
 
-An active, authenticated session with WhatsApp servers. Managed by BaileysEx's
-supervision tree. One connection maps to one WhatsApp account.
+An active, authenticated session with WhatsApp servers. A per-connection
+BaileysEx supervisor runs under your application's supervision tree. One
+connection maps to one WhatsApp account.
 
 ## Device
 

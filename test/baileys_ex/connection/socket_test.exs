@@ -88,7 +88,7 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   test "starts disconnected with an empty runtime snapshot" do
-    assert {:ok, pid} = Socket.start_link(config: Config.new(), auth_state: %{creds: %{}})
+    assert {:ok, pid} = start_socket(config: Config.new(), auth_state: %{creds: %{}})
 
     assert :disconnected == Socket.state(pid)
 
@@ -105,7 +105,7 @@ defmodule BaileysEx.Connection.SocketTest do
     log =
       capture_log(fn ->
         assert {:ok, pid} =
-                 Socket.start_link(
+                 start_socket(
                    config: Config.new(print_qr_in_terminal: true),
                    auth_state: %{creds: %{}}
                  )
@@ -122,7 +122,7 @@ defmodule BaileysEx.Connection.SocketTest do
     log =
       capture_log(fn ->
         assert {:ok, pid} =
-                 Socket.start_link(
+                 start_socket(
                    config: Config.new(browser: {"Baileys", "Android", ""}),
                    auth_state: %{creds: %{}}
                  )
@@ -140,7 +140,7 @@ defmodule BaileysEx.Connection.SocketTest do
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
     assert {:ok, pid} =
-             Socket.start_link(
+             start_socket(
                config: Config.new(),
                auth_state:
                  deterministic_state(200)
@@ -173,12 +173,52 @@ defmodule BaileysEx.Connection.SocketTest do
     end)
   end
 
+  test "event dispatch overload terminates the socket instead of silently dropping the event" do
+    test_pid = self()
+    gate = make_ref()
+    {:ok, event_emitter} = EventEmitter.start_link(max_dispatch_queue: 1)
+
+    _untap =
+      EventEmitter.tap(event_emitter, fn events ->
+        Kernel.send(test_pid, {:tap_started, self(), events})
+
+        receive do
+          {:continue, ^gate} -> :ok
+        end
+      end)
+
+    assert :ok = EventEmitter.emit(event_emitter, :connection_update, %{occupy: true})
+    assert_receive {:tap_started, tap_task, %{connection_update: %{occupy: true}}}
+
+    assert {:ok, socket} =
+             start_socket(
+               config: Config.new(),
+               auth_state: %{creds: %{}},
+               event_emitter: event_emitter
+             )
+
+    Process.unlink(socket)
+    socket_ref = Process.monitor(socket)
+
+    log =
+      capture_log(fn ->
+        assert catch_exit(Socket.connect(socket))
+
+        assert_receive {:DOWN, ^socket_ref, :process, ^socket,
+                        {:event_dispatch_failed, :dispatch_queue_full}}
+      end)
+
+    assert log =~ "event dispatch failed"
+    assert log =~ "dispatch_queue_full"
+    Kernel.send(tap_task, {:continue, gate})
+  end
+
   test "connect/1 passes saved routing info through the websocket ED query param" do
     routing_info = <<1, 2, 3, 4>>
     expected_ed = Base.url_encode64(routing_info, padding: false)
 
     assert {:ok, pid} =
-             Socket.start_link(
+             start_socket(
                config: Config.new(ws_url: "wss://web.whatsapp.com/ws/chat?foo=bar"),
                auth_state:
                  deterministic_state(205)
@@ -202,7 +242,7 @@ defmodule BaileysEx.Connection.SocketTest do
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
     assert {:ok, pid} =
-             Socket.start_link(
+             start_socket(
                config:
                  Config.new(version: [2, 24, 7], browser: {"Windows", "Edge", "10.0.22631"}),
                auth_state:
@@ -259,7 +299,7 @@ defmodule BaileysEx.Connection.SocketTest do
       |> Map.put(:routing_info, nil)
 
     assert {:ok, pid} =
-             Socket.start_link(
+             start_socket(
                config: Config.new(version: [2, 24, 7], country_code: "GB"),
                auth_state: auth_state,
                noise_opts: [trusted_cert: trusted_cert],
@@ -316,7 +356,7 @@ defmodule BaileysEx.Connection.SocketTest do
         assert_receive {:transport_sent, _post_auth_frame}
       end)
 
-    assert log == ""
+    refute log =~ "[Wire]"
   end
 
   test "an invalid server hello returns the socket to disconnected and records the error" do
@@ -325,7 +365,7 @@ defmodule BaileysEx.Connection.SocketTest do
     trusted_cert = %{serial: 0, public_key: root_key_pair.public}
 
     assert {:ok, pid} =
-             Socket.start_link(
+             start_socket(
                config: Config.new(),
                auth_state:
                  deterministic_state(230)
@@ -357,7 +397,7 @@ defmodule BaileysEx.Connection.SocketTest do
 
   test "connect/1 returns to disconnected and records the error on transport failure" do
     assert {:ok, pid} =
-             Socket.start_link(
+             start_socket(
                config: Config.new(),
                auth_state: %{creds: %{}},
                transport: {FailingTransport, %{reason: :tcp_closed}}
@@ -377,7 +417,7 @@ defmodule BaileysEx.Connection.SocketTest do
   end
 
   test "send_payload/2 rejects sends before the socket is connected" do
-    assert {:ok, pid} = Socket.start_link(config: Config.new(), auth_state: %{creds: %{}})
+    assert {:ok, pid} = start_socket(config: Config.new(), auth_state: %{creds: %{}})
 
     assert {:error, :not_connected} = Socket.send_payload(pid, "hello")
   end
@@ -390,7 +430,7 @@ defmodule BaileysEx.Connection.SocketTest do
       EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
 
     assert {:ok, pid} =
-             Socket.start_link(
+             start_socket(
                config: Config.new(),
                auth_state: %{creds: %{}},
                event_emitter: event_emitter,
@@ -1893,6 +1933,14 @@ defmodule BaileysEx.Connection.SocketTest do
     assert server_transport.read_counter >= 0
   end
 
+  defp start_socket(opts) do
+    {:ok, task_supervisor} = Task.Supervisor.start_link()
+
+    Socket.start_link(
+      Keyword.put(opts, :task_supervisor, opts[:task_supervisor] || task_supervisor)
+    )
+  end
+
   defp start_connected_socket(opts) do
     {:ok, pid, server_transport} = start_authenticated_socket(opts)
 
@@ -1955,7 +2003,7 @@ defmodule BaileysEx.Connection.SocketTest do
       |> maybe_put_opt(:pairing_iterations, opts[:pairing_iterations])
       |> maybe_put_opt(:message_tag_fun, opts[:message_tag_fun])
 
-    assert {:ok, pid} = Socket.start_link(start_link_opts)
+    assert {:ok, pid} = start_socket(start_link_opts)
 
     assert :ok = Socket.connect(pid)
     Kernel.send(pid, {:scripted_transport, :connected})

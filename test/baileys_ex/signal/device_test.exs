@@ -7,7 +7,7 @@ defmodule BaileysEx.Signal.DeviceTest do
   alias BaileysEx.Signal.Store
 
   test "get_devices/3 returns cached device JIDs without issuing a USync query" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok = Store.set(store, %{:"device-list" => %{"15551234567" => ["0", "2"]}})
 
@@ -22,7 +22,7 @@ defmodule BaileysEx.Signal.DeviceTest do
   end
 
   test "get_devices/3 fetches uncached devices via USync and persists the cache" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     context = %{
       signal_store: store,
@@ -90,7 +90,7 @@ defmodule BaileysEx.Signal.DeviceTest do
   end
 
   test "get_devices/3 keeps pn-addressed device jids for cached pn device lists" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok = Store.set(store, %{:"device-list" => %{"15551234567" => ["0", "2"]}})
 
@@ -112,7 +112,7 @@ defmodule BaileysEx.Signal.DeviceTest do
   end
 
   test "get_devices/3 returns lid-addressed device jids when the requested jid is a lid" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok = Store.set(store, %{:"device-list" => %{"12345" => ["0", "2"]}})
 
@@ -127,7 +127,7 @@ defmodule BaileysEx.Signal.DeviceTest do
   end
 
   test "get_devices/3 maps hosted and zero-device entries to Baileys-style JIDs" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     context = %{
       signal_store: store,

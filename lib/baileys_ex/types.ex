@@ -1,6 +1,3 @@
-# Note: BaileysEx.Message and BaileysEx.ConnectionConfig are defined in their
-# respective phases (Phase 8 and Phase 6) where their full shape is known.
-
 defmodule BaileysEx.JID do
   @moduledoc """
   WhatsApp Jabber ID — the address format for users, groups, and broadcasts.

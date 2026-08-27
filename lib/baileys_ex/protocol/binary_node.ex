@@ -224,7 +224,8 @@ defmodule BaileysEx.Protocol.BinaryNode do
           {node, _rest} = decode_node(decompressed)
           {:ok, node}
         rescue
-          e -> {:error, Exception.message(e)}
+          error in [ArgumentError, CaseClauseError, FunctionClauseError, MatchError, RuntimeError] ->
+            {:error, Exception.message(error)}
         end
 
       {:error, _} = error ->
@@ -401,7 +402,8 @@ defmodule BaileysEx.Protocol.BinaryNode do
         {server_tag, rest} = read_byte(rest)
         read_string(server_tag, rest)
       rescue
-        _ -> {"interop", rest}
+        _error in [ArgumentError, CaseClauseError, FunctionClauseError, MatchError, RuntimeError] ->
+          {"interop", rest}
       end
 
     {"#{integrator}-#{user}:#{device}@#{server}", rest}

@@ -37,7 +37,7 @@ defmodule BaileysEx.Signal.CrossValidationTest do
 
   test "matches Baileys LID mapping fixtures" do
     fixtures = fixtures!()
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              fixtures["lid_mapping"]["stored_pairs"]

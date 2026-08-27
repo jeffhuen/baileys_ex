@@ -4,8 +4,21 @@ defmodule BaileysEx.Signal.StoreTest do
   alias BaileysEx.Signal.Store
 
   setup do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     %{store: store}
+  end
+
+  test "start_link/1 follows the standard OTP child contract" do
+    assert {:ok, pid} = Store.start_link()
+    assert is_pid(pid)
+    assert Process.alive?(pid)
+    assert %Store{ref: %{pid: ^pid}} = Store.wrap_running({Store.Memory, pid})
+  end
+
+  test "new/1 returns the wrapped convenience handle" do
+    assert {:ok, %Store{module: Store.Memory, ref: %{pid: pid}} = store} = Store.new()
+    assert Process.alive?(pid)
+    assert :ok = Store.set(store, %{session: %{"alice.0" => <<1>>}})
   end
 
   test "stores and deletes values across logical key families", %{store: store} do

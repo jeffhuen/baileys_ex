@@ -25,6 +25,46 @@ defmodule BaileysEx.Message.ReceiverTest do
   alias BaileysEx.TestHelpers.MessageSignalHelpers
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
+  defmodule FailingDecryptAdapter do
+    @moduledoc false
+    @behaviour Repository.Adapter
+
+    alias BaileysEx.TestHelpers.MessageSignalHelpers.FakeAdapter
+
+    @impl true
+    defdelegate inject_e2e_session(state, address, session), to: FakeAdapter
+
+    @impl true
+    defdelegate validate_session(state, address), to: FakeAdapter
+
+    @impl true
+    defdelegate delete_sessions(state, addresses), to: FakeAdapter
+
+    @impl true
+    defdelegate migrate_sessions(state, operations), to: FakeAdapter
+
+    @impl true
+    defdelegate encrypt_message(state, address, plaintext), to: FakeAdapter
+
+    @impl true
+    defdelegate encrypt_group_message(state, sender_key_name, plaintext), to: FakeAdapter
+
+    @impl true
+    defdelegate process_sender_key_distribution_message(
+                  state,
+                  sender_key_name,
+                  distribution_message
+                ),
+                to: FakeAdapter
+
+    @impl true
+    defdelegate decrypt_group_message(state, sender_key_name, ciphertext), to: FakeAdapter
+
+    @impl true
+    def decrypt_message(state, _address, _type, _ciphertext),
+      do: {:error, Map.fetch!(state, :decrypt_error)}
+  end
+
   test "process_node/3 decrypts a direct message node and emits messages_upsert" do
     assert {:ok, emitter} = EventEmitter.start_link()
 
@@ -573,7 +613,7 @@ defmodule BaileysEx.Message.ReceiverTest do
 
     node = unavailable_message_node("missing-msg-1", "regular_unavailable", "1710000000")
 
-    context = %{
+    context_without_placeholder_fun = %{
       signal_repository: repo,
       event_emitter: emitter,
       me_id: "15550001111@s.whatsapp.net",
@@ -582,12 +622,18 @@ defmodule BaileysEx.Message.ReceiverTest do
       send_node_fun: fn sent_node ->
         send(parent, {:sent_node, sent_node})
         :ok
-      end,
-      send_placeholder_request_fun: fn request ->
-        send(parent, {:placeholder_request, request})
-        {:ok, "request-123"}
       end
     }
+
+    context =
+      Map.put(
+        context_without_placeholder_fun,
+        :send_placeholder_request_fun,
+        fn request ->
+          send(parent, {:placeholder_request, request})
+          {:ok, "request-123", context_without_placeholder_fun}
+        end
+      )
 
     assert {:ok,
             %{
@@ -596,7 +642,14 @@ defmodule BaileysEx.Message.ReceiverTest do
               message_stub_type: :CIPHERTEXT,
               message_stub_parameters: ["Message absent from node"]
             }, _context} =
-             Receiver.process_node(node, context, now_seconds: fn -> 1_710_000_010 end)
+             Receiver.process_node(node, context,
+               now_seconds: fn -> 1_710_000_010 end,
+               sleep_fun: fn delay_ms ->
+                 send(parent, {:placeholder_compatibility_delay, delay_ms})
+               end
+             )
+
+    assert_receive {:placeholder_compatibility_delay, 2_000}
 
     assert_receive {:sent_node,
                     %BinaryNode{
@@ -647,8 +700,8 @@ defmodule BaileysEx.Message.ReceiverTest do
                       ]
                     }}
 
-    assert %{key: %{id: "missing-msg-1"}, message_timestamp: 1_710_000_000} =
-             Retry.get_placeholder_resend(runtime_store_ref, "missing-msg-1")
+    assert {:ok, %{key: %{id: "missing-msg-1"}, message_timestamp: 1_710_000_000}} =
+             Retry.fetch_placeholder_resend(runtime_store_ref, "missing-msg-1")
 
     unsubscribe.()
   end
@@ -942,6 +995,173 @@ defmodule BaileysEx.Message.ReceiverTest do
                     }}
 
     unsubscribe.()
+  end
+
+  test "process_node/3 sends 495 for msmsg without requesting a retry" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    node = encrypted_message_node("missing-secret-1", "msmsg", <<1, 2, 3>>)
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      send_node_fun: fn sent_node ->
+        send(parent, {:sent_node, sent_node})
+        :ok
+      end,
+      send_retry_request_fun: fn _node, _jid, _reason ->
+        flunk("msmsg must not request a retry")
+      end
+    }
+
+    assert {:error, :missing_message_secret} = Receiver.process_node(node, context)
+
+    assert_receive {:sent_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{"class" => "message", "id" => "missing-secret-1", "error" => "495"}
+                    }}
+  end
+
+  test "process_node/3 sends 487 for an already-consumed message key without retrying" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    {_repo, signal_store} = MessageSignalHelpers.new_repo()
+
+    repo =
+      Repository.new(
+        adapter: FailingDecryptAdapter,
+        adapter_state: %{decrypt_error: :message_key_already_consumed},
+        store: signal_store
+      )
+
+    node = encrypted_message_node("consumed-key-1", "msg", <<4, 5, 6>>)
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      send_node_fun: fn sent_node ->
+        send(parent, {:sent_node, sent_node})
+        :ok
+      end,
+      send_retry_request_fun: fn _node, _jid, _reason ->
+        flunk("consumed keys must not request a retry")
+      end
+    }
+
+    assert {:error, :message_key_already_consumed} = Receiver.process_node(node, context)
+
+    assert_receive {:sent_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{"class" => "message", "id" => "consumed-key-1", "error" => "487"}
+                    }}
+  end
+
+  test "process_node/3 retries protobuf decode failures, waits the configured delay, upserts ciphertext, and ACKs 500" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "decode-failure-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => "1710000000"
+      },
+      content: [%BinaryNode{tag: "plaintext", attrs: %{}, content: <<255>>}]
+    }
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      send_retry_request_fun: fn retry_node, decryption_jid, _reason ->
+        send(parent, {:retry_request, retry_node.attrs["id"], decryption_jid})
+        {:ok, %BinaryNode{tag: "receipt", attrs: %{}, content: nil}, repo}
+      end,
+      send_node_fun: fn sent_node ->
+        send(parent, {:sent_node, sent_node})
+        :ok
+      end
+    }
+
+    assert {:ok, %{message_stub_type: :CIPHERTEXT}, %{signal_repository: ^repo}} =
+             Receiver.process_node(node, context,
+               retry_request_delay_ms: 375,
+               sleep_fun: fn delay_ms -> send(parent, {:retry_ack_delay, delay_ms}) end
+             )
+
+    assert_receive {:retry_request, "decode-failure-1", "15551234567@s.whatsapp.net"}
+    assert_receive {:retry_ack_delay, 375}
+
+    assert_receive {:sent_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{"class" => "message", "id" => "decode-failure-1", "error" => "500"}
+                    }}
+
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        messages: [
+                          %{key: %{id: "decode-failure-1"}, message_stub_type: :CIPHERTEXT}
+                        ]
+                      }
+                    }}
+
+    unsubscribe.()
+  end
+
+  test "process_node/3 cancels a scheduled phone fallback after later successful decryption" do
+    {:ok, emitter} = EventEmitter.start_link()
+    {:ok, runtime_store} = ConnectionStore.start_link()
+    runtime_store_ref = ConnectionStore.wrap(runtime_store)
+    parent = self()
+    {repo, _store} = MessageSignalHelpers.new_repo()
+
+    assert :ok =
+             Retry.schedule_phone_request(
+               runtime_store_ref,
+               "fallback-cancel-1",
+               fn -> send(parent, :phone_fallback_fired) end,
+               delay_ms: 25
+             )
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "fallback-cancel-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => "1710000000"
+      },
+      content: [
+        %BinaryNode{
+          tag: "plaintext",
+          attrs: %{},
+          content: Message.encode(Builder.build(%{text: "retry succeeded"}))
+        }
+      ]
+    }
+
+    context = %{
+      signal_repository: repo,
+      event_emitter: emitter,
+      me_id: "15550001111@s.whatsapp.net",
+      store_ref: runtime_store_ref
+    }
+
+    assert {:ok, %{key: %{id: "fallback-cancel-1"}}, _context} =
+             Receiver.process_node(node, context)
+
+    refute_receive :phone_fallback_fired, 75
   end
 
   test "process_node/3 drops self-only protocol messages from non-self origins" do
@@ -1360,7 +1580,7 @@ defmodule BaileysEx.Message.ReceiverTest do
                       }
                     }}
 
-    assert Retry.get_placeholder_resend(runtime_store_ref, "pdo-msg-1") == nil
+    assert Retry.fetch_placeholder_resend(runtime_store_ref, "pdo-msg-1") == :error
 
     unsubscribe.()
   end
@@ -2015,6 +2235,20 @@ defmodule BaileysEx.Message.ReceiverTest do
       },
       content: [
         %BinaryNode{tag: "unavailable", attrs: %{"type" => unavailable_type}, content: nil}
+      ]
+    }
+  end
+
+  defp encrypted_message_node(message_id, type, ciphertext) do
+    %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => message_id,
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => "1710000000"
+      },
+      content: [
+        %BinaryNode{tag: "enc", attrs: %{"type" => type}, content: {:binary, ciphertext}}
       ]
     }
   end

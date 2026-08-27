@@ -7,7 +7,7 @@ defmodule BaileysEx.Signal.IdentityTest do
   alias BaileysEx.Signal.Store
 
   setup do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     %{store: store}
   end
 

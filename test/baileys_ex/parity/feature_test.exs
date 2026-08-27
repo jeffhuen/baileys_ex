@@ -36,7 +36,7 @@ defmodule BaileysEx.Parity.FeatureTest do
   end
 
   test "Baileys presenceSubscribe matches Elixir for tc-token subscriptions" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{
@@ -98,7 +98,7 @@ defmodule BaileysEx.Parity.FeatureTest do
   end
 
   test "Baileys profile-picture query nests timestamped tc tokens like Elixir" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{

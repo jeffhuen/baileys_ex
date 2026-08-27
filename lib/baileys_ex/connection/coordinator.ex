@@ -24,6 +24,7 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Feature.Group
   alias BaileysEx.Feature.Presence
   alias BaileysEx.Feature.TcToken
+  alias BaileysEx.Message.Decode
   alias BaileysEx.Message.IdentityChangeHandler
   alias BaileysEx.Message.NotificationHandler
   alias BaileysEx.Message.PeerData
@@ -36,6 +37,7 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Protocol.USync
   alias BaileysEx.Signal.Adapter.Signal, as: DefaultSignalAdapter
   alias BaileysEx.Signal.LIDMappingStore
+  alias BaileysEx.Signal.PreKey
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store, as: SignalStore
@@ -43,6 +45,7 @@ defmodule BaileysEx.Connection.Coordinator do
   alias BaileysEx.Telemetry
 
   @s_whatsapp_net "s.whatsapp.net"
+  @default_max_send_queue 256
   @device_identity_account_keys %{
     :details => :details,
     :account_signature_key => :account_signature_key,
@@ -86,7 +89,13 @@ defmodule BaileysEx.Connection.Coordinator do
       :reconnect_timer,
       :initial_sync_timer,
       :app_state_sync_ref,
-      blocked_app_state_collections: MapSet.new(),
+      :send_task,
+      :send_from,
+      :send_operation,
+      :max_send_queue,
+      blocked_app_state_collections: %{},
+      send_queue: :queue.new(),
+      pending_events: :queue.new(),
       init_query_handlers: %{},
       event_buffer_seed: %{},
       identity_change_cache: %{},
@@ -124,27 +133,66 @@ defmodule BaileysEx.Connection.Coordinator do
     GenServer.call(server, {:send_status, content, opts}, :infinity)
   end
 
+  @doc "Request the phone to resend a placeholder message through the peer-data pipeline."
+  @spec request_placeholder_resend(GenServer.server(), map(), map() | nil, keyword()) ::
+          {:ok, String.t() | nil} | {:error, term()}
+  def request_placeholder_resend(server, message_key, msg_data \\ nil, opts \\ [])
+      when is_map(message_key) and (is_map(msg_data) or is_nil(msg_data)) and is_list(opts) do
+    GenServer.call(server, {:request_placeholder_resend, message_key, msg_data, opts}, :infinity)
+  end
+
+  @doc "Send an ACK/NACK through the coordinator-owned socket."
+  @spec send_message_ack(GenServer.server(), BinaryNode.t(), non_neg_integer() | nil) ::
+          :ok | {:error, term()}
+  def send_message_ack(server, %BinaryNode{} = node, error_code \\ nil)
+      when is_nil(error_code) or (is_integer(error_code) and error_code >= 0) do
+    GenServer.call(server, {:send_message_ack, node, error_code}, :infinity)
+  end
+
+  @doc "Send a failed-decryption retry request through the coordinator-owned retry lane."
+  @spec send_retry_request(GenServer.server(), BinaryNode.t(), keyword()) ::
+          :ok | {:error, term()}
+  def send_retry_request(server, %BinaryNode{} = node, opts \\ []) when is_list(opts) do
+    GenServer.call(server, {:send_retry_request, node, opts}, :infinity)
+  end
+
+  @doc false
+  @spec message_retry_manager_available?(GenServer.server()) :: :ok | {:error, term()}
+  def message_retry_manager_available?(server) do
+    GenServer.call(server, :message_retry_manager_available?)
+  end
+
+  @doc false
+  @spec message_retry_operation(GenServer.server(), tuple() | :clear) ::
+          {:ok, term()} | {:error, term()}
+  def message_retry_operation(server, operation)
+      when is_tuple(operation) or operation == :clear do
+    GenServer.call(server, {:message_retry_operation, operation}, :infinity)
+  end
+
   @impl true
   def init(opts) do
+    Process.flag(:trap_exit, true)
+
     state = %State{
       config: Keyword.fetch!(opts, :config),
-      event_emitter: Keyword.fetch!(opts, :event_emitter),
+      event_emitter: opts |> Keyword.fetch!(:event_emitter) |> resolve_runtime_ref!(),
       socket_module: Keyword.get(opts, :socket_module, Socket),
-      store: Keyword.fetch!(opts, :store),
-      signal_store: Keyword.fetch!(opts, :signal_store),
+      store: opts |> Keyword.fetch!(:store) |> resolve_runtime_ref!(),
+      signal_store: opts |> Keyword.fetch!(:signal_store) |> resolve_runtime_ref!(),
       signal_repository: Keyword.get(opts, :signal_repository),
       supervisor: Keyword.fetch!(opts, :supervisor),
-      task_supervisor: Keyword.fetch!(opts, :task_supervisor),
+      task_supervisor: opts |> Keyword.fetch!(:task_supervisor) |> resolve_runtime_ref!(),
       history_sync_download_fun: Keyword.get(opts, :history_sync_download_fun),
       history_sync_inflate_fun: Keyword.get(opts, :history_sync_inflate_fun),
       get_message_fun: Keyword.get(opts, :get_message_fun),
       handle_encrypt_notification_fun: Keyword.get(opts, :handle_encrypt_notification_fun),
       device_notification_fun: Keyword.get(opts, :device_notification_fun),
-      resync_app_state_fun: Keyword.get(opts, :resync_app_state_fun)
+      resync_app_state_fun: Keyword.get(opts, :resync_app_state_fun),
+      max_send_queue: Keyword.get(opts, :max_send_queue, @default_max_send_queue)
     }
 
     coordinator_pid = self()
-
     wrapped_signal_store = SignalStore.wrap_running(state.signal_store)
     store_ref = Store.wrap(state.store)
 
@@ -182,42 +230,86 @@ defmodule BaileysEx.Connection.Coordinator do
   @impl true
   def handle_call(
         {:send_message, jid, content, opts},
-        _from,
-        %State{signal_repository: %Repository{} = repository} = state
+        from,
+        %State{signal_repository: %Repository{}} = state
       ) do
-    require Logger
-    ctx = sender_context(state, repository)
+    operation = {:send_message, jid, content, opts}
 
-    socket_result = fetch_socket_pid(state)
-
-    Logger.debug(
-      "[Coordinator] send_message: jid=#{inspect(jid)} has_query_fun=#{is_function(ctx[:query_fun], 1)} " <>
-        "has_send_node_fun=#{is_function(ctx[:send_node_fun], 1)} " <>
-        "socket_lookup=#{inspect(socket_result)} " <>
-        "supervisor_alive=#{Process.alive?(state.supervisor)}"
-    )
-
-    case Sender.send(ctx, jid, content, opts) do
-      {:ok, result, %{signal_repository: %Repository{} = updated_repository}} ->
-        {:reply, {:ok, result}, %{state | signal_repository: updated_repository}}
-
-      {:error, _reason} = error ->
-        {:reply, error, state}
+    case enqueue_send(state, from, operation) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
   def handle_call(
         {:send_status, content, opts},
-        _from,
-        %State{signal_repository: %Repository{} = repository} = state
+        from,
+        %State{signal_repository: %Repository{}} = state
       ) do
-    case Sender.send_status(sender_context(state, repository), content, opts) do
-      {:ok, result, %{signal_repository: %Repository{} = updated_repository}} ->
-        {:reply, {:ok, result}, %{state | signal_repository: updated_repository}}
-
-      {:error, _reason} = error ->
-        {:reply, error, state}
+    case enqueue_send(state, from, {:send_status, content, opts}) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call(
+        {:request_placeholder_resend, message_key, msg_data, opts},
+        from,
+        %State{signal_repository: %Repository{}} = state
+      ) do
+    operation = {:request_placeholder_resend, message_key, msg_data, opts}
+
+    case enqueue_send(state, from, operation) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:send_message_ack, node, error_code}, from, %State{} = state) do
+    case enqueue_send(state, from, {:send_message_ack, node, error_code}) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(
+        {:send_retry_request, node, opts},
+        from,
+        %State{signal_repository: %Repository{}} = state
+      ) do
+    case enqueue_send(state, from, {:send_retry_request, node, opts}) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(:message_retry_manager_available?, _from, %State{} = state) do
+    reply =
+      if state.config.enable_recent_message_cache,
+        do: :ok,
+        else: {:error, :message_retry_manager_disabled}
+
+    {:reply, reply, state}
+  end
+
+  def handle_call(
+        {:message_retry_operation, operation},
+        from,
+        %State{config: %{enable_recent_message_cache: true}} = state
+      ) do
+    case enqueue_send(state, from, {:message_retry_operation, operation}) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:message_retry_operation, _operation}, _from, %State{} = state) do
+    {:reply, {:error, :message_retry_manager_disabled}, state}
+  end
+
+  def handle_call({:events, previous_creds, events}, _from, %State{} = state)
+      when is_map(previous_creds) and is_map(events) do
+    {:reply, :ok, process_or_defer_events(state, previous_creds, events, false)}
   end
 
   def handle_call({:send_message, _jid, _content, _opts}, _from, %State{} = state) do
@@ -225,6 +317,18 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def handle_call({:send_status, _content, _opts}, _from, %State{} = state) do
+    {:reply, {:error, :signal_repository_not_ready}, state}
+  end
+
+  def handle_call({:send_retry_request, _node, _opts}, _from, %State{} = state) do
+    {:reply, {:error, :signal_repository_not_ready}, state}
+  end
+
+  def handle_call(
+        {:request_placeholder_resend, _message_key, _msg_data, _opts},
+        _from,
+        %State{} = state
+      ) do
     {:reply, {:error, :signal_repository_not_ready}, state}
   end
 
@@ -236,41 +340,34 @@ defmodule BaileysEx.Connection.Coordinator do
   @impl true
   def handle_info({:events, previous_creds, events}, %State{} = state)
       when is_map(previous_creds) and is_map(events) do
-    state =
-      state
-      |> handle_socket_node(events)
-      |> persist_lid_mapping_update(events)
-      |> maybe_seed_event_buffer(events)
-      |> maybe_send_push_name_presence_update(previous_creds, events)
-      |> sync_creds_update_to_socket(events)
-      |> handle_connection_update(events)
-      |> handle_sync_event(events)
-      |> maybe_start_initial_app_state_sync(events)
-      |> maybe_resync_blocked_app_state_collections(events)
-      |> handle_dirty_update(events)
-
-    {:noreply, state}
+    {:noreply, process_or_defer_events(state, previous_creds, events, false)}
   end
 
   def handle_info({:events, events}, %State{} = state) when is_map(events) do
     previous_creds = Store.get(state.store_ref, :creds, %{})
-
-    state =
-      state
-      |> handle_socket_node(events)
-      |> persist_creds_update(events)
-      |> persist_lid_mapping_update(events)
-      |> maybe_seed_event_buffer(events)
-      |> maybe_send_push_name_presence_update(previous_creds, events)
-      |> sync_creds_update_to_socket(events)
-      |> handle_connection_update(events)
-      |> handle_sync_event(events)
-      |> maybe_start_initial_app_state_sync(events)
-      |> maybe_resync_blocked_app_state_collections(events)
-      |> handle_dirty_update(events)
-
-    {:noreply, state}
+    {:noreply, process_or_defer_events(state, previous_creds, events, true)}
   end
+
+  def handle_info(
+        {task_ref, result},
+        %State{send_task: %Task{ref: task_ref}} = state
+      ) do
+    Process.demonitor(task_ref, [:flush])
+    {:noreply, complete_send(state, result)}
+  end
+
+  def handle_info(
+        {:DOWN, task_ref, :process, _pid, reason},
+        %State{send_task: %Task{ref: task_ref}, send_from: from} = state
+      ) do
+    maybe_reply(from, {:error, {:send_task_failed, reason}})
+    {:noreply, finish_send(state)}
+  end
+
+  def handle_info({:EXIT, _pid, _reason}, %State{} = state), do: {:noreply, state}
+
+  def handle_info({task_ref, _result}, %State{} = state) when is_reference(task_ref),
+    do: {:noreply, state}
 
   def handle_info(:reconnect_socket, %State{} = state) do
     {:noreply, connect_socket(%{state | reconnect_timer: nil})}
@@ -345,9 +442,35 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def handle_info(
-        {:app_state_sync_complete, ref, result},
+        {ref, result},
         %State{app_state_sync_ref: ref} = state
       ) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, complete_app_state_sync(state, result)}
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %State{app_state_sync_ref: ref} = state
+      ) do
+    {:noreply, complete_app_state_sync(state, {:error, {:task_exit, reason}})}
+  end
+
+  def handle_info({:app_state_collection_blocked, name}, %State{} = state)
+      when is_atom(name) do
+    blocked = Map.put(blocked_app_state_collections(state), name, true)
+    {:noreply, %{state | blocked_app_state_collections: blocked}}
+  end
+
+  @impl true
+  def terminate(_reason, %State{unsubscribe: unsubscribe}) when is_function(unsubscribe, 0) do
+    unsubscribe.()
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
+
+  defp complete_app_state_sync(%State{} = state, result) do
     state = %{state | app_state_sync_ref: nil}
 
     case result do
@@ -364,32 +487,306 @@ defmodule BaileysEx.Connection.Coordinator do
     end
 
     _ = Process.send_after(self(), :complete_initial_sync, 25)
-    {:noreply, state}
+    state
   end
 
-  def handle_info({:app_state_sync_complete, _ref, _result}, %State{} = state) do
-    {:noreply, state}
+  defp enqueue_send(%State{} = state, from, operation) do
+    if send_queue_size(state) >= state.max_send_queue do
+      {:error, :send_queue_full}
+    else
+      state =
+        state
+        |> Map.update!(:send_queue, &:queue.in({from, operation}, &1))
+        |> maybe_start_send()
+
+      {:ok, state}
+    end
   end
 
-  def handle_info({:app_state_collection_blocked, name}, %State{} = state)
-      when is_atom(name) do
-    blocked = MapSet.put(blocked_app_state_collections(state), name)
-    {:noreply, %{state | blocked_app_state_collections: blocked}}
+  defp send_queue_size(%State{} = state) do
+    :queue.len(state.send_queue) + if(state.send_task, do: 1, else: 0)
   end
 
-  @impl true
-  def terminate(_reason, %State{unsubscribe: unsubscribe}) when is_function(unsubscribe, 0) do
-    unsubscribe.()
-    :ok
+  defp maybe_start_send(%State{send_task: %Task{}} = state), do: state
+
+  defp maybe_start_send(%State{} = state) do
+    case :queue.out(state.send_queue) do
+      {{:value, {from, operation}}, remaining} ->
+        repository = state.signal_repository
+
+        task =
+          Task.Supervisor.async(state.task_supervisor, fn ->
+            run_send(state, repository, operation)
+          end)
+
+        %{
+          state
+          | send_queue: remaining,
+            send_task: task,
+            send_from: from,
+            send_operation: operation
+        }
+
+      {:empty, _queue} ->
+        state
+    end
   end
 
-  def terminate(_reason, _state), do: :ok
+  defp run_send(state, repository, {:send_message, jid, content, opts}) do
+    Sender.send(sender_context(state, repository), jid, content, opts)
+  end
+
+  defp run_send(state, repository, {:send_status, content, opts}) do
+    Sender.send_status(sender_context(state, repository), content, opts)
+  end
+
+  defp run_send(state, _repository, {:send_message_ack, node, error_code}) do
+    result =
+      case current_me_id(state) do
+        me_id when is_binary(me_id) ->
+          case receipt_sender_fun(state) do
+            send_node_fun when is_function(send_node_fun, 1) ->
+              node
+              |> Receipt.build_ack_stanza(error_code, me_id)
+              |> send_node_fun.()
+
+            nil ->
+              {:error, :socket_not_available}
+          end
+
+        nil ->
+          {:error, :not_authenticated}
+      end
+
+    {:public_result, result}
+  end
+
+  defp run_send(state, %Repository{} = repository, {:send_retry_request, node, opts}) do
+    {:retry_request_result, run_public_retry_request(state, repository, node, opts)}
+  end
+
+  defp run_send(state, _repository, {:message_retry_operation, operation}) do
+    {:message_retry_result, run_message_retry_operation(state, operation)}
+  end
+
+  defp run_send(state, repository, {:repository_events, events}) do
+    updated_state = handle_socket_node(%{state | signal_repository: repository}, events)
+
+    {:repository_events,
+     %{
+       signal_repository: updated_state.signal_repository,
+       identity_change_cache: updated_state.identity_change_cache
+     }}
+  end
+
+  defp run_send(
+         state,
+         repository,
+         {:request_placeholder_resend, message_key, msg_data, opts}
+       ) do
+    context = sender_context(state, repository)
+
+    Retry.request_placeholder_resend(
+      state.store_ref,
+      message_key,
+      msg_data,
+      opts
+      |> Keyword.put(:context, context)
+      |> Keyword.put(:task_supervisor, state.task_supervisor)
+      |> Keyword.put(:timer_owner, state.supervisor)
+      |> Keyword.put(:send_request_fun, placeholder_request_fun(context))
+    )
+  end
+
+  defp complete_send(%State{} = state, {:repository_events, updates}) do
+    state
+    |> Map.merge(updates)
+    |> finish_send()
+  end
+
+  defp complete_send(%State{send_from: from} = state, {:public_result, result}) do
+    maybe_reply(from, result)
+    finish_send(state)
+  end
+
+  defp complete_send(
+         %State{send_from: from} = state,
+         {:retry_request_result, {result, %Repository{} = repository}}
+       ) do
+    maybe_reply(from, result)
+    finish_send(%{state | signal_repository: repository})
+  end
+
+  defp complete_send(%State{send_from: from} = state, {:message_retry_result, result}) do
+    maybe_reply(from, result)
+    finish_send(state)
+  end
+
+  defp complete_send(%State{send_from: from} = state, result) do
+    case result do
+      {:ok, sent, %{signal_repository: %Repository{} = repository}} ->
+        maybe_reply(from, {:ok, sent})
+        finish_send(%{state | signal_repository: repository})
+
+      {:error, _reason} = error ->
+        maybe_reply(from, error)
+        finish_send(state)
+
+      other ->
+        maybe_reply(from, {:error, {:invalid_send_result, other}})
+        finish_send(state)
+    end
+  end
+
+  defp maybe_reply(nil, _reply), do: :ok
+  defp maybe_reply(from, reply), do: GenServer.reply(from, reply)
+
+  defp finish_send(%State{} = state) do
+    state
+    |> Map.put(:send_task, nil)
+    |> Map.put(:send_from, nil)
+    |> Map.put(:send_operation, nil)
+    |> drain_pending_events()
+    |> maybe_start_send()
+  end
+
+  defp process_or_defer_events(%State{} = state, previous_creds, events, persist_creds?) do
+    {state, repository_events} =
+      process_immediate_events(state, previous_creds, events, persist_creds?)
+
+    if is_nil(repository_events) do
+      state
+    else
+      enqueue_repository_events(state, repository_events)
+    end
+  end
+
+  defp process_immediate_events(%State{} = state, previous_creds, events, persist_creds?) do
+    {immediate_events, repository_events} = split_repository_events(events, state)
+
+    state =
+      if map_size(immediate_events) == 0 do
+        state
+      else
+        process_events(state, previous_creds, immediate_events, persist_creds?)
+      end
+
+    {state, repository_events}
+  end
+
+  defp split_repository_events(
+         %{socket_node: %{node: %BinaryNode{} = node} = socket_event} = events,
+         %State{signal_repository: %Repository{}}
+       ) do
+    if repository_mutating_node?(node) do
+      {Map.delete(events, :socket_node), %{socket_node: socket_event}}
+    else
+      {events, nil}
+    end
+  end
+
+  defp split_repository_events(events, %State{}), do: {events, nil}
+
+  defp repository_mutating_node?(%BinaryNode{tag: "message"}), do: true
+
+  defp repository_mutating_node?(%BinaryNode{tag: "receipt", attrs: %{"type" => "retry"}}),
+    do: true
+
+  defp repository_mutating_node?(%BinaryNode{
+         tag: "notification",
+         attrs: %{"type" => type}
+       })
+       when type in ["encrypt", "devices"],
+       do: true
+
+  defp repository_mutating_node?(%BinaryNode{}), do: false
+
+  defp enqueue_repository_events(%State{} = state, events) do
+    case enqueue_send(state, nil, {:repository_events, events}) do
+      {:ok, state} ->
+        state
+
+      {:error, :send_queue_full} ->
+        Logger.warning("dropping repository-mutating socket event because the work queue is full")
+        state
+    end
+  end
+
+  defp drain_pending_events(%State{} = state) do
+    case :queue.out(state.pending_events) do
+      {{:value, {:call, from, previous_creds, events}}, remaining} ->
+        state =
+          state
+          |> Map.put(:pending_events, remaining)
+          |> process_events(previous_creds, events, false)
+
+        GenServer.reply(from, :ok)
+        drain_pending_events(state)
+
+      {{:value, {:events, previous_creds, events}}, remaining} ->
+        state
+        |> Map.put(:pending_events, remaining)
+        |> process_events(previous_creds, events, false)
+        |> drain_pending_events()
+
+      {{:value, {:events, events}}, remaining} ->
+        previous_creds = Store.get(state.store_ref, :creds, %{})
+
+        state
+        |> Map.put(:pending_events, remaining)
+        |> process_events(previous_creds, events, true)
+        |> drain_pending_events()
+
+      {:empty, _queue} ->
+        state
+    end
+  end
+
+  defp process_events(%State{} = state, previous_creds, events, persist_creds?) do
+    state = if persist_creds?, do: persist_creds_update(state, events), else: state
+
+    state
+    |> handle_socket_node(events)
+    |> persist_lid_mapping_update(events)
+    |> maybe_seed_event_buffer(events)
+    |> maybe_send_push_name_presence_update(previous_creds, events)
+    |> sync_creds_update_to_socket(events)
+    |> handle_connection_update(events)
+    |> handle_sync_event(events)
+    |> maybe_start_initial_app_state_sync(events)
+    |> maybe_resync_blocked_app_state_collections(events)
+    |> handle_dirty_update(events)
+  end
+
+  defp start_owned_task(%State{task_supervisor: task_supervisor}, fun) do
+    start_owned_task(task_supervisor, fun)
+  end
+
+  defp start_owned_task(task_supervisor, fun)
+       when (is_pid(task_supervisor) or is_atom(task_supervisor) or is_tuple(task_supervisor)) and
+              is_function(fun, 0) do
+    task = Task.Supervisor.async(task_supervisor, fun)
+    Process.demonitor(task.ref, [:flush])
+    {:ok, task.pid}
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp resolve_runtime_ref!(resolver) when is_function(resolver, 0) do
+    case resolver.() do
+      nil -> raise "connection runtime dependency is not available"
+      ref -> ref
+    end
+  end
+
+  defp resolve_runtime_ref!(ref), do: ref
 
   defp coordinator_event_tap(coordinator_pid, store_ref) do
     fn events ->
       previous_creds = Store.get(store_ref, :creds, %{})
       :ok = persist_tapped_creds_update(store_ref, events)
-      Kernel.send(coordinator_pid, {:events, previous_creds, events})
+      send(coordinator_pid, {:events, previous_creds, events})
+      :ok
     end
   end
 
@@ -804,7 +1201,7 @@ defmodule BaileysEx.Connection.Coordinator do
         state
 
       true ->
-        Task.Supervisor.start_child(state.task_supervisor, fn ->
+        start_owned_task(state, fn ->
           register_own_lid_session(state, pn, lid)
         end)
 
@@ -815,47 +1212,39 @@ defmodule BaileysEx.Connection.Coordinator do
   defp register_own_lid_session(%State{} = state, pn, lid) do
     require Logger
 
-    try do
-      # 1. Store own LID-PN mapping
-      :ok = LIDMappingStore.store_lid_pn_mappings(state.signal_store, [%{lid: lid, pn: pn}])
+    :ok = LIDMappingStore.store_lid_pn_mappings(state.signal_store, [%{lid: lid, pn: pn}])
 
-      # 2. Create device list for own user
-      {user, device} = parse_own_device(pn)
+    {user, device} = parse_own_device(pn)
 
-      if user do
-        existing_devices =
-          case SignalStore.get(state.signal_store, :"device-list", [user]) do
-            %{^user => ids} when is_list(ids) -> ids
-            _ -> []
-          end
-
-        SignalStore.set(state.signal_store, %{
-          :"device-list" => %{
-            user => merge_own_device_ids(existing_devices, device)
-          }
-        })
-      end
-
-      # 3. Migrate own session PN → LID (if signal repository available)
-      if state.signal_repository do
-        case Repository.migrate_session(state.signal_repository, pn, lid) do
-          {:ok, _repo, result} ->
-            Logger.info(
-              "[Coordinator] own LID session registered — pn=#{pn}, lid=#{lid}, " <>
-                "migrated=#{result.migrated}"
-            )
-
-          {:error, reason} ->
-            Logger.warning("[Coordinator] own LID session migration failed: #{inspect(reason)}")
+    if user do
+      existing_devices =
+        case SignalStore.get(state.signal_store, :"device-list", [user]) do
+          %{^user => ids} when is_list(ids) -> ids
+          _ -> []
         end
-      else
-        Logger.info(
-          "[Coordinator] own LID session registered (no session migration) — pn=#{pn}, lid=#{lid}"
-        )
+
+      SignalStore.set(state.signal_store, %{
+        :"device-list" => %{
+          user => merge_own_device_ids(existing_devices, device)
+        }
+      })
+    end
+
+    if state.signal_repository do
+      case Repository.migrate_session(state.signal_repository, pn, lid) do
+        {:ok, _repo, result} ->
+          Logger.info(
+            "[Coordinator] own LID session registered — pn=#{pn}, lid=#{lid}, " <>
+              "migrated=#{result.migrated}"
+          )
+
+        {:error, reason} ->
+          Logger.warning("[Coordinator] own LID session migration failed: #{inspect(reason)}")
       end
-    rescue
-      error ->
-        Logger.warning("[Coordinator] own LID registration failed: #{Exception.message(error)}")
+    else
+      Logger.info(
+        "[Coordinator] own LID session registered (no session migration) — pn=#{pn}, lid=#{lid}"
+      )
     end
   end
 
@@ -1259,10 +1648,15 @@ defmodule BaileysEx.Connection.Coordinator do
         me_id: AuthState.me_id(creds),
         me_lid: AuthState.me_lid(creds),
         store_ref: state.store_ref,
-        signal_store: state.signal_store
+        signal_store: state.signal_store,
+        task_supervisor: state.task_supervisor,
+        timer_owner: state.supervisor,
+        retry_request_delay_ms: state.config.retry_request_delay_ms,
+        placeholder_resend_delay_ms: state.config.retry_delay_ms
       }
       |> maybe_put_callback(:send_receipt_fun, receipt_sender_fun(state))
       |> maybe_put_callback(:send_node_fun, receipt_sender_fun(state))
+      |> maybe_put_callback(:send_retry_request_fun, retry_request_fun(state, repository))
       |> maybe_put_callback(:query_fun, sender_query_fun(state))
       |> maybe_put_callback(:history_sync_download_fun, state.history_sync_download_fun)
       |> maybe_put_callback(:inflate_fun, state.history_sync_inflate_fun)
@@ -1462,6 +1856,275 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp placeholder_request_fun(_context), do: nil
 
+  defp run_public_retry_request(state, repository, node, opts) do
+    creds = Store.get(state.store_ref, :creds, %{})
+
+    with {:ok, _me_id} <- authenticated_me_id(creds),
+         {:ok, envelope, %{signal_repository: %Repository{} = decoded_repository}} <-
+           Decode.decode_envelope(node, receiver_context(state, repository)) do
+      send_public_retry_request(state, decoded_repository, node, envelope, creds, opts)
+    else
+      {:error, _reason} = error -> {error, repository}
+    end
+  end
+
+  defp authenticated_me_id(creds) do
+    case AuthState.me_id(creds) do
+      me_id when is_binary(me_id) -> {:ok, me_id}
+      _other -> {:error, :not_authenticated}
+    end
+  end
+
+  defp send_public_retry_request(state, repository, node, envelope, creds, opts) do
+    {updated_repository, recreate?} =
+      maybe_recreate_retry_session(
+        state,
+        repository,
+        node,
+        envelope.decryption_jid,
+        nil
+      )
+
+    request_context = %{
+      creds: creds,
+      send_node_fun: receipt_sender_fun(state),
+      force_include_keys?: Keyword.get(opts, :force_include_keys, false) || recreate?,
+      error_reason: nil
+    }
+
+    case request_context.send_node_fun do
+      send_node_fun when is_function(send_node_fun, 1) ->
+        state
+        |> send_retry_request_with_repository(updated_repository, node, request_context)
+        |> normalize_public_retry_result(updated_repository)
+
+      _other ->
+        {{:error, :socket_not_available}, updated_repository}
+    end
+  end
+
+  defp normalize_public_retry_result(
+         {:ok, _receipt, %Repository{} = final_repository},
+         _repository
+       ),
+       do: {:ok, final_repository}
+
+  defp normalize_public_retry_result({:error, _reason} = error, repository),
+    do: {error, repository}
+
+  defp run_message_retry_operation(state, {:add_recent_message, to, id, message, opts}),
+    do: {:ok, Retry.add_recent_message(state.store_ref, to, id, message, opts)}
+
+  defp run_message_retry_operation(state, {:get_recent_message, to, id, opts}),
+    do: {:ok, Retry.get_recent_message(state.store_ref, to, id, opts)}
+
+  defp run_message_retry_operation(
+         state,
+         {:should_recreate_session, jid, has_session?, error_code, opts}
+       ) do
+    {:ok,
+     Retry.should_recreate_session(
+       state.store_ref,
+       jid,
+       has_session?,
+       error_code,
+       opts
+     )}
+  end
+
+  defp run_message_retry_operation(state, {:increment_retry_count, message_id}),
+    do: {:ok, Retry.increment_retry_count(state.store_ref, message_id)}
+
+  defp run_message_retry_operation(state, {:get_retry_count, message_id}),
+    do: {:ok, Retry.get_retry_count(state.store_ref, message_id)}
+
+  defp run_message_retry_operation(state, {:has_exceeded_max_retries, message_id}) do
+    {:ok,
+     Retry.has_exceeded_max_retries?(
+       state.store_ref,
+       message_id,
+       state.config.max_msg_retry_count
+     )}
+  end
+
+  defp run_message_retry_operation(state, {:mark_retry_success, message_id}),
+    do: {:ok, Retry.mark_retry_success(state.store_ref, message_id)}
+
+  defp run_message_retry_operation(state, {:mark_retry_failed, message_id}),
+    do: {:ok, Retry.mark_retry_failed(state.store_ref, message_id)}
+
+  defp run_message_retry_operation(
+         state,
+         {:schedule_phone_request, message_id, callback, opts}
+       ) do
+    retry_opts =
+      opts
+      |> Keyword.put(:task_supervisor, state.task_supervisor)
+      |> Keyword.put(:timer_owner, state.supervisor)
+
+    {:ok,
+     Retry.schedule_phone_request(
+       state.store_ref,
+       message_id,
+       callback,
+       retry_opts
+     )}
+  end
+
+  defp run_message_retry_operation(state, {:cancel_pending_phone_request, message_id}),
+    do: {:ok, Retry.cancel_phone_request(state.store_ref, message_id)}
+
+  defp run_message_retry_operation(state, :clear),
+    do: {:ok, Retry.clear(state.store_ref)}
+
+  defp run_message_retry_operation(state, {:save_base_key, address, message_id, base_key, opts}),
+    do: {:ok, Retry.save_base_key(state.store_ref, address, message_id, base_key, opts)}
+
+  defp run_message_retry_operation(
+         state,
+         {:has_same_base_key, address, message_id, base_key, opts}
+       ),
+       do: {:ok, Retry.has_same_base_key?(state.store_ref, address, message_id, base_key, opts)}
+
+  defp run_message_retry_operation(state, {:delete_base_key, address, message_id}),
+    do: {:ok, Retry.delete_base_key(state.store_ref, address, message_id)}
+
+  defp run_message_retry_operation(_state, _operation),
+    do: {:error, :unsupported_retry_operation}
+
+  defp retry_request_fun(%State{} = state, %Repository{} = repository) do
+    case receipt_sender_fun(state) do
+      send_node_fun when is_function(send_node_fun, 1) ->
+        build_retry_request_fun(state, repository, send_node_fun)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp build_retry_request_fun(state, repository, send_node_fun) do
+    fn node, decryption_jid, error_reason ->
+      creds = Store.get(state.store_ref, :creds, %{})
+
+      {repository, force_include_keys?} =
+        maybe_recreate_retry_session(
+          state,
+          repository,
+          node,
+          decryption_jid,
+          error_reason
+        )
+
+      send_retry_request_with_repository(
+        state,
+        repository,
+        node,
+        %{
+          creds: creds,
+          send_node_fun: send_node_fun,
+          force_include_keys?: force_include_keys?,
+          error_reason: error_reason
+        }
+      )
+    end
+  end
+
+  defp send_retry_request_with_repository(
+         state,
+         repository,
+         node,
+         %{
+           creds: creds,
+           send_node_fun: send_node_fun,
+           force_include_keys?: force_include_keys?,
+           error_reason: error_reason
+         }
+       ) do
+    case Retry.send_retry_request(state.store_ref, node,
+           max_retry_count: state.config.max_msg_retry_count,
+           registration_id: AuthState.get(creds, :registration_id),
+           force_include_keys: force_include_keys?,
+           error_code: error_reason,
+           send_node_fun: send_node_fun,
+           request_placeholder_resend_fun: fn message_key, message_data ->
+             request_retry_placeholder(state, message_key, message_data)
+           end,
+           task_supervisor: state.task_supervisor,
+           timer_owner: state.supervisor,
+           keys_node_fun: fn -> retry_keys_node(state, creds) end
+         ) do
+      {:ok, receipt} -> {:ok, receipt, repository}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp request_retry_placeholder(%State{} = state, message_key, message_data) do
+    request_placeholder_resend(
+      BaileysEx.Connection.Supervisor.coordinator(state.supervisor),
+      message_key,
+      message_data,
+      delay_ms: state.config.retry_delay_ms
+    )
+  end
+
+  defp maybe_recreate_retry_session(
+         %State{config: %{enable_auto_session_recreation: true}} = state,
+         %Repository{} = repository,
+         %BinaryNode{attrs: attrs},
+         decryption_jid,
+         error_reason
+       )
+       when is_binary(decryption_jid) do
+    upcoming_retry_count = Retry.get_retry_count(state.store_ref, attrs["id"]) + 1
+
+    if upcoming_retry_count > 1 and upcoming_retry_count <= state.config.max_msg_retry_count do
+      recreate_retry_session_if_needed(state, repository, decryption_jid, error_reason)
+    else
+      {repository, false}
+    end
+  end
+
+  defp maybe_recreate_retry_session(
+         %State{},
+         %Repository{} = repository,
+         %BinaryNode{},
+         _decryption_jid,
+         _error_reason
+       ),
+       do: {repository, false}
+
+  defp recreate_retry_session_if_needed(state, repository, decryption_jid, error_reason) do
+    with {:ok, %{exists: has_session?}} <- Repository.validate_session(repository, decryption_jid),
+         %{recreate: true} <-
+           Retry.should_recreate_session(
+             state.store_ref,
+             decryption_jid,
+             has_session?,
+             error_reason
+           ),
+         {:ok, repository} <- Repository.delete_session(repository, [decryption_jid]) do
+      {repository, true}
+    else
+      _other -> {repository, false}
+    end
+  end
+
+  defp retry_keys_node(%State{} = state, creds) do
+    case PreKey.retry_keys_node(
+           state.signal_store,
+           Store.get(state.store_ref, :auth_state, %{}),
+           encoded_device_identity(creds)
+         ) do
+      {:ok, %{update: update, node: keys_node}} ->
+        :ok = Store.merge_creds(state.store_ref, update)
+        :ok = EventEmitter.emit(state.event_emitter, :creds_update, update)
+        {:ok, keys_node}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   defp maybe_handle_identity_change(
          %State{signal_repository: %Repository{}} = state,
          %BinaryNode{} = node
@@ -1522,7 +2185,7 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp start_tc_token_reissue_task(state, task_supervisor, socket_pid, signal_store, jid) do
-    Task.Supervisor.start_child(task_supervisor, fn ->
+    start_owned_task(task_supervisor, fn ->
       reissue_tc_token(state, socket_pid, signal_store, jid)
     end)
   end
@@ -1539,7 +2202,7 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp start_tc_token_issue_task(state, task_supervisor, socket_pid, signal_store, jid) do
-    Task.Supervisor.start_child(task_supervisor, fn ->
+    start_owned_task(task_supervisor, fn ->
       issue_tc_token(state, socket_pid, signal_store, jid)
     end)
   end
@@ -1669,9 +2332,27 @@ defmodule BaileysEx.Connection.Coordinator do
   defp built_in_resync_app_state_fun(%State{} = state) do
     fn name ->
       with {:ok, collections} <- normalize_patch_names([name]) do
-        run_app_state_resync(state, collections, initial_sync: false)
+        start_server_app_state_resync(state, collections, name)
       end
     end
+  end
+
+  defp start_server_app_state_resync(state, collections, name) do
+    case start_owned_task(state, fn ->
+           state
+           |> run_app_state_resync(collections, initial_sync: false)
+           |> normalize_sync_result()
+           |> log_server_app_state_sync_result(name)
+         end) do
+      {:ok, _pid} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp log_server_app_state_sync_result(:ok, _name), do: :ok
+
+  defp log_server_app_state_sync_result({:error, reason}, name) do
+    Logger.warning("server_sync resync failed for #{name}: #{inspect(reason)}")
   end
 
   defp maybe_seed_event_buffer(
@@ -1754,15 +2435,15 @@ defmodule BaileysEx.Connection.Coordinator do
     blocked = blocked_app_state_collections(state)
 
     cond do
-      MapSet.size(blocked) == 0 ->
+      map_size(blocked) == 0 ->
         state
 
       state.sync_state == :syncing ->
-        %{state | blocked_app_state_collections: MapSet.new()}
+        %{state | blocked_app_state_collections: %{}}
 
       true ->
         launch_blocked_app_state_sync(
-          %{state | blocked_app_state_collections: MapSet.new()},
+          %{state | blocked_app_state_collections: %{}},
           blocked
         )
     end
@@ -1781,10 +2462,10 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp start_blocked_app_state_sync(state, blocked, socket_pid) do
-    collections = MapSet.to_list(blocked)
+    collections = Map.keys(blocked)
     task_fun = blocked_app_state_sync_fun(state, collections, socket_pid, self())
 
-    case Task.Supervisor.start_child(state.task_supervisor, task_fun) do
+    case start_owned_task(state, task_fun) do
       {:ok, _pid} ->
         state
 
@@ -1830,47 +2511,28 @@ defmodule BaileysEx.Connection.Coordinator do
   defp launch_initial_app_state_sync(%State{} = state) do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} ->
-        ref = make_ref()
         coordinator_pid = self()
         me = current_me(state)
         collections = SyncdCodec.patch_names()
 
-        {:ok, _pid} =
-          Task.Supervisor.start_child(state.task_supervisor, fn ->
+        task =
+          Task.Supervisor.async(state.task_supervisor, fn ->
             Logger.debug("[AppStateDiag] sync Task started pid=#{inspect(self())}")
 
             result =
-              try do
-                run_app_state_resync(
-                  state,
-                  collections,
-                  initial_sync: true,
-                  socket_pid: socket_pid,
-                  coordinator_pid: coordinator_pid,
-                  me: me
-                )
-              rescue
-                exception ->
-                  Logger.debug(
-                    "[AppStateDiag] sync Task rescued: #{Exception.message(exception)}"
-                  )
+              run_app_state_resync(
+                state,
+                collections,
+                initial_sync: true,
+                socket_pid: socket_pid,
+                coordinator_pid: coordinator_pid,
+                me: me
+              )
 
-                  {:error, exception}
-              catch
-                kind, reason ->
-                  Logger.debug("[AppStateDiag] sync Task caught #{kind}: #{inspect(reason)}")
-                  {:error, {kind, reason}}
-              end
-
-            Logger.debug("[AppStateDiag] sync Task sending completion result=#{inspect(result)}")
-
-            Kernel.send(
-              coordinator_pid,
-              {:app_state_sync_complete, ref, normalize_sync_result(result)}
-            )
+            normalize_sync_result(result)
           end)
 
-        %{state | app_state_sync_ref: ref}
+        %{state | app_state_sync_ref: task.ref}
 
       :error ->
         _ = Process.send_after(self(), :complete_initial_sync, 25)
@@ -1903,10 +2565,11 @@ defmodule BaileysEx.Connection.Coordinator do
     )
   end
 
-  defp blocked_app_state_collections(%State{blocked_app_state_collections: %MapSet{} = blocked}),
-    do: blocked
+  defp blocked_app_state_collections(%State{blocked_app_state_collections: blocked})
+       when is_map(blocked),
+       do: blocked
 
-  defp blocked_app_state_collections(%State{}), do: MapSet.new()
+  defp blocked_app_state_collections(%State{}), do: %{}
 
   defp increment_account_sync_counter(%State{} = state) do
     current_counter =

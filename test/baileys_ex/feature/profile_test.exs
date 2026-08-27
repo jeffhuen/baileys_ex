@@ -6,7 +6,7 @@ defmodule BaileysEx.Feature.ProfileTest do
   alias BaileysEx.Signal.Store
 
   test "picture_url/4 nests the timestamped tc token and returns the picture url" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{
@@ -66,7 +66,7 @@ defmodule BaileysEx.Feature.ProfileTest do
   end
 
   test "picture_url/4 omits tc tokens for self, groups, newsletters, and a disabled AB gate" do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     assert :ok =
              Store.set(store, %{

@@ -2,7 +2,7 @@ defmodule BaileysEx.Auth.Persistence do
   @moduledoc """
   Persistence behaviour for auth credentials and key-store datasets.
 
-  Phase 15 supports two built-in file backends:
+  Two built-in file backends are available:
 
   - `BaileysEx.Auth.NativeFilePersistence` for the recommended durable
     Elixir-first ETF storage
@@ -19,7 +19,7 @@ defmodule BaileysEx.Auth.Persistence do
   @typedoc """
   Helper map returned by the built-in auth-state loaders.
 
-  `connect_opts` is ready to merge into `BaileysEx.connect/2`, and `save_creds`
+  `connect_opts` is ready to merge into the connection child options, and `save_creds`
   persists the latest auth-state snapshot for the selected backend.
   """
   @type auth_state_helper :: %{

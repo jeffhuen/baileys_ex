@@ -1,10 +1,12 @@
-alias BaileysEx.Auth.FilePersistence
-alias BaileysEx.Auth.State
+alias BaileysEx.Auth.NativeFilePersistence
 alias BaileysEx.Connection.Transport.MintWebSocket
 alias BaileysEx.Protocol.Proto.Message
 
 defmodule EchoBot do
   @moduledoc false
+
+  @connection __MODULE__.Connection
+  @task_supervisor __MODULE__.TaskSupervisor
 
   def main(argv) do
     argv = Enum.drop_while(argv, &(&1 == "--"))
@@ -25,26 +27,41 @@ defmodule EchoBot do
         System.get_env("BAILEYS_ECHO_AUTH_PATH") ||
         Path.expand("tmp/echo_bot_auth", File.cwd!())
 
-    {:ok, auth_state} = FilePersistence.load_credentials(auth_path)
+    {:ok, persisted_auth} = NativeFilePersistence.use_native_file_auth_state(auth_path)
 
-    {:ok, connection} =
-      BaileysEx.connect(auth_state,
+    connection_opts =
+      Keyword.merge(persisted_auth.connect_opts,
+        auth_state: persisted_auth.state,
+        name: @connection,
         transport: {MintWebSocket, []},
         on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
         on_connection: fn update -> IO.inspect(update, label: "connection") end
       )
 
+    children = [
+      {Task.Supervisor, name: @task_supervisor},
+      Supervisor.child_spec(
+        {BaileysEx, connection_opts},
+        id: @connection
+      )
+    ]
+
+    {:ok, _supervisor} = Supervisor.start_link(children, strategy: :one_for_one)
+    connection = @connection
+
     _unsubscribe =
       BaileysEx.subscribe_raw(connection, fn events ->
         if Map.has_key?(events, :creds_update) do
-          persist_auth_state(connection, auth_path)
+          persist_auth_state(connection, persisted_auth.save_creds)
         end
       end)
 
     _unsubscribe =
       BaileysEx.subscribe(connection, fn
         {:message, message} ->
-          Task.start(fn -> echo_message(connection, message) end)
+          Task.Supervisor.start_child(@task_supervisor, fn ->
+            echo_message(connection, message)
+          end)
 
         _other ->
           :ok
@@ -77,14 +94,11 @@ defmodule EchoBot do
 
   defp extract_text(_message), do: nil
 
-  defp persist_auth_state(connection, auth_path) do
+  defp persist_auth_state(connection, save_creds) do
     with {:ok, auth_state} <- BaileysEx.auth_state(connection) do
-      :ok = FilePersistence.save_credentials(auth_path, coerce_auth_state(auth_state))
+      :ok = save_creds.(auth_state)
     end
   end
-
-  defp coerce_auth_state(%State{} = state), do: state
-  defp coerce_auth_state(%{} = state), do: struct(State, state)
 
   defp print_help do
     IO.puts("""

@@ -42,6 +42,8 @@ Baileys v7.0.0-rc14 and port every observable runtime delta in the official
 - [x] 18.5 Update the parity matrix, phase trackers, and rc14 target references.
 - [x] 18.6 Run focused parity checks and all delivery gates, then complete
   independent Elixir, test, and parity/security reviews.
+- [x] 18.7 Remediate library/OTP anti-patterns, expose the complete RC14
+  placeholder/retry surface, and verify host-owned runtime supervision.
 
 ## Acceptance Criteria
 
@@ -61,6 +63,15 @@ Baileys v7.0.0-rc14 and port every observable runtime delta in the official
   warning when a socket starts.
 - [x] Focused tests, the full suite, parity scripts, compile, format, Credo,
   Dialyzer, and docs all pass.
+- [x] Connection runtimes are host-supervised, all long-lived internal processes
+  and delayed work are owned, normal disconnect does not restart, and overload is
+  rejected at bounded send/event/commit queues.
+- [x] Library code does not read global application configuration or start OTP
+  applications at runtime; per-connection mutable state remains instance-scoped.
+- [x] `requestPlaceholderResend`, unavailable-message handling, failed-decryption
+  retry receipts/ACKs, and missing Syncd collection retries match RC14 observable behavior.
+- [x] New regressions assert public returns, emitted events, wire nodes,
+  backpressure, recovery, and resource lifetimes rather than private state layouts.
 
 ## Files
 
@@ -77,10 +88,22 @@ Baileys v7.0.0-rc14 and port every observable runtime delta in the official
 | `dev/parity/baileys-js-vs-baileys-ex-surface-matrix.md` | ✅ |
 | `dev/reference/Baileys-master/` | ✅ |
 | `dev/tools/run_baileys_reference.mts` | ✅ |
+| `examples/echo-bot.md` | ✅ |
+| `examples/echo_bot.exs` | ✅ |
+| `user_docs/README.md` | ✅ |
+| `user_docs/getting-started/first-connection.md` | ✅ |
+| `user_docs/glossary.md` | ✅ |
 | `user_docs/reference/configuration.md` | ✅ |
+| `user_docs/troubleshooting/connection-issues.md` | ✅ |
 | `lib/baileys_ex.ex` | ✅ |
 | `lib/baileys_ex/auth/connection_validator.ex` | ✅ |
 | `lib/baileys_ex/connection/config.ex` | ✅ |
+| `lib/baileys_ex/connection/coordinator.ex` | ✅ |
+| `lib/baileys_ex/connection/event_emitter.ex` | ✅ |
+| `lib/baileys_ex/connection/event_emitter_facade.ex` | ✅ |
+| `lib/baileys_ex/connection/runtime_ref.ex` | ✅ |
+| `lib/baileys_ex/connection/store.ex` | ✅ |
+| `lib/baileys_ex/connection/supervisor.ex` | ✅ |
 | `lib/baileys_ex/connection/frame.ex` | ✅ |
 | `lib/baileys_ex/connection/socket.ex` | ✅ |
 | `lib/baileys_ex/crypto.ex` | ✅ |
@@ -89,16 +112,27 @@ Baileys v7.0.0-rc14 and port every observable runtime delta in the official
 | `lib/baileys_ex/feature/tc_token.ex` | ✅ |
 | `lib/baileys_ex/media/crypto.ex` | ✅ |
 | `lib/baileys_ex/media/download.ex` | ✅ |
+| `lib/baileys_ex/media/message_builder.ex` | ✅ |
+| `lib/baileys_ex/media/retry.ex` | ✅ |
 | `lib/baileys_ex/media/thumbnail.ex` | ✅ |
 | `lib/baileys_ex/message/receiver.ex` | ✅ |
+| `lib/baileys_ex/message/retry.ex` | ✅ |
 | `lib/baileys_ex/protocol/binary_node.ex` | ✅ |
 | `lib/baileys_ex/protocol/noise.ex` | ✅ |
 | `lib/baileys_ex/protocol/proto/noise_messages.ex` | ✅ |
 | `lib/baileys_ex/signal/group/sender_key_message.ex` | ✅ |
+| `lib/baileys_ex/signal/prekey.ex` | ✅ |
+| `lib/baileys_ex/signal/store.ex` | ✅ |
+| `lib/baileys_ex/auth/key_store.ex` | ✅ |
+| `lib/baileys_ex/feature/app_state.ex` | ✅ |
+| `lib/baileys_ex/syncd/codec.ex` | ✅ |
 | `lib/baileys_ex/signal/session_cipher.ex` | ✅ |
 | `lib/baileys_ex/signal/whisper_message.ex` | ✅ |
 | `test/baileys_ex/auth/connection_validator_test.exs` | ✅ |
 | `test/baileys_ex/connection/config_test.exs` | ✅ |
+| `test/baileys_ex/connection/event_emitter_test.exs` | ✅ |
+| `test/baileys_ex/connection/store_test.exs` | ✅ |
+| `test/baileys_ex/connection/supervisor_test.exs` | ✅ |
 | `test/baileys_ex/connection/socket_test.exs` | ✅ |
 | `test/baileys_ex/connection/transport/mint_web_socket_test.exs` | ✅ |
 | `test/baileys_ex/connection/version_test.exs` | ✅ |
@@ -108,10 +142,17 @@ Baileys v7.0.0-rc14 and port every observable runtime delta in the official
 | `test/baileys_ex/media/crypto_test.exs` | ✅ |
 | `test/baileys_ex/media/download_test.exs` | ✅ |
 | `test/baileys_ex/message/sender_test.exs` | ✅ |
+| `test/baileys_ex/message/receiver_test.exs` | ✅ |
+| `test/baileys_ex/message/retry_test.exs` | ✅ |
 | `test/baileys_ex/native/noise_test.exs` | ✅ |
 | `test/baileys_ex/parity/feature_test.exs` | ✅ |
 | `test/baileys_ex/protocol/noise_test.exs` | ✅ |
 | `test/baileys_ex/public_api_test.exs` | ✅ |
+| `test/baileys_ex/auth/key_store_test.exs` | ✅ |
+| `test/baileys_ex/signal/prekey_test.exs` | ✅ |
+| `test/baileys_ex/signal/store_test.exs` | ✅ |
+| `test/baileys_ex/syncd/codec_test.exs` | ✅ |
+| `test/baileys_ex/syncd/runtime_test.exs` | ✅ |
 | `test/baileys_ex/signal/whisper_message_test.exs` | ✅ |
 
 ## Plan Deviations
@@ -128,3 +169,16 @@ Baileys v7.0.0-rc14 and port every observable runtime delta in the official
   needed by parity tooling. Reference verification therefore compares all 196
   upstream-tracked files byte-for-byte rather than claiming the whole working
   directory contains no generated extras.
+
+## Verification
+
+- The final full suite passes 986 cases: 13 properties and 973 tests, with the
+  20 parity-tagged cases excluded from that run. The dedicated parity runner
+  passes all 20 cases.
+- Format, warning-clean compile, strict Credo, Dialyzer, and warning-free ExDoc
+  gates pass. Three independent source/parity/Elixir design audits completed and
+  their actionable findings were incorporated.
+- RC14 retry counters use the upstream 15-minute sliding TTL, session recreation
+  history uses the upstream two-hour TTL, and exact recreation reasons are covered
+  with an injected clock. Tests assert public results, events, wire nodes, ordering,
+  backpressure, recovery, and resource lifetime; none inspect private OTP state.

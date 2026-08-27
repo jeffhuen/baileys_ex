@@ -749,7 +749,7 @@ defmodule BaileysEx.Syncd.CodecTest do
         ]
       }
 
-      assert {:ok, %{regular_high: %{patches: [%Syncd.SyncdPatch{}]}}} =
+      assert {:ok, %{"regular_high" => %{patches: [%Syncd.SyncdPatch{}]}}} =
                Codec.extract_syncd_patches(response)
     end
 
@@ -795,7 +795,7 @@ defmodule BaileysEx.Syncd.CodecTest do
         {:ok, Syncd.SyncdSnapshot.encode(snapshot)}
       end
 
-      assert {:ok, %{regular_high: %{snapshot: ^snapshot}}} =
+      assert {:ok, %{"regular_high" => %{snapshot: ^snapshot}}} =
                Codec.extract_syncd_patches(response, external_blob_fetcher: fetcher)
 
       assert_received {:external_blob, ^snapshot_ref}
@@ -843,10 +843,55 @@ defmodule BaileysEx.Syncd.CodecTest do
         {:ok, Syncd.SyncdSnapshot.encode(snapshot)}
       end
 
-      assert {:ok, %{regular_high: %{snapshot: ^snapshot}}} =
+      assert {:ok, %{"regular_high" => %{snapshot: ^snapshot}}} =
                Codec.extract_syncd_patches(response, external_blob_fetcher: fetcher)
 
       assert_received {:external_blob, ^snapshot_ref}
+    end
+
+    test "extract_syncd_patches/2 preserves unknown wire collection names without atomizing" do
+      response = %{
+        tag: "notification",
+        attrs: %{},
+        content: [
+          %{
+            tag: "sync",
+            attrs: %{},
+            content: [
+              %{
+                tag: "collection",
+                attrs: %{"name" => "future_collection", "has_more_patches" => "false"},
+                content: []
+              }
+            ]
+          }
+        ]
+      }
+
+      assert {:ok,
+              %{
+                "future_collection" => %{
+                  patches: [],
+                  has_more_patches: false,
+                  snapshot: nil
+                }
+              }} = Codec.extract_syncd_patches(response)
+    end
+
+    test "extract_syncd_patches/2 rejects a collection without a name as tagged data" do
+      response = %{
+        tag: "iq",
+        attrs: %{},
+        content: [
+          %{
+            tag: "sync",
+            attrs: %{},
+            content: [%{tag: "collection", attrs: %{}, content: []}]
+          }
+        ]
+      }
+
+      assert {:error, {:invalid_patch_name, nil}} = Codec.extract_syncd_patches(response)
     end
 
     test "extract_syncd_patches/2 rejects inline snapshot payloads that are not external refs" do

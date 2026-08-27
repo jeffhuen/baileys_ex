@@ -8,7 +8,7 @@ defmodule BaileysEx.Signal.PreKeyTest do
   alias BaileysEx.TestSupport.DeterministicAuth
 
   setup do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     %{store: store}
   end
 
@@ -59,6 +59,33 @@ defmodule BaileysEx.Signal.PreKeyTest do
              "1" => %{public: <<1::unsigned-big-256>>, private: <<101::unsigned-big-256>>},
              "2" => %{public: <<2::unsigned-big-256>>, private: <<102::unsigned-big-256>>}
            } = Store.get(store, :"pre-key", ["1", "2"])
+  end
+
+  test "retry_keys_node/4 emits the rc14 retry key-bundle shape", %{store: store} do
+    state = DeterministicAuth.state(135)
+    device_identity = <<9, 8, 7>>
+
+    assert {:ok,
+            %{
+              update: %{next_pre_key_id: 2, first_unuploaded_pre_key_id: 2},
+              node: %BinaryNode{
+                tag: "keys",
+                attrs: %{},
+                content: [
+                  %BinaryNode{tag: "type", content: {:binary, <<5>>}},
+                  %BinaryNode{tag: "identity", content: {:binary, identity_key}},
+                  %BinaryNode{tag: "key"},
+                  %BinaryNode{tag: "skey"},
+                  %BinaryNode{
+                    tag: "device-identity",
+                    content: {:binary, ^device_identity}
+                  }
+                ]
+              }
+            }} = PreKey.retry_keys_node(store, state, device_identity)
+
+    assert identity_key == state.signed_identity_key.public
+    assert Map.has_key?(Store.get(store, :"pre-key", ["1"]), "1")
   end
 
   test "upload_if_required/1 uploads a fresh bundle when the server count is low", %{store: store} do
@@ -269,13 +296,15 @@ defmodule BaileysEx.Signal.PreKeyTest do
     assert_receive {:rotate_query, %BinaryNode{}, %BinaryNode{tag: "rotate"}}
   end
 
-  test "upload_if_required/1 returns an upload timeout when the upload exceeds the explicit timeout",
+  test "upload_if_required/1 enforces its timeout without an injected task supervisor",
        %{
          store: store
        } do
     state =
       DeterministicAuth.state(180)
       |> Map.put(:me, %{id: "15551234567@s.whatsapp.net"})
+
+    parent = self()
 
     assert {:error, :upload_timeout} =
              PreKey.upload_if_required(
@@ -294,14 +323,18 @@ defmodule BaileysEx.Signal.PreKeyTest do
                     }}
 
                  %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "set"}} ->
-                   Process.sleep(30)
+                   send(parent, {:standalone_upload_started, self()})
+                   Process.sleep(:infinity)
                    {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: nil}}
                end,
                emit_creds_update: fn _update -> :ok end,
                upload_key: {"timed-upload", "seed-180"},
                initial_prekey_count: 2,
                min_prekey_count: 2,
-               upload_timeout_ms: 5
+               upload_timeout_ms: 20
              )
+
+    assert_receive {:standalone_upload_started, upload_task}
+    refute Process.alive?(upload_task)
   end
 end

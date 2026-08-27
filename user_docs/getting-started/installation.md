@@ -18,7 +18,7 @@ Add BaileysEx to your `mix.exs` dependencies.
 ```elixir
 defp deps do
   [
-    {:baileys_ex, "~> 0.1.0-alpha.11"}
+    {:baileys_ex, "~> 0.1.0-alpha.12"}
   ]
 end
 ```

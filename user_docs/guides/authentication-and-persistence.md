@@ -16,9 +16,9 @@ Use this guide when you need a session that survives restarts, or when you want 
 
 ## Quick start
 
-For most Elixir apps, load the durable native auth state before connecting,
-wire in the built-in file-backed Signal store, then persist updates whenever
-the runtime emits `:creds_update`.
+For most Elixir apps, load the durable native auth state before starting your
+supervision tree, wire in the built-in file-backed Signal store, then persist
+updates whenever the runtime emits `:creds_update`.
 
 ```elixir
 alias BaileysEx.Auth.NativeFilePersistence
@@ -27,13 +27,21 @@ alias BaileysEx.Connection.Transport.MintWebSocket
 auth_path = "tmp/baileys_auth"
 {:ok, persisted_auth} = NativeFilePersistence.use_native_file_auth_state(auth_path)
 
-{:ok, connection} =
-  BaileysEx.connect(
-    persisted_auth.state,
-    Keyword.merge(persisted_auth.connect_opts, [
-      transport: {MintWebSocket, []},
-      on_qr: &IO.puts("Scan QR: #{&1}")
-    ])
+connection = MyApp.WhatsApp
+
+child =
+  {BaileysEx,
+   Keyword.merge(persisted_auth.connect_opts,
+     auth_state: persisted_auth.state,
+     name: connection,
+     transport: {MintWebSocket, []},
+     on_qr: &IO.puts("Scan QR: #{&1}")
+   )}
+
+{:ok, _host_supervisor} =
+  Supervisor.start_link(
+    [Supervisor.child_spec(child, id: connection)],
+    strategy: :one_for_one
   )
 
 unsubscribe =
@@ -50,12 +58,12 @@ unsubscribe =
 These options matter most for auth and runtime persistence:
 
 - `BaileysEx.Auth.NativeFilePersistence.use_native_file_auth_state/1` gives you the recommended durable built-in file storage
-- `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` mirrors Baileys' JSON helper path and returns the matching `connect/2` options for the built-in file-backed Signal store
+- `BaileysEx.Auth.FilePersistence.use_multi_file_auth_state/1` mirrors Baileys' JSON helper path and returns the matching connection options for the built-in file-backed Signal store
 - `BaileysEx.auth_state/1` returns the current auth-state snapshot from the running connection
 - `signal_store_module:` replaces the default in-memory Signal key store when you are not using the built-in multi-file helper
 - `signal_store_opts:` passes options to that Signal store module
 
-→ See [Configuration Reference](../reference/configuration.md#connect2-options) for the connection options that affect persistence.
+→ See [Configuration Reference](../reference/configuration.md#connection-child-options) for the connection options that affect persistence.
 
 ## Common patterns
 
@@ -83,7 +91,7 @@ sidecars; new Elixir-first deployments should start on the native backend.
 
 ### Switch from compatibility JSON to the native backend
 
-Backend switching is explicit. `connect/2` and the built-in helpers do not
+Backend switching is explicit. The connection runtime and built-in helpers do not
 migrate saved auth state automatically.
 
 If you want to preserve the current linked session, migrate once into a new
@@ -112,17 +120,19 @@ If you do not need to preserve the current linked session, the simpler path is:
 ### Replace the default Signal key store
 
 ```elixir
-{:ok, connection} =
-  BaileysEx.connect(auth_state,
-    transport: {BaileysEx.Connection.Transport.MintWebSocket, []},
-    signal_store_module: MyApp.BaileysSignalStore,
-    signal_store_opts: [table: :baileys_signal_store]
-  )
+children = [
+  {BaileysEx,
+   auth_state: auth_state,
+   name: MyApp.WhatsApp,
+   transport: {BaileysEx.Connection.Transport.MintWebSocket, []},
+   signal_store_module: MyApp.BaileysSignalStore,
+   signal_store_opts: [table: :baileys_signal_store]}
+]
 ```
 
 Your custom module needs to implement the `BaileysEx.Signal.Store` behaviour.
-That includes the explicit transaction-store contract introduced in Phase 16:
-`transaction/3` must pass a transaction-scoped handle into the callback, and
+That includes the explicit transaction-store contract: `transaction/3` must
+pass a transaction-scoped handle into the callback, and
 transactional reads/writes must use that handle.
 
 ### Build your own auth persistence wrapper
@@ -149,7 +159,7 @@ end
 
 This keeps the public connection lifecycle simple while you integrate persistence into your own supervision tree.
 
-For fully custom SQL/NoSQL storage, keep the same `connect/2` lifecycle and
+For fully custom SQL/NoSQL storage, keep the same supervised connection lifecycle and
 replace the built-in helper with your own `BaileysEx.Auth.Persistence` backend
 plus a `signal_store_module` that reads and writes through it.
 

@@ -55,7 +55,7 @@ it passes.
 - **Present tense:** "This sends the message" not "This will send the message"
 - **Short sentences:** One idea per sentence. If you need a semicolon, split it.
 - **Concrete:** Show the exact code. Show what the return value looks like. Don't describe it abstractly.
-- **No hedging:** "Call `BaileysEx.connect/2`" not "You might want to try calling `BaileysEx.connect/2`"
+- **No hedging:** "Add `{BaileysEx, opts}` to your supervisor" not "You might want to add `{BaileysEx, opts}` to your supervisor"
 - **No protocol jargon without a link:** First use of a WhatsApp-specific term links to the glossary.
 - **No internal names:** Don't mention `Connection.Socket`, `Signal.SessionCipher`, or `Protocol.BinaryNode` in guides. Users interact with the public API.
 - **No future tense for existing features:** If it's not built, it doesn't appear in user docs.
@@ -101,7 +101,7 @@ These are hard rules. Each one represents a common documentation failure:
 to perform the Noise XX pattern handshake with Curve25519 ECDH..."
 
 **Good:** "BaileysEx establishes an encrypted connection to WhatsApp automatically
-when you call `BaileysEx.connect/2`."
+when the supervised connection runtime starts."
 
 **Rule:** Protocol details belong in `@moduledoc` (Layer 1) or `dev/docs/` (Layer 3).
 User guides explain *what you can do*, not *how the protocol works*.

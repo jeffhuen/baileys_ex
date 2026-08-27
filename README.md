@@ -102,7 +102,7 @@ Add `baileys_ex` to your `mix.exs` dependencies:
 ```elixir
 def deps do
   [
-    {:baileys_ex, "~> 0.1.0-alpha.11"}
+    {:baileys_ex, "~> 0.1.0-alpha.12"}
   ]
 end
 ```
@@ -135,16 +135,27 @@ alias BaileysEx.Connection.Transport.MintWebSocket
   NativeFilePersistence.use_native_file_auth_state("tmp/baileys_auth")
 
 parent = self()
+connection = MyApp.WhatsApp
 
-# Start the connection
-{:ok, connection} =
-  BaileysEx.connect(
-    persisted_auth.state,
-    Keyword.merge(persisted_auth.connect_opts, [
-      transport: {MintWebSocket, []},
-      on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
-      on_connection: fn update -> send(parent, {:connection_update, update}) end
-    ])
+# Start the connection under your application's supervisor.
+connection_child =
+  {BaileysEx,
+   Keyword.merge(persisted_auth.connect_opts,
+     auth_state: persisted_auth.state,
+     name: connection,
+     transport: {MintWebSocket, []},
+     on_qr: fn qr -> send(parent, {:qr, qr}) end,
+     on_connection: fn update -> send(parent, {:connection_update, update}) end
+   )}
+
+children = [
+  Supervisor.child_spec(connection_child, id: connection)
+]
+
+{:ok, _supervisor} =
+  Supervisor.start_link(children,
+    strategy: :one_for_one,
+    name: MyApp.Supervisor
   )
 
 # Persist credentials on update
@@ -162,6 +173,11 @@ after
   30_000 -> raise "timed out waiting for connection"
 end
 ```
+
+Use `BaileysEx.connect/2` for caller-owned scripts, tests, and IEx sessions. A
+long-lived application connection should use the child specification above so
+the host owns startup, shutdown, and restart policy. Give every connection a
+unique child `:id` when supervising more than one.
 
 If you specifically need Baileys-compatible JSON auth files during a sidecar
 migration or compatibility rollout, swap in

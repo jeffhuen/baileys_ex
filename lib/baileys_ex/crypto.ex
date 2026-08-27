@@ -91,7 +91,7 @@ defmodule BaileysEx.Crypto do
       {:error, :invalid_padding} -> {:error, :decrypt_failed}
     end
   rescue
-    _ -> {:error, :decrypt_failed}
+    _error in [ArgumentError, ErlangError] -> {:error, :decrypt_failed}
   end
 
   # ============================================================================

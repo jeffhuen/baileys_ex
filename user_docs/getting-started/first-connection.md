@@ -25,7 +25,7 @@ auth_path = "tmp/baileys_auth"
 ```
 
 If the directory is empty, `use_native_file_auth_state/1` returns a fresh state
-for a new pairing flow and the `connect/2` options needed to persist Signal
+for a new pairing flow and the connection options needed to persist Signal
 keys in the same directory.
 
 If you need the Baileys-compatible JSON multi-file layout instead, use
@@ -39,25 +39,40 @@ migrate the saved auth directory once or re-pair on the native backend.
 
 ### 2. Start the connection with a real transport
 
-Use `BaileysEx.connect/2` with `BaileysEx.Connection.Transport.MintWebSocket`.
+Add `BaileysEx` to your application's supervision tree with
+`BaileysEx.Connection.Transport.MintWebSocket`. The host application then owns
+the connection lifecycle and restart policy.
 
 ```elixir
 alias BaileysEx.Connection.Transport.MintWebSocket
 
 parent = self()
+connection = MyApp.WhatsApp
 
-{:ok, connection} =
-  BaileysEx.connect(
-    persisted_auth.state,
-    Keyword.merge(persisted_auth.connect_opts, [
-      transport: {MintWebSocket, []},
-      on_qr: fn qr -> IO.puts("Scan QR: #{qr}") end,
-      on_connection: fn update -> send(parent, {:connection_update, update}) end
-    ])
+connection_child =
+  {BaileysEx,
+   Keyword.merge(persisted_auth.connect_opts,
+     auth_state: persisted_auth.state,
+     name: connection,
+     transport: {MintWebSocket, []},
+     on_qr: fn qr -> send(parent, {:qr, qr}) end,
+     on_connection: fn update -> send(parent, {:connection_update, update}) end
+   )}
+
+children = [Supervisor.child_spec(connection_child, id: connection)]
+
+{:ok, _supervisor} =
+  Supervisor.start_link(children,
+    strategy: :one_for_one,
+    name: MyApp.Supervisor
   )
 ```
 
 The `:on_qr` callback gives you QR data for a new login. The `:on_connection` callback tells you when the socket opens or closes.
+
+`BaileysEx.connect/2` remains available for scripts, tests, and IEx sessions
+where the caller intentionally owns the connection. For multiple supervised
+connections, give each child a unique `:id` and `:name`.
 
 ### 3. Persist updated credentials before pairing
 

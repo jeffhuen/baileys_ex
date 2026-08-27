@@ -13,6 +13,7 @@ defmodule BaileysEx.PublicApiTest do
   alias BaileysEx.Connection.Store, as: RuntimeStore
   alias BaileysEx.Connection.Supervisor
   alias BaileysEx.Crypto
+  alias BaileysEx.MessageRetryManager
   alias BaileysEx.Protocol.Proto.ADVSignedDeviceIdentity
   alias BaileysEx.Protocol.Proto.Message
   alias BaileysEx.Signal.Curve
@@ -56,6 +57,8 @@ defmodule BaileysEx.PublicApiTest do
     def send_presence_update(server, type),
       do: GenServer.call(server, {:send_presence_update, type})
 
+    def send_unified_session(server), do: GenServer.call(server, :send_unified_session)
+
     def query(server, %BinaryNode{} = node, timeout),
       do: GenServer.call(server, {:query, node, timeout}, timeout + 100)
 
@@ -90,6 +93,11 @@ defmodule BaileysEx.PublicApiTest do
       {:reply, :ok, state}
     end
 
+    def handle_call(:send_unified_session, _from, state) do
+      send(state.test_pid, :fake_socket_unified_session)
+      {:reply, :ok, state}
+    end
+
     def handle_call({:query, node, timeout}, _from, state) do
       send(state.test_pid, {:fake_socket_query, node, timeout})
       {:reply, state.query_handler.(node, timeout), state}
@@ -119,61 +127,6 @@ defmodule BaileysEx.PublicApiTest do
     end
   end
 
-  defmodule StartupEmitSignalStore do
-    @behaviour BaileysEx.Signal.Store
-
-    alias BaileysEx.Connection.EventEmitter
-    alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
-
-    def child_spec(opts) do
-      %{
-        id: __MODULE__,
-        start: {__MODULE__, :start_link, [opts]},
-        type: :worker,
-        restart: :permanent,
-        shutdown: 5_000
-      }
-    end
-
-    @impl true
-    def start_link(opts) do
-      startup_events =
-        Keyword.get(opts, :startup_events, [%{connection: :connecting}, %{qr: "startup-qr"}])
-
-      event_emitter = Keyword.fetch!(opts, :event_emitter)
-
-      case SignalStoreMemory.start_link(Keyword.drop(opts, [:event_emitter, :startup_events])) do
-        {:ok, pid} ->
-          Enum.each(startup_events, fn update ->
-            :ok = EventEmitter.emit(event_emitter, :connection_update, update)
-          end)
-
-          {:ok, pid}
-
-        {:error, _reason} = error ->
-          error
-      end
-    end
-
-    @impl true
-    def wrap(pid), do: SignalStoreMemory.wrap(pid)
-
-    @impl true
-    def get(ref, type, ids), do: SignalStoreMemory.get(ref, type, ids)
-
-    @impl true
-    def set(ref, data), do: SignalStoreMemory.set(ref, data)
-
-    @impl true
-    def clear(ref), do: SignalStoreMemory.clear(ref)
-
-    @impl true
-    def transaction(ref, key, fun), do: SignalStoreMemory.transaction(ref, key, fun)
-
-    @impl true
-    def in_transaction?(ref), do: SignalStoreMemory.in_transaction?(ref)
-  end
-
   test "connect/2 wires convenience callbacks and subscribe/2 emits friendly events" do
     parent = self()
 
@@ -189,6 +142,11 @@ defmodule BaileysEx.PublicApiTest do
     assert_receive :fake_socket_connect
 
     assert {:ok, emitter} = BaileysEx.event_emitter(connection)
+
+    assert {:error, :signal_repository_not_ready} =
+             BaileysEx.request_placeholder_resend(connection, %{id: "placeholder-1"}, nil,
+               delay_ms: 0
+             )
 
     unsubscribe =
       BaileysEx.subscribe(connection, fn event ->
@@ -213,30 +171,56 @@ defmodule BaileysEx.PublicApiTest do
     assert :ok = BaileysEx.disconnect(connection)
   end
 
-  test "connect/2 delivers startup callback events emitted before the runtime returns" do
+  test "connect/2 delivers callbacks for a named connection" do
     parent = self()
     connection_name = {:phase12_startup_callbacks, System.unique_integer([:positive])}
-
-    event_emitter =
-      {:global, {BaileysEx.Connection.Supervisor, connection_name, EventEmitter}}
 
     assert {:ok, connection} =
              BaileysEx.connect(%{creds: %{}},
                name: connection_name,
                config: Config.new(fire_init_queries: false),
                socket_module: FakeSocket,
-               signal_store_module: StartupEmitSignalStore,
-               signal_store_opts: [event_emitter: event_emitter],
                test_pid: self(),
                on_connection: &send(parent, {:startup_on_connection, &1}),
                on_qr: &send(parent, {:startup_on_qr, &1})
              )
 
-    assert_receive {:startup_on_connection, %{connection: :connecting}}
-    assert_receive {:startup_on_qr, "startup-qr"}
     assert_receive :fake_socket_connect
 
+    assert {:ok, emitter} = BaileysEx.event_emitter(connection)
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :connecting})
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{qr: "startup-qr"})
+
+    assert_receive {:startup_on_connection, %{connection: :connecting}}
+    assert_receive {:startup_on_qr, "startup-qr"}
+
     assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "host supervision does not restart an explicitly disconnected connection" do
+    child =
+      {BaileysEx,
+       [
+         auth_state: %{creds: %{}},
+         config: Config.new(fire_init_queries: false),
+         socket_module: FakeSocket,
+         test_pid: self()
+       ]}
+
+    assert {:ok, host} = Elixir.Supervisor.start_link([child], strategy: :one_for_one)
+    assert_receive :fake_socket_connect
+
+    assert [{BaileysEx, connection, :supervisor, _modules}] =
+             Elixir.Supervisor.which_children(host)
+
+    connection_ref = Process.monitor(connection)
+    assert :ok = BaileysEx.disconnect(connection)
+    assert_receive {:DOWN, ^connection_ref, :process, ^connection, :normal}
+
+    assert [{BaileysEx, :undefined, :supervisor, _modules}] =
+             Elixir.Supervisor.which_children(host)
+
+    refute_receive :fake_socket_connect, 50
   end
 
   test "profile_picture_url/4 receives runtime self identity and profile-token AB props" do
@@ -362,6 +346,170 @@ defmodule BaileysEx.PublicApiTest do
 
     assert {:error, :signal_repository_not_ready} =
              BaileysEx.send_status(connection, %{text: "status"})
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "authenticated public ACK and retry facades send RC14 wire stanzas" do
+    {repository, _signal_store} = MessageSignalHelpers.new_repo()
+
+    assert {:ok, connection} =
+             BaileysEx.connect(
+               signal_auth_state("15550001111:1@s.whatsapp.net"),
+               config: Config.new(fire_init_queries: false),
+               socket_module: FakeSocket,
+               signal_repository: repository,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+
+    acked_node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "public-ack-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => "15551234567:2@s.whatsapp.net",
+        "type" => "text"
+      },
+      content: nil
+    }
+
+    assert :ok = BaileysEx.send_message_ack(connection, acked_node, 500)
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{
+                        "class" => "message",
+                        "error" => "500",
+                        "from" => "15550001111:1@s.whatsapp.net",
+                        "id" => "public-ack-1",
+                        "participant" => "15551234567:2@s.whatsapp.net",
+                        "to" => "15551234567@s.whatsapp.net",
+                        "type" => "text"
+                      },
+                      content: nil
+                    }}
+
+    retry_node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "public-retry-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => "1710000700"
+      },
+      content: []
+    }
+
+    assert :ok = BaileysEx.send_retry_request(connection, retry_node)
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "receipt",
+                      attrs: %{
+                        "id" => "public-retry-1",
+                        "to" => "15551234567@s.whatsapp.net",
+                        "type" => "retry"
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "retry",
+                          attrs: %{
+                            "count" => "1",
+                            "error" => "0",
+                            "id" => "public-retry-1",
+                            "t" => "1710000700",
+                            "v" => "1"
+                          }
+                        },
+                        %BinaryNode{tag: "registration", content: <<1_234::unsigned-big-32>>}
+                      ]
+                    }}
+
+    assert {:ok, manager} = BaileysEx.message_retry_manager(connection)
+    assert {:ok, 1} = MessageRetryManager.get_retry_count(manager, "public-retry-1")
+
+    assert :ok = BaileysEx.disconnect(connection)
+  end
+
+  test "public retry manager facade preserves retry behavior and deduplicates phone fallbacks" do
+    assert {:ok, connection} =
+             BaileysEx.connect(
+               signal_auth_state("15550001111:1@s.whatsapp.net"),
+               config: Config.new(fire_init_queries: false, max_msg_retry_count: 2),
+               socket_module: FakeSocket,
+               test_pid: self()
+             )
+
+    assert_receive :fake_socket_connect
+    assert {:ok, manager} = BaileysEx.message_retry_manager(connection)
+
+    message = %Message{conversation: "cached retry"}
+
+    assert :ok =
+             MessageRetryManager.add_recent_message(
+               manager,
+               "15551234567@s.whatsapp.net",
+               "public-manager-1",
+               message,
+               now_ms: fn -> 123 end
+             )
+
+    assert {:ok, %{message: ^message, timestamp: 123}} =
+             MessageRetryManager.get_recent_message(
+               manager,
+               "15551234567@s.whatsapp.net",
+               "public-manager-1",
+               now_ms: fn -> 123 end
+             )
+
+    assert {:ok, 1} =
+             MessageRetryManager.increment_retry_count(manager, "public-manager-1")
+
+    assert {:ok, false} =
+             MessageRetryManager.has_exceeded_max_retries?(manager, "public-manager-1")
+
+    assert {:ok, 2} =
+             MessageRetryManager.increment_retry_count(manager, "public-manager-1")
+
+    assert {:ok, true} =
+             MessageRetryManager.has_exceeded_max_retries?(manager, "public-manager-1")
+
+    parent = self()
+
+    assert :ok =
+             MessageRetryManager.schedule_phone_request(
+               manager,
+               "public-manager-1",
+               fn -> send(parent, :stale_phone_fallback) end,
+               delay_ms: 100
+             )
+
+    assert :ok =
+             MessageRetryManager.schedule_phone_request(
+               manager,
+               "public-manager-1",
+               fn -> send(parent, :latest_phone_fallback) end,
+               delay_ms: 1
+             )
+
+    assert_receive :latest_phone_fallback, 100
+    refute_receive :stale_phone_fallback, 125
+
+    assert :SIGNAL_ERROR_BAD_MAC = MessageRetryManager.parse_retry_error_code(manager, "7")
+    assert MessageRetryManager.mac_error?(manager, :SIGNAL_ERROR_BAD_MAC)
+
+    assert :ok = MessageRetryManager.mark_retry_success(manager, "public-manager-1")
+    assert {:ok, 0} = MessageRetryManager.get_retry_count(manager, "public-manager-1")
+
+    assert {:ok, nil} =
+             MessageRetryManager.get_recent_message(
+               manager,
+               "15551234567@s.whatsapp.net",
+               "public-manager-1",
+               now_ms: fn -> 123 end
+             )
 
     assert :ok = BaileysEx.disconnect(connection)
   end
@@ -816,6 +964,8 @@ defmodule BaileysEx.PublicApiTest do
   end
 
   test "public facade exports the remaining source-supported helper wrappers" do
+    Code.ensure_loaded!(BaileysEx)
+
     wrappers = [
       {:archive_chat, 5},
       {:mute_chat, 4},

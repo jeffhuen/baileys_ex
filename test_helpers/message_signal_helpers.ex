@@ -149,7 +149,7 @@ defmodule BaileysEx.TestHelpers.MessageSignalHelpers do
   end
 
   def new_repo(opts \\ []) do
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
     repo = Repository.new(Keyword.merge([adapter: FakeAdapter, store: store], opts))
     {repo, store}
   end

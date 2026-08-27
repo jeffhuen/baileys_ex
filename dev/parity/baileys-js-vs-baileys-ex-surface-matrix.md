@@ -40,9 +40,9 @@ ported in Phase 17 include compatibility-affecting behavior:
 
 | Category | BaileysEx status | User-visible impact |
 |---|---|---|
-| Linked-device QR format and WA version | Ported | Pairing QR payloads and advertised Web version match rc13. |
+| Linked-device QR format and WA version | Ported | Pairing QR payloads and advertised Web version match rc14. |
 | Trusted-contact token lifecycle | Ported | Direct sends attach/issue tokens like Baileys, peer messages skip rejected `tctoken` nodes, identity changes reissue tokens, and sender timestamps survive persistence/notification updates. |
-| Unavailable-message resend and retry | Ported | Missing 1:1 messages can request phone-device resend and emit Baileys-shaped placeholder stubs. |
+| Unavailable-message resend and retry | Ported | `sendMessageAck`, `sendRetryRequest`, and `requestPlaceholderResend` map to bounded connection-scoped `BaileysEx` functions. `messageRetryManager` maps to the opaque `BaileysEx.MessageRetryManager` facade; failed decryptions send retry receipts, schedule an owned deduplicated phone fallback, preserve updated Signal repositories, and ACK the original stanza. |
 | 463/reachout/new-chat-limit handling | Ported | Account restriction and message-cap events are queryable and emitted to callers. |
 | Device-list notifications | Ported | Device add/remove/update notifications update cached device state and remove stale sessions. |
 | USync username, group usernames, group online count | Ported | Parsed contact/group/presence payloads expose the newer fields. |
@@ -51,6 +51,40 @@ ported in Phase 17 include compatibility-affecting behavior:
 | Media direct-path fallback | Ported | Downloads retry compatible CDN host variants when WhatsApp returns a direct path that does not fetch. |
 | Baileys JS mutex/cache/test-infra changes | Elixir-native / not literal | These are runtime hardening details; BaileysEx preserves observable behavior using BEAM-native primitives rather than copying JS internals. |
 | App-state resilience and offline batching | Ported | Missing-key syncs retry with forced snapshots before parking, parked collections resync on key arrival, corrupted mutation records are skipped, aggregate LTHash mismatches preserve partial state or stop remaining patches, and offline nodes drain FIFO in batches of 10 with event buffering. |
+
+### RC14 message retry manager mapping
+
+`BaileysEx.message_retry_manager/1` returns an opaque connection-scoped facade when
+`enable_recent_message_cache` is enabled and returns
+`{:error, :message_retry_manager_disabled}` otherwise, matching RC14's nullable manager.
+The facade stores neither a `Store.Ref` nor Coordinator state. Stateful calls use the same
+bounded Coordinator lane as message sends.
+
+Retry counts expire after RC14's 15-minute sliding TTL, session-recreation history
+expires after two hours, and recreation decisions preserve RC14's exact public reason
+strings. The clock is injectable so expiry behavior is covered deterministically.
+
+| Baileys RC14 member | BaileysEx mapping |
+|---|---|
+| `sendMessageAck` | `BaileysEx.send_message_ack/3` |
+| `sendRetryRequest` | `BaileysEx.send_retry_request/3` |
+| `requestPlaceholderResend` | `BaileysEx.request_placeholder_resend/4` |
+| `messageRetryManager.addRecentMessage` | `BaileysEx.MessageRetryManager.add_recent_message/5` |
+| `messageRetryManager.getRecentMessage` | `BaileysEx.MessageRetryManager.get_recent_message/4` |
+| `messageRetryManager.shouldRecreateSession` | `BaileysEx.MessageRetryManager.should_recreate_session/5` |
+| `messageRetryManager.parseRetryErrorCode` | `BaileysEx.MessageRetryManager.parse_retry_error_code/2` |
+| `messageRetryManager.isMacError` | `BaileysEx.MessageRetryManager.mac_error?/2` |
+| `messageRetryManager.incrementRetryCount` | `BaileysEx.MessageRetryManager.increment_retry_count/2` |
+| `messageRetryManager.getRetryCount` | `BaileysEx.MessageRetryManager.get_retry_count/2` |
+| `messageRetryManager.hasExceededMaxRetries` | `BaileysEx.MessageRetryManager.has_exceeded_max_retries?/2` |
+| `messageRetryManager.markRetrySuccess` | `BaileysEx.MessageRetryManager.mark_retry_success/2` |
+| `messageRetryManager.markRetryFailed` | `BaileysEx.MessageRetryManager.mark_retry_failed/2` |
+| `messageRetryManager.schedulePhoneRequest` | `BaileysEx.MessageRetryManager.schedule_phone_request/4` |
+| `messageRetryManager.cancelPendingPhoneRequest` | `BaileysEx.MessageRetryManager.cancel_pending_phone_request/2` |
+| `messageRetryManager.clear` | `BaileysEx.MessageRetryManager.clear/1` |
+| `messageRetryManager.saveBaseKey` | `BaileysEx.MessageRetryManager.save_base_key/5` |
+| `messageRetryManager.hasSameBaseKey` | `BaileysEx.MessageRetryManager.has_same_base_key?/5` |
+| `messageRetryManager.deleteBaseKey` | `BaileysEx.MessageRetryManager.delete_base_key/3` |
 
 ## rc10 Source-Backed Callsite Audit
 

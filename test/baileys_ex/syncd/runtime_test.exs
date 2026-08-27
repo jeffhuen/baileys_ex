@@ -32,7 +32,7 @@ defmodule BaileysEx.Syncd.RuntimeTest do
   end
 
   defp start_signal_store(extra_families \\ %{}) do
-    {:ok, store} = SignalStore.start_link()
+    {:ok, store} = SignalStore.new()
     :ok = SignalStore.set(store, %{:"app-state-sync-key" => %{@key_id_b64 => @key_data}})
 
     Enum.each(extra_families, fn {family, values} ->
@@ -42,7 +42,7 @@ defmodule BaileysEx.Syncd.RuntimeTest do
     store
   end
 
-  defp empty_sync_response do
+  defp empty_sync_response(collection \\ :regular_high) do
     %{
       tag: "iq",
       attrs: %{},
@@ -50,7 +50,17 @@ defmodule BaileysEx.Syncd.RuntimeTest do
         %{
           tag: "sync",
           attrs: %{},
-          content: []
+          content: [
+            %{
+              tag: "collection",
+              attrs: %{
+                "name" => Atom.to_string(collection),
+                "version" => "0",
+                "has_more_patches" => "false"
+              },
+              content: []
+            }
+          ]
         }
       ]
     }
@@ -125,7 +135,12 @@ defmodule BaileysEx.Syncd.RuntimeTest do
       # Mock queryable that captures the sent node
       queryable = fn node ->
         send(me, {:query_sent, node})
-        {:ok, %{tag: "iq", attrs: %{}, content: []}}
+
+        if patch_query_version(node) do
+          {:ok, %{tag: "iq", attrs: %{}, content: []}}
+        else
+          {:ok, empty_sync_response()}
+        end
       end
 
       patch_create = %{
@@ -150,8 +165,12 @@ defmodule BaileysEx.Syncd.RuntimeTest do
     test "persists updated sync version to store" do
       store = start_store()
 
-      queryable = fn _node ->
-        {:ok, %{tag: "iq", attrs: %{}, content: []}}
+      queryable = fn node ->
+        if patch_query_version(node) do
+          {:ok, %{tag: "iq", attrs: %{}, content: []}}
+        else
+          {:ok, empty_sync_response()}
+        end
       end
 
       patch_create = %{
@@ -232,8 +251,12 @@ defmodule BaileysEx.Syncd.RuntimeTest do
       parent = self()
       _unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
 
-      queryable = fn _node ->
-        {:ok, %{tag: "iq", attrs: %{}, content: []}}
+      queryable = fn node ->
+        if patch_query_version(node) do
+          {:ok, %{tag: "iq", attrs: %{}, content: []}}
+        else
+          {:ok, empty_sync_response()}
+        end
       end
 
       patch_create = %{
@@ -341,7 +364,7 @@ defmodule BaileysEx.Syncd.RuntimeTest do
           )
         end)
 
-      wait_for_lock_queue(signal_store, "app-state", 1)
+      refute_receive {:patch_query, 2, _version, _caller}, 50
 
       send(first_caller, :release_first_patch)
 
@@ -359,7 +382,12 @@ defmodule BaileysEx.Syncd.RuntimeTest do
 
       queryable = fn node ->
         send(me, {:query_sent, node})
-        {:ok, %{tag: "iq", attrs: %{}, content: []}}
+
+        if patch_query_version(node) do
+          {:ok, %{tag: "iq", attrs: %{}, content: []}}
+        else
+          {:ok, empty_sync_response()}
+        end
       end
 
       # Use app_patch directly with proto structs (the correct path)
@@ -459,25 +487,22 @@ defmodule BaileysEx.Syncd.RuntimeTest do
       _ = keys
     end
 
-    test "handles empty server response gracefully" do
+    test "keeps a missing collection pending until the server returns it" do
       store = start_store()
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
 
       queryable = fn _node ->
-        {:ok,
-         %{
-           tag: "iq",
-           attrs: %{},
-           content: [
-             %{
-               tag: "sync",
-               attrs: %{},
-               content: []
-             }
-           ]
-         }}
+        call = Agent.get_and_update(calls, fn count -> {count + 1, count + 1} end)
+
+        if call == 1 do
+          {:ok, %{tag: "iq", attrs: %{}, content: [%{tag: "sync", attrs: %{}, content: []}]}}
+        else
+          {:ok, empty_sync_response()}
+        end
       end
 
       assert :ok = AppState.resync_app_state(queryable, store, [:regular_high])
+      assert Agent.get(calls, & &1) == 2
     end
 
     test "successful resync diagnostics do not log at warning level" do
@@ -1023,37 +1048,6 @@ defmodule BaileysEx.Syncd.RuntimeTest do
       assert patch.index == ["mute", "user@s.whatsapp.net"]
       assert patch.operation == :set
       assert patch.api_version == 2
-    end
-  end
-
-  defp wait_for_lock_queue(signal_store, key, expected_length, timeout_ms \\ 1_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_for_lock_queue(signal_store, key, expected_length, deadline)
-  end
-
-  defp do_wait_for_lock_queue(signal_store, key, expected_length, deadline) do
-    current_length = lock_queue_length(signal_store, key)
-
-    cond do
-      current_length == expected_length ->
-        :ok
-
-      System.monotonic_time(:millisecond) >= deadline ->
-        flunk(
-          "expected lock queue #{inspect(key)} to reach length #{expected_length}, " <>
-            "got #{current_length}"
-        )
-
-      true ->
-        Process.sleep(10)
-        do_wait_for_lock_queue(signal_store, key, expected_length, deadline)
-    end
-  end
-
-  defp lock_queue_length(%{ref: %{pid: pid}}, key) do
-    case :sys.get_state(pid) do
-      %{locks: %{^key => %{queue: queue}}} -> :queue.len(queue)
-      _ -> 0
     end
   end
 end

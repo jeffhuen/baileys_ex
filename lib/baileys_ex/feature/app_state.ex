@@ -94,7 +94,7 @@ defmodule BaileysEx.Feature.AppState do
       case do_resync_loop(context, collections, %{
              attempts_map: %{},
              initial_version_map: %{},
-             force_snapshot_collections: MapSet.new(),
+             force_snapshot_collections: %{},
              on_blocked_collection: context.on_blocked_collection,
              global_mutation_map: %{},
              global_mutation_order_chunks: []
@@ -640,13 +640,13 @@ defmodule BaileysEx.Feature.AppState do
         context.state_store,
         collections_to_handle,
         loop_state.initial_version_map,
-        Map.get(loop_state, :force_snapshot_collections, MapSet.new())
+        Map.get(loop_state, :force_snapshot_collections, %{})
       )
 
     loop_state = %{
       loop_state
       | initial_version_map: initial_version_map,
-        force_snapshot_collections: MapSet.new()
+        force_snapshot_collections: %{}
     }
 
     app_state_diag("sending sync query")
@@ -659,7 +659,7 @@ defmodule BaileysEx.Feature.AppState do
       loop_state =
         process_collections(
           decoded,
-          Enum.filter(collections_to_handle, &(&1 in Map.keys(decoded))),
+          collections_to_handle,
           states,
           loop_state,
           context
@@ -696,7 +696,7 @@ defmodule BaileysEx.Feature.AppState do
               {cached_state, Map.put_new(ivm, name, cached_state.version)}
           end
 
-        force_snapshot? = MapSet.member?(force_snapshot_collections, name)
+        force_snapshot? = Map.has_key?(force_snapshot_collections, name)
 
         node = %BinaryNode{
           tag: "collection",
@@ -728,7 +728,7 @@ defmodule BaileysEx.Feature.AppState do
     # Iterate the request list here so collection ordering is explicit on the BEAM.
     Enum.reduce(collections_to_handle, Map.put(loop_state, :remaining, collections_to_handle), fn
       name, acc ->
-        with {:ok, collection} <- Map.fetch(decoded, name),
+        with {:ok, collection} <- Map.fetch(decoded, Atom.to_string(name)),
              {:ok, updated_state} <-
                process_single_collection(name, collection, Map.get(states, name), acc, context) do
           maybe_remove_collection(updated_state, name, collection.has_more_patches)
@@ -748,13 +748,12 @@ defmodule BaileysEx.Feature.AppState do
 
     with {:ok, state, mutation_map, mutation_order} <-
            maybe_decode_snapshot(name, collection.snapshot, state, loop_state, context),
-         {:ok, _state, mutation_map, mutation_order, initial_version_map} <-
+         {:ok, %{state: _state, mutation_map: mutation_map, mutation_order: mutation_order},
+          initial_version_map} <-
            maybe_decode_patches(
              name,
              collection.patches,
-             state,
-             mutation_map,
-             mutation_order,
+             %{state: state, mutation_map: mutation_map, mutation_order: mutation_order},
              loop_state,
              context
            ) do
@@ -790,23 +789,21 @@ defmodule BaileysEx.Feature.AppState do
     end
   end
 
-  defp maybe_decode_patches(_name, [], state, mutation_map, mutation_order, loop_state, _context) do
-    {:ok, state, mutation_map, mutation_order, loop_state.initial_version_map}
+  defp maybe_decode_patches(_name, [], decode_acc, loop_state, _context) do
+    {:ok, decode_acc, loop_state.initial_version_map}
   end
 
   defp maybe_decode_patches(
          name,
          patches,
-         state,
-         mutation_map,
-         mutation_order,
+         decode_acc,
          loop_state,
          context
        ) do
     case Codec.decode_patches(
            name,
            patches,
-           state,
+           decode_acc.state,
            context.get_key,
            Map.get(loop_state.initial_version_map, name),
            context.validate_patch,
@@ -820,9 +817,12 @@ defmodule BaileysEx.Feature.AppState do
        }} ->
         put_app_state_sync_version(context.state_store, name, new_state)
 
-        {:ok, new_state, Map.merge(mutation_map, patch_mutation_map),
-         mutation_order ++ patch_mutation_order,
-         Map.put(loop_state.initial_version_map, name, new_state.version)}
+        {:ok,
+         %{
+           state: new_state,
+           mutation_map: Map.merge(decode_acc.mutation_map, patch_mutation_map),
+           mutation_order: decode_acc.mutation_order ++ patch_mutation_order
+         }, Map.put(loop_state.initial_version_map, name, new_state.version)}
 
       {:error, _} = err ->
         err
@@ -888,7 +888,7 @@ defmodule BaileysEx.Feature.AppState do
   defp collection_failure_log_suffix(:retry), do: ", retrying with snapshot"
 
   defp maybe_force_snapshot_collection(collections, name, :retry),
-    do: MapSet.put(collections, name)
+    do: Map.put(collections, name, true)
 
   defp maybe_force_snapshot_collection(collections, _name, _outcome), do: collections
 
@@ -936,40 +936,27 @@ defmodule BaileysEx.Feature.AppState do
            query(context.queryable, build_patch_node(context.name, patch, state)) do
       put_app_state_sync_version(context.state_store, context.name, state)
 
-      maybe_emit_own_patch_events(
-        context.emit_own,
-        context.event_emitter,
-        context.name,
-        patch,
-        state,
-        initial,
-        get_key,
-        context.me
-      )
+      maybe_emit_own_patch_events(context, %{
+        patch: patch,
+        state: state,
+        initial: initial,
+        get_key: get_key
+      })
     end
   end
 
-  defp maybe_emit_own_patch_events(
-         false,
-         _event_emitter,
-         _name,
-         _patch,
-         _state,
-         _initial,
-         _get_key,
-         _me
-       ),
-       do: :ok
+  defp maybe_emit_own_patch_events(%{emit_own: false}, _patch_context), do: :ok
 
-  defp maybe_emit_own_patch_events(true, nil, _name, _patch, _state, _initial, _get_key, _me),
+  defp maybe_emit_own_patch_events(%{event_emitter: nil}, _patch_context),
     do: :ok
 
-  defp maybe_emit_own_patch_events(true, event_emitter, name, patch, state, initial, get_key, me) do
+  defp maybe_emit_own_patch_events(context, patch_context) do
+    %{patch: patch, state: state, initial: initial, get_key: get_key} = patch_context
     versioned_patch = %{patch | version: %Syncd.SyncdVersion{version: state.version}}
 
-    case Codec.decode_patches(name, [versioned_patch], initial, get_key) do
+    case Codec.decode_patches(context.name, [versioned_patch], initial, get_key) do
       {:ok, %{mutation_map: mutation_map, mutation_order: mutation_order}} ->
-        emit_mutation_map(event_emitter, mutation_map, mutation_order, me, [])
+        emit_mutation_map(context.event_emitter, mutation_map, mutation_order, context.me, [])
 
       {:error, _} ->
         :ok

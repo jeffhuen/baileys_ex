@@ -4,7 +4,7 @@ defmodule BaileysEx.MixProject do
   def project do
     [
       app: :baileys_ex,
-      version: "0.1.0-alpha.11",
+      version: "0.1.0-alpha.12",
       description: description(),
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
@@ -19,7 +19,7 @@ defmodule BaileysEx.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto]
+      extra_applications: [:logger, :crypto, :inets, :ssl]
     ]
   end
 

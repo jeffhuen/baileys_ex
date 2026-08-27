@@ -1,6 +1,9 @@
 defmodule BaileysEx.WAM.Definitions do
   @moduledoc """
-  Loads the generated WAM event and global definitions derived from Baileys rc9.
+  Loads the generated WAM event and global definitions from the pinned Baileys source.
+
+  The definitions are immutable protocol data. They are cached once so callers do
+  not repeatedly decode the 777 KB packaged JSON resource.
   """
 
   @external_resource Path.expand("../../../priv/wam/definitions.json", __DIR__)

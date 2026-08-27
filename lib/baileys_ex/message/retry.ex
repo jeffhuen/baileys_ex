@@ -21,7 +21,9 @@ defmodule BaileysEx.Message.Retry do
   @recent_message_cache_ttl_ms 300_000
   @base_key_cache_size 1024
   @base_key_cache_ttl_ms 900_000
+  @retry_counter_ttl_ms 900_000
   @session_recreate_cooldown_ms 3_600_000
+  @session_history_ttl_ms 7_200_000
   @phone_request_delay_ms 3_000
   @placeholder_request_timeout_ms 8_000
   @max_retry_count 5
@@ -43,10 +45,13 @@ defmodule BaileysEx.Message.Retry do
     STATUS_REVOKE_DELAY: 13
   }
 
-  @mac_error_codes MapSet.new([
-                     Map.fetch!(@retry_reason_values, :SIGNAL_ERROR_INVALID_MESSAGE),
-                     Map.fetch!(@retry_reason_values, :SIGNAL_ERROR_BAD_MAC)
-                   ])
+  @mac_error_codes Map.new(
+                     [
+                       Map.fetch!(@retry_reason_values, :SIGNAL_ERROR_INVALID_MESSAGE),
+                       Map.fetch!(@retry_reason_values, :SIGNAL_ERROR_BAD_MAC)
+                     ],
+                     &{&1, true}
+                   )
 
   @type proto_message :: struct()
   @type recent_message_entry :: %{message: proto_message(), timestamp: integer()}
@@ -73,18 +78,30 @@ defmodule BaileysEx.Message.Retry do
     now_ms = now_ms(opts)
     error_code = normalize_retry_reason(error_code)
 
+    history =
+      store_ref
+      |> Store.get(@session_history_key, %{})
+      |> prune_timestamp_cache(now_ms, @session_history_ttl_ms)
+
+    :ok = Store.put(store_ref, @session_history_key, history)
+
     cond do
       not has_session ->
-        put_session_recreate_time(store_ref, jid, now_ms)
+        put_session_recreate_time(store_ref, history, jid, now_ms)
         %{reason: "we don't have a Signal session with them", recreate: true}
 
       mac_error?(error_code) ->
-        put_session_recreate_time(store_ref, jid, now_ms)
-        %{reason: "MAC error detected, immediate session recreation", recreate: true}
+        put_session_recreate_time(store_ref, history, jid, now_ms)
 
-      recreate_cooldown_elapsed?(store_ref, jid, now_ms) ->
-        put_session_recreate_time(store_ref, jid, now_ms)
-        %{reason: "retry count > 1 and cooldown elapsed", recreate: true}
+        %{
+          reason:
+            "MAC error (code #{error_code}: #{retry_reason_name(error_code)}), immediate session recreation",
+          recreate: true
+        }
+
+      recreate_cooldown_elapsed?(history, jid, now_ms) ->
+        put_session_recreate_time(store_ref, history, jid, now_ms)
+        %{reason: "retry count > 1 and over an hour since last recreation", recreate: true}
 
       true ->
         %{reason: "", recreate: false}
@@ -198,11 +215,13 @@ defmodule BaileysEx.Message.Retry do
     cancel_phone_request(store_ref, message_id)
 
     {:ok, timer_ref} =
-      :timer.apply_after(delay_ms, __MODULE__, :run_phone_request, [
-        store_ref,
-        message_id,
-        callback
-      ])
+      schedule_after(
+        delay_ms,
+        __MODULE__,
+        :run_phone_request,
+        [store_ref, message_id, callback],
+        opts
+      )
 
     pending = Store.get(store_ref, @phone_requests_key, %{}) |> Map.put(message_id, timer_ref)
     Store.put(store_ref, @phone_requests_key, pending)
@@ -218,6 +237,8 @@ defmodule BaileysEx.Message.Retry do
     :ok = Store.put(store_ref, @phone_requests_key, pending)
     callback.()
     :ok
+  rescue
+    ArgumentError -> :ok
   end
 
   @doc """
@@ -232,16 +253,56 @@ defmodule BaileysEx.Message.Retry do
         Store.put(store_ref, @phone_requests_key, rest)
 
       {timer_ref, rest} ->
-        :timer.cancel(timer_ref)
+        cancel_scheduled(timer_ref)
         Store.put(store_ref, @phone_requests_key, rest)
     end
   end
 
   @doc """
+  Marks a retry as successful and releases all per-message retry state.
+  """
+  @spec mark_retry_success(Store.Ref.t(), String.t()) :: :ok
+  def mark_retry_success(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
+    clear_message_retry(store_ref, message_id)
+  end
+
+  @doc """
+  Marks a retry as failed and releases all per-message retry state.
+  """
+  @spec mark_retry_failed(Store.Ref.t(), String.t()) :: :ok
+  def mark_retry_failed(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
+    clear_message_retry(store_ref, message_id)
+  end
+
+  @doc """
+  Clears all retry-manager caches and cancels pending phone requests.
+  """
+  @spec clear(Store.Ref.t()) :: :ok
+  def clear(%Store.Ref{} = store_ref) do
+    store_ref
+    |> Store.get(@phone_requests_key, %{})
+    |> Map.values()
+    |> Enum.each(&cancel_scheduled/1)
+
+    Enum.each(
+      [
+        @recent_cache_key,
+        @retry_counter_key,
+        @session_history_key,
+        @phone_requests_key,
+        @base_keys_key
+      ],
+      &Store.put(store_ref, &1, %{})
+    )
+
+    Store.put(store_ref, @recent_order_key, [])
+  end
+
+  @doc """
   Idempotently queues a placeholder resend command, stalling slightly to await in-flight messages.
   """
-  @spec request_placeholder_resend(Store.Ref.t(), map(), map() | boolean() | nil, keyword()) ::
-          {:ok, String.t() | nil} | {:ok, String.t() | nil, term()} | {:error, term()}
+  @spec request_placeholder_resend(Store.Ref.t(), map(), map() | nil, keyword()) ::
+          {:ok, String.t() | nil, term()} | {:error, term()}
   def request_placeholder_resend(
         %Store.Ref{} = store_ref,
         message_key,
@@ -252,17 +313,19 @@ defmodule BaileysEx.Message.Retry do
     message_id = Map.fetch!(message_key, :id)
     delay_ms = Keyword.get(opts, :delay_ms, 2_000)
     timeout_ms = Keyword.get(opts, :timeout_ms, @placeholder_request_timeout_ms)
+    context = Keyword.get(opts, :context)
+    sleep_fun = Keyword.get(opts, :sleep_fun, &Process.sleep/1)
 
-    if get_placeholder_resend(store_ref, message_id) do
-      {:ok, nil}
+    if match?({:ok, _metadata}, fetch_placeholder_resend(store_ref, message_id)) do
+      {:ok, nil, context}
     else
-      :ok = put_placeholder_resend(store_ref, message_id, msg_data || true, opts)
-      Process.sleep(delay_ms)
+      :ok = put_placeholder_resend(store_ref, message_id, msg_data, opts)
+      if delay_ms > 0, do: sleep_fun.(delay_ms)
 
-      if get_placeholder_resend(store_ref, message_id) do
+      if match?({:ok, _metadata}, fetch_placeholder_resend(store_ref, message_id)) do
         issue_placeholder_resend_request(store_ref, message_key, message_id, timeout_ms, opts)
       else
-        {:ok, "RESOLVED"}
+        {:ok, "RESOLVED", context}
       end
     end
   end
@@ -270,13 +333,13 @@ defmodule BaileysEx.Message.Retry do
   @doc """
   Records an active placeholder awaiting server response.
   """
-  @spec put_placeholder_resend(Store.Ref.t(), String.t(), map() | boolean(), keyword()) :: :ok
+  @spec put_placeholder_resend(Store.Ref.t(), String.t(), map() | nil, keyword()) :: :ok
   def put_placeholder_resend(%Store.Ref{} = store_ref, message_id, data, opts \\ [])
-      when is_binary(message_id) and is_list(opts) do
+      when is_binary(message_id) and (is_map(data) or is_nil(data)) and is_list(opts) do
     cache =
       Store.get(store_ref, @placeholder_cache_key, %{})
       |> Map.put(message_id, %{
-        data: data,
+        metadata: data,
         timer_ref: nil,
         inserted_at: now_ms(opts)
       })
@@ -285,13 +348,16 @@ defmodule BaileysEx.Message.Retry do
   end
 
   @doc """
-  Looks up a placeholder that actively blocking resolution of a message.
+  Fetches an active placeholder that blocks resolution of a message.
   """
-  @spec get_placeholder_resend(Store.Ref.t(), String.t()) :: map() | boolean() | nil
-  def get_placeholder_resend(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
-    case Store.get(store_ref, @placeholder_cache_key, %{}) do
-      %{^message_id => %{data: data}} -> data
-      _ -> nil
+  @spec fetch_placeholder_resend(Store.Ref.t(), String.t()) :: {:ok, map() | nil} | :error
+  def fetch_placeholder_resend(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
+    store_ref
+    |> Store.get(@placeholder_cache_key, %{})
+    |> Map.fetch(message_id)
+    |> case do
+      {:ok, %{metadata: metadata}} -> {:ok, metadata}
+      :error -> :error
     end
   end
 
@@ -313,6 +379,8 @@ defmodule BaileysEx.Message.Retry do
       when is_binary(message_id) do
     pop_placeholder(store_ref, message_id)
     :ok
+  rescue
+    ArgumentError -> :ok
   end
 
   @doc """
@@ -361,50 +429,73 @@ defmodule BaileysEx.Message.Retry do
   Constructs and formats a protocol retry receipt to request a sender re-encrypt a failed message.
   """
   @spec send_retry_request(Store.Ref.t(), BinaryNode.t(), keyword()) ::
-          {:ok, BinaryNode.t()} | {:error, term()}
+          {:ok, BinaryNode.t() | nil} | {:error, term()}
   def send_retry_request(%Store.Ref{} = store_ref, %BinaryNode{attrs: attrs} = node, opts \\ []) do
     message_id = attrs["id"]
-    retry_count = increment_retry_count(store_ref, message_id)
     max_retry_count = Keyword.get(opts, :max_retry_count, @max_retry_count)
 
-    if retry_count >= max_retry_count do
-      {:error, :max_retries_exceeded}
+    if has_exceeded_max_retries?(store_ref, message_id, max_retry_count, opts) do
+      :ok = mark_retry_failed(store_ref, message_id)
+      {:ok, nil}
     else
-      force_include_keys = Keyword.get(opts, :force_include_keys, false) || retry_count > 1
+      retry_count = increment_retry_count(store_ref, message_id, opts)
+      do_send_retry_request(store_ref, node, retry_count, opts)
+    end
+  end
 
-      receipt =
-        %BinaryNode{
-          tag: "receipt",
-          attrs:
-            %{
-              "id" => message_id,
-              "type" => "retry",
-              "to" => attrs["from"]
-            }
-            |> maybe_put_attr("recipient", attrs["recipient"])
-            |> maybe_put_attr("participant", attrs["participant"]),
-          content:
-            [
-              %BinaryNode{
-                tag: "retry",
-                attrs: %{
-                  "count" => Integer.to_string(retry_count),
-                  "id" => message_id,
-                  "t" => attrs["t"] || Integer.to_string(now_seconds(opts)),
-                  "v" => "1",
-                  "error" => Integer.to_string(Keyword.get(opts, :error_code, 0))
-                },
-                content: nil
-              }
-            ]
-            |> maybe_append_registration(opts[:registration_id])
-            |> maybe_append_keys(force_include_keys, opts[:keys_node])
+  defp do_send_retry_request(store_ref, %BinaryNode{attrs: attrs} = node, retry_count, opts) do
+    include_keys? = Keyword.get(opts, :force_include_keys, false) || retry_count > 1
+    :ok = maybe_schedule_placeholder_resend(store_ref, attrs, node, retry_count, opts)
+
+    with {:ok, keys_node} <- retry_keys_node(include_keys?, opts),
+         receipt <- retry_receipt(node, retry_count, keys_node, opts),
+         :ok <- emit_retry_receipt(receipt, opts) do
+      {:ok, receipt}
+    end
+  end
+
+  defp retry_receipt(%BinaryNode{attrs: attrs}, retry_count, keys_node, opts) do
+    %BinaryNode{
+      tag: "receipt",
+      attrs:
+        %{
+          "id" => attrs["id"],
+          "type" => "retry",
+          "to" => attrs["from"]
         }
+        |> maybe_put_attr("recipient", attrs["recipient"])
+        |> maybe_put_attr("participant", attrs["participant"]),
+      content:
+        [
+          %BinaryNode{
+            tag: "retry",
+            attrs: %{
+              "count" => Integer.to_string(retry_count),
+              "id" => attrs["id"],
+              "t" => attrs["t"] || Integer.to_string(now_seconds(opts)),
+              "v" => "1",
+              "error" =>
+                opts
+                |> Keyword.get(:error_code, 0)
+                |> normalize_retry_reason()
+                |> Kernel.||(0)
+                |> Integer.to_string()
+            },
+            content: nil
+          }
+        ]
+        |> maybe_append_registration(opts[:registration_id])
+        |> maybe_append_keys(keys_node)
+    }
+  end
 
-      with :ok <- emit_retry_receipt(receipt, opts) do
-        maybe_schedule_placeholder_resend(store_ref, attrs, node, retry_count, opts)
-        {:ok, receipt}
-      end
+  defp retry_keys_node(false, _opts), do: {:ok, nil}
+
+  defp retry_keys_node(true, opts) do
+    case {opts[:keys_node], opts[:keys_node_fun]} do
+      {%BinaryNode{} = keys_node, _fun} -> {:ok, keys_node}
+      {_keys_node, fun} when is_function(fun, 0) -> fun.()
+      _other -> {:error, :retry_keys_not_configured}
     end
   end
 
@@ -417,7 +508,7 @@ defmodule BaileysEx.Message.Retry do
 
   def parse_retry_error_code(value) when is_binary(value) do
     case Integer.parse(value) do
-      {code, ""} -> retry_reason_for_code(code)
+      {code, _rest} -> retry_reason_for_code(code)
       _ -> nil
     end
   end
@@ -429,26 +520,52 @@ defmodule BaileysEx.Message.Retry do
   def mac_error?(reason) do
     reason
     |> normalize_retry_reason()
-    |> then(&MapSet.member?(@mac_error_codes, &1))
+    |> then(&Map.has_key?(@mac_error_codes, &1))
   end
 
   @doc """
   Bumps the volatile retry tally for a specific message tracking iteration count.
   """
-  @spec increment_retry_count(Store.Ref.t(), String.t()) :: pos_integer()
-  def increment_retry_count(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
+  @spec increment_retry_count(Store.Ref.t(), String.t(), keyword()) :: pos_integer()
+  def increment_retry_count(%Store.Ref{} = store_ref, message_id, opts \\ [])
+      when is_binary(message_id) do
+    now_ms = now_ms(opts)
+    ttl_ms = retry_counter_ttl_ms(opts)
     counters = Store.get(store_ref, @retry_counter_key, %{})
-    count = Map.get(counters, message_id, 0) + 1
-    :ok = Store.put(store_ref, @retry_counter_key, Map.put(counters, message_id, count))
+    counters = prune_retry_counters(counters, now_ms, ttl_ms)
+    count = retry_counter_value(Map.get(counters, message_id)) + 1
+
+    :ok =
+      Store.put(
+        store_ref,
+        @retry_counter_key,
+        Map.put(counters, message_id, %{count: count, timestamp: now_ms})
+      )
+
     count
   end
 
   @doc """
   Yields the current retry iteration count.
   """
-  @spec get_retry_count(Store.Ref.t(), String.t()) :: non_neg_integer()
-  def get_retry_count(%Store.Ref{} = store_ref, message_id) when is_binary(message_id) do
-    Store.get(store_ref, @retry_counter_key, %{}) |> Map.get(message_id, 0)
+  @spec get_retry_count(Store.Ref.t(), String.t(), keyword()) :: non_neg_integer()
+  def get_retry_count(%Store.Ref{} = store_ref, message_id, opts \\ [])
+      when is_binary(message_id) do
+    now_ms = now_ms(opts)
+    ttl_ms = retry_counter_ttl_ms(opts)
+    counters = Store.get(store_ref, @retry_counter_key, %{})
+    counters = prune_retry_counters(counters, now_ms, ttl_ms)
+    count = retry_counter_value(Map.get(counters, message_id))
+
+    counters =
+      if count > 0 do
+        Map.put(counters, message_id, %{count: count, timestamp: now_ms})
+      else
+        counters
+      end
+
+    :ok = Store.put(store_ref, @retry_counter_key, counters)
+    count
   end
 
   @doc """
@@ -464,34 +581,63 @@ defmodule BaileysEx.Message.Retry do
     get_retry_count(store_ref, message_id) >= max_retry_count
   end
 
-  defp put_session_recreate_time(%Store.Ref{} = store_ref, jid, timestamp) do
-    history = Store.get(store_ref, @session_history_key, %{}) |> Map.put(jid, timestamp)
-    Store.put(store_ref, @session_history_key, history)
+  @spec has_exceeded_max_retries?(Store.Ref.t(), String.t(), pos_integer(), keyword()) ::
+          boolean()
+  def has_exceeded_max_retries?(
+        %Store.Ref{} = store_ref,
+        message_id,
+        max_retry_count,
+        opts
+      )
+      when is_binary(message_id) and is_integer(max_retry_count) and max_retry_count > 0 and
+             is_list(opts) do
+    get_retry_count(store_ref, message_id, opts) >= max_retry_count
+  end
+
+  defp put_session_recreate_time(%Store.Ref{} = store_ref, history, jid, timestamp) do
+    Store.put(store_ref, @session_history_key, Map.put(history, jid, timestamp))
+  end
+
+  defp clear_message_retry(%Store.Ref{} = store_ref, message_id) do
+    :ok = cancel_phone_request(store_ref, message_id)
+
+    counters = Store.get(store_ref, @retry_counter_key, %{}) |> Map.delete(message_id)
+    recent = Store.get(store_ref, @recent_cache_key, %{})
+
+    recent_keys =
+      for {{_to, id} = key, _entry} <- recent, id == message_id, do: key
+
+    recent = Map.drop(recent, recent_keys)
+    order = Store.get(store_ref, @recent_order_key, []) |> Enum.reject(&(&1 in recent_keys))
+
+    :ok = Store.put(store_ref, @retry_counter_key, counters)
+    :ok = Store.put(store_ref, @recent_cache_key, recent)
+    Store.put(store_ref, @recent_order_key, order)
   end
 
   defp issue_placeholder_resend_request(store_ref, message_key, message_id, timeout_ms, opts) do
-    case send_placeholder_resend_request(message_key, opts[:send_request_fun]) do
-      {:ok, request_id, context} ->
-        {:ok, cleanup_ref} =
-          :timer.apply_after(timeout_ms, __MODULE__, :expire_placeholder_resend, [
-            store_ref,
-            message_id
-          ])
+    with {:ok, cleanup_ref} <-
+           schedule_after(
+             timeout_ms,
+             __MODULE__,
+             :expire_placeholder_resend,
+             [store_ref, message_id],
+             opts
+           ),
+         :ok <- update_placeholder_timer(store_ref, message_id, cleanup_ref) do
+      case send_placeholder_resend_request(message_key, opts[:send_request_fun]) do
+        {:ok, request_id, context} ->
+          {:ok, request_id, context}
 
-        update_placeholder_timer(store_ref, message_id, cleanup_ref)
-        {:ok, request_id, context}
+        {:error, _reason} = error ->
+          error
 
-      {:ok, request_id} ->
-        {:ok, cleanup_ref} =
-          :timer.apply_after(timeout_ms, __MODULE__, :expire_placeholder_resend, [
-            store_ref,
-            message_id
-          ])
-
-        update_placeholder_timer(store_ref, message_id, cleanup_ref)
-        {:ok, request_id}
-
+        other ->
+          {:error, {:invalid_send_request_result, other}}
+      end
+    else
       {:error, _reason} = error ->
+        :ok = resolve_placeholder_resend(store_ref, message_id)
         error
     end
   end
@@ -512,9 +658,7 @@ defmodule BaileysEx.Message.Retry do
 
   defp maybe_resend_messages(_entries, _resend_fun, _remote_jid, _ids), do: :ok
 
-  defp recreate_cooldown_elapsed?(%Store.Ref{} = store_ref, jid, now_ms) do
-    history = Store.get(store_ref, @session_history_key, %{})
-
+  defp recreate_cooldown_elapsed?(history, jid, now_ms) do
     case Map.get(history, jid) do
       nil -> true
       previous -> now_ms - previous > @session_recreate_cooldown_ms
@@ -522,11 +666,16 @@ defmodule BaileysEx.Message.Retry do
   end
 
   defp update_placeholder_timer(%Store.Ref{} = store_ref, message_id, timer_ref) do
+    cache = Store.get(store_ref, @placeholder_cache_key, %{})
+
     cache =
-      update_in(Store.get(store_ref, @placeholder_cache_key, %{}), [message_id], fn
-        nil -> nil
-        entry -> %{entry | timer_ref: timer_ref}
-      end)
+      case cache do
+        %{^message_id => %{timer_ref: _timer_ref} = entry} ->
+          Map.put(cache, message_id, %{entry | timer_ref: timer_ref})
+
+        _other ->
+          cache
+      end
 
     Store.put(store_ref, @placeholder_cache_key, cache)
   end
@@ -539,10 +688,62 @@ defmodule BaileysEx.Message.Retry do
         Store.put(store_ref, @placeholder_cache_key, rest)
 
       {%{timer_ref: timer_ref}, rest} ->
-        if timer_ref, do: :timer.cancel(timer_ref)
+        if timer_ref, do: cancel_scheduled(timer_ref)
         Store.put(store_ref, @placeholder_cache_key, rest)
     end
   end
+
+  defp schedule_after(delay_ms, module, function, args, opts) do
+    case opts[:task_supervisor] do
+      nil ->
+        :timer.apply_after(delay_ms, module, function, args)
+
+      task_supervisor ->
+        start_supervised_timer(
+          task_supervisor,
+          opts[:timer_owner],
+          delay_ms,
+          module,
+          function,
+          args
+        )
+    end
+  end
+
+  defp start_supervised_timer(task_supervisor, owner, delay_ms, module, function, args) do
+    case Task.Supervisor.start_child(task_supervisor, fn ->
+           run_scheduled(owner, delay_ms, module, function, args)
+         end) do
+      {:ok, pid} -> {:ok, {:task, pid}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp run_scheduled(owner, delay_ms, module, function, args) when is_pid(owner) do
+    monitor_ref = Process.monitor(owner)
+
+    receive do
+      {:DOWN, ^monitor_ref, :process, ^owner, _reason} -> :ok
+    after
+      delay_ms ->
+        Process.demonitor(monitor_ref, [:flush])
+        apply(module, function, args)
+    end
+  end
+
+  defp run_scheduled(_owner, delay_ms, module, function, args) do
+    receive do
+    after
+      delay_ms -> apply(module, function, args)
+    end
+  end
+
+  defp cancel_scheduled({:task, pid}) when is_pid(pid) do
+    Process.exit(pid, :shutdown)
+    :ok
+  end
+
+  defp cancel_scheduled(timer_ref), do: :timer.cancel(timer_ref)
 
   defp normalize_retry_reason(reason) when is_atom(reason),
     do: Map.get(@retry_reason_values, reason, nil)
@@ -554,6 +755,41 @@ defmodule BaileysEx.Message.Retry do
     Enum.find_value(@retry_reason_values, :UNKNOWN_ERROR, fn
       {reason, ^code} -> reason
       _other -> false
+    end)
+  end
+
+  defp retry_reason_name(4), do: "SignalErrorInvalidMessage"
+  defp retry_reason_name(7), do: "SignalErrorBadMac"
+
+  defp retry_counter_ttl_ms(opts) do
+    Keyword.get(opts, :retry_counter_ttl_ms, @retry_counter_ttl_ms)
+  end
+
+  defp retry_counter_value(%{count: count}) when is_integer(count), do: count
+  defp retry_counter_value(count) when is_integer(count), do: count
+  defp retry_counter_value(_entry), do: 0
+
+  defp prune_retry_counters(counters, now_ms, ttl_ms) do
+    Enum.reduce(counters, %{}, fn
+      {message_id, %{count: count, timestamp: timestamp} = entry}, acc
+      when is_integer(count) and is_integer(timestamp) ->
+        if now_ms - timestamp <= ttl_ms, do: Map.put(acc, message_id, entry), else: acc
+
+      {_message_id, count}, acc when is_integer(count) ->
+        acc
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  defp prune_timestamp_cache(cache, now_ms, ttl_ms) do
+    Enum.reduce(cache, %{}, fn
+      {key, timestamp}, acc when is_integer(timestamp) ->
+        if now_ms - timestamp <= ttl_ms, do: Map.put(acc, key, timestamp), else: acc
+
+      _entry, acc ->
+        acc
     end)
   end
 
@@ -666,7 +902,12 @@ defmodule BaileysEx.Message.Retry do
           fn ->
             fun.(message_key, msg_data)
           end,
-          delay_ms: Keyword.get(opts, :phone_request_delay_ms, @phone_request_delay_ms)
+          opts
+          |> Keyword.take([:task_supervisor, :timer_owner])
+          |> Keyword.put(
+            :delay_ms,
+            Keyword.get(opts, :phone_request_delay_ms, @phone_request_delay_ms)
+          )
         )
 
       _ ->
@@ -690,8 +931,8 @@ defmodule BaileysEx.Message.Retry do
 
   defp maybe_append_registration(content, _registration_id), do: content
 
-  defp maybe_append_keys(content, true, %BinaryNode{} = keys_node), do: content ++ [keys_node]
-  defp maybe_append_keys(content, _force_include_keys, _keys_node), do: content
+  defp maybe_append_keys(content, %BinaryNode{} = keys_node), do: content ++ [keys_node]
+  defp maybe_append_keys(content, nil), do: content
 
   defp maybe_put_attr(attrs, _key, nil), do: attrs
   defp maybe_put_attr(attrs, key, value), do: Map.put(attrs, key, value)

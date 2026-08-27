@@ -11,6 +11,8 @@
 
 **Fix:**
 
+For a caller-owned script, test, or IEx session:
+
 ```elixir
 {:ok, connection} =
   BaileysEx.connect(auth_state,
@@ -55,11 +57,13 @@ Wait for the open connection update before you request a pairing code or send a 
 ```elixir
 config = BaileysEx.Connection.Config.new(default_query_timeout_ms: 120_000)
 
-{:ok, connection} =
-  BaileysEx.connect(auth_state,
-    transport: {BaileysEx.Connection.Transport.MintWebSocket, []},
-    config: config
-  )
+children = [
+  {BaileysEx,
+   auth_state: auth_state,
+   name: MyApp.WhatsApp,
+   transport: {BaileysEx.Connection.Transport.MintWebSocket, []},
+   config: config}
+]
 ```
 
 Increase the timeout only after you confirm the transport and session are otherwise healthy.

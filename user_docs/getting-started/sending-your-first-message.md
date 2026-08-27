@@ -16,8 +16,8 @@ You will finish this page with a text message sent from a live BaileysEx connect
 
 Call `BaileysEx.send_message/4` with a user JID and a content map.
 
-BaileysEx builds the built-in production Signal adapter automatically during
-`connect/2` when the auth state includes the standard Signal credentials. Use
+BaileysEx builds the built-in production Signal adapter automatically when the
+connection starts with the standard Signal credentials. Use
 `signal_repository:` or `signal_repository_adapter:` only when you need a custom
 repository implementation.
 

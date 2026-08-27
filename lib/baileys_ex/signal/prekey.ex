@@ -37,13 +37,28 @@ defmodule BaileysEx.Signal.PreKey do
     end
   end
 
+  @spec retry_keys_node(Store.t(), map(), binary() | nil, keyword()) ::
+          {:ok, %{update: map(), node: BinaryNode.t()}} | {:error, term()}
+  def retry_keys_node(%Store{} = store, auth_state, device_identity, opts \\ [])
+      when is_map(auth_state) and (is_binary(device_identity) or is_nil(device_identity)) and
+             is_list(opts) do
+    with {:ok, %{update: update, node: upload_node}} <-
+           next_pre_keys_node(store, auth_state, 1, opts),
+         {:ok, content} <- retry_keys_content(upload_node, device_identity) do
+      {:ok, %{update: update, node: %BinaryNode{tag: "keys", attrs: %{}, content: content}}}
+    end
+  end
+
   @spec upload_if_required(keyword()) :: :ok | {:error, term()}
   def upload_if_required(opts) when is_list(opts) do
     upload_key = Keyword.get(opts, :upload_key, self())
     timeout_ms = Keyword.get(opts, :upload_timeout_ms, @default_upload_timeout_ms)
+    task_supervisor = Keyword.get(opts, :task_supervisor)
 
     :global.trans({__MODULE__, upload_key}, fn ->
-      with_upload_timeout(timeout_ms, fn -> do_upload_if_required_locked(opts) end)
+      with_upload_timeout(task_supervisor, timeout_ms, fn ->
+        do_upload_if_required_locked(opts)
+      end)
     end)
   end
 
@@ -52,9 +67,10 @@ defmodule BaileysEx.Signal.PreKey do
       when is_list(opts) and is_integer(pre_key_count) and pre_key_count >= 0 do
     upload_key = Keyword.get(opts, :upload_key, self())
     timeout_ms = Keyword.get(opts, :upload_timeout_ms, @default_upload_timeout_ms)
+    task_supervisor = Keyword.get(opts, :task_supervisor)
 
     :global.trans({__MODULE__, upload_key}, fn ->
-      with_upload_timeout(timeout_ms, fn ->
+      with_upload_timeout(task_supervisor, timeout_ms, fn ->
         do_maybe_upload_for_server_count_locked(opts, pre_key_count)
       end)
     end)
@@ -311,6 +327,40 @@ defmodule BaileysEx.Signal.PreKey do
     }
   end
 
+  defp retry_keys_content(
+         %BinaryNode{
+           content: [
+             %BinaryNode{tag: "registration"},
+             %BinaryNode{tag: "type"} = type,
+             %BinaryNode{tag: "identity"} = identity,
+             %BinaryNode{tag: "list", content: [%BinaryNode{tag: "key"} = pre_key]},
+             %BinaryNode{tag: "skey"} = signed_pre_key
+           ]
+         },
+         device_identity
+       ) do
+    content = [type, identity, pre_key, signed_pre_key]
+
+    content =
+      if is_binary(device_identity) do
+        content ++
+          [
+            %BinaryNode{
+              tag: "device-identity",
+              attrs: %{},
+              content: {:binary, device_identity}
+            }
+          ]
+      else
+        content
+      end
+
+    {:ok, content}
+  end
+
+  defp retry_keys_content(%BinaryNode{}, _device_identity),
+    do: {:error, :invalid_retry_keys_node}
+
   defp xmpp_signed_prekey(%{key_pair: key_pair, key_id: key_id, signature: signature}) do
     %BinaryNode{
       tag: "skey",
@@ -400,34 +450,47 @@ defmodule BaileysEx.Signal.PreKey do
 
   defp child_by_tag(_node, _tag), do: nil
 
-  defp with_upload_timeout(timeout_ms, fun)
+  defp with_upload_timeout(task_supervisor, timeout_ms, fun)
        when is_integer(timeout_ms) and timeout_ms > 0 and is_function(fun, 0) do
-    caller = self()
-    ref = make_ref()
+    case task_supervisor do
+      nil ->
+        with_temporary_task_supervisor(fn supervisor ->
+          run_with_upload_timeout(supervisor, timeout_ms, fun)
+        end)
 
-    {pid, monitor_ref} =
-      spawn_monitor(fn ->
-        Kernel.send(caller, {ref, fun.()})
-      end)
+      task_supervisor ->
+        run_with_upload_timeout(task_supervisor, timeout_ms, fun)
+    end
+  end
 
-    receive do
-      {^ref, result} ->
-        Process.demonitor(monitor_ref, [:flush])
-        result
-
-      {:DOWN, ^monitor_ref, :process, _pid, reason} ->
-        {:error, {:upload_crash, reason}}
-    after
-      timeout_ms ->
-        Process.exit(pid, :kill)
-
-        receive do
-          {:DOWN, ^monitor_ref, :process, _pid, _reason} -> :ok
+  defp with_temporary_task_supervisor(fun) when is_function(fun, 1) do
+    case Task.Supervisor.start_link() do
+      {:ok, supervisor} ->
+        try do
+          fun.(supervisor)
         after
-          0 -> :ok
+          stop_temporary_task_supervisor(supervisor)
         end
 
-        {:error, :upload_timeout}
+      {:error, reason} ->
+        {:error, {:task_supervisor_start_failed, reason}}
+    end
+  end
+
+  defp stop_temporary_task_supervisor(supervisor) do
+    Supervisor.stop(supervisor)
+  catch
+    :exit, :noproc -> :ok
+    :exit, {:noproc, _details} -> :ok
+  end
+
+  defp run_with_upload_timeout(task_supervisor, timeout_ms, fun) do
+    task = Task.Supervisor.async_nolink(task_supervisor, fun)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, {:upload_crash, reason}}
+      nil -> {:error, :upload_timeout}
     end
   end
 end

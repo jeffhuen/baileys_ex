@@ -12,6 +12,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
   alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Retry
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store, as: SignalStore
   alias BaileysEx.Signal.Store.Memory, as: SignalStoreMemory
@@ -187,6 +188,78 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end
   end
 
+  defmodule BlockingSignalAdapter do
+    @behaviour Repository.Adapter
+
+    alias BaileysEx.TestHelpers.MessageSignalHelpers.FakeAdapter
+
+    @impl true
+    defdelegate inject_e2e_session(state, address, session), to: FakeAdapter
+
+    @impl true
+    defdelegate validate_session(state, address), to: FakeAdapter
+
+    @impl true
+    def decrypt_message(state, address, type, ciphertext) do
+      case state do
+        %{blocking_decrypt_test_pid: test_pid, blocking_decrypt_gate: gate} ->
+          send(test_pid, {:signal_decrypt_started, self()})
+
+          receive do
+            {:continue_signal_decrypt, ^gate} -> :ok
+          end
+
+          FakeAdapter.decrypt_message(
+            Map.drop(state, [:blocking_decrypt_test_pid, :blocking_decrypt_gate]),
+            address,
+            type,
+            ciphertext
+          )
+
+        _other ->
+          FakeAdapter.decrypt_message(state, address, type, ciphertext)
+      end
+    end
+
+    @impl true
+    defdelegate delete_sessions(state, addresses), to: FakeAdapter
+
+    @impl true
+    defdelegate migrate_sessions(state, operations), to: FakeAdapter
+
+    @impl true
+    defdelegate encrypt_group_message(state, sender_key_name, plaintext), to: FakeAdapter
+
+    @impl true
+    defdelegate process_sender_key_distribution_message(
+                  state,
+                  sender_key_name,
+                  distribution_message
+                ),
+                to: FakeAdapter
+
+    @impl true
+    defdelegate decrypt_group_message(state, sender_key_name, ciphertext), to: FakeAdapter
+
+    @impl true
+    def encrypt_message(state, address, plaintext) do
+      test_pid = Map.fetch!(state, :blocking_test_pid)
+      gate = Map.fetch!(state, :blocking_gate)
+      send(test_pid, {:signal_encrypt_started, self()})
+
+      receive do
+        {:continue_signal_encrypt, ^gate} -> :ok
+      end
+
+      metadata = Map.take(state, [:blocking_test_pid, :blocking_gate])
+
+      case FakeAdapter.encrypt_message(Map.drop(state, Map.keys(metadata)), address, plaintext) do
+        {:ok, next_state, result} -> {:ok, Map.merge(next_state, metadata), result}
+        other -> other
+      end
+    end
+  end
+
   test "starts socket, store, and event emitter under a rest_for_one tree" do
     name = {:phase6_test, System.unique_integer([:positive])}
 
@@ -266,8 +339,10 @@ defmodule BaileysEx.Connection.SupervisorTest do
              )
 
     on_exit(fn ->
-      if Process.alive?(supervisor) do
+      try do
         Elixir.Supervisor.stop(supervisor)
+      catch
+        :exit, _reason -> :ok
       end
     end)
 
@@ -280,7 +355,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                     %{connection_pid: ^supervisor, status: :ok}}
   end
 
-  test "start_connection/2 injects a default config into the coordinator when none is supplied" do
+  test "start_connection/2 connects with the default config when none is supplied" do
     assert {:ok, supervisor} =
              Supervisor.start_connection(%{creds: %{}},
                socket_module: FakeSocket,
@@ -288,9 +363,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
              )
 
     assert_receive :fake_socket_connect
-
-    coordinator = Supervisor.coordinator(supervisor)
-    assert %Config{} = :sys.get_state(coordinator).config
 
     assert :ok = Supervisor.stop_connection(supervisor)
   end
@@ -316,13 +388,46 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert :ok = Supervisor.stop_connection(supervisor)
   end
 
-  test "crashing the store restarts the store and event emitter while preserving the socket" do
+  test "crashing the store reconnects the runtime and preserves dynamic subscriptions" do
     name = {:phase6_test, System.unique_integer([:positive])}
 
     assert {:ok, supervisor} =
              Supervisor.start_link(
                name: name,
-               config: Config.new(),
+               config: Config.new(fire_init_queries: false),
+               auth_state: %{creds: %{}},
+               socket_module: FakeSocket,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    store_pid = child_pid!(supervisor, Store)
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    parent = self()
+
+    unsubscribe =
+      EventEmitter.process(emitter_pid, fn events ->
+        send(parent, {:processed_events, events})
+      end)
+
+    Process.exit(store_pid, :kill)
+
+    assert_receive :fake_socket_connect, 500
+
+    assert :ok = EventEmitter.emit(emitter_pid, :connection_update, %{marker: :after_restart})
+    assert_receive {:processed_events, %{connection_update: %{marker: :after_restart}}}
+
+    unsubscribe.()
+    assert :ok = EventEmitter.emit(emitter_pid, :connection_update, %{marker: :after_unsubscribe})
+    refute_receive {:processed_events, %{connection_update: %{marker: :after_unsubscribe}}}
+  end
+
+  test "crashing the emitter restarts dependent runtime children" do
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               config: Config.new(fire_init_queries: false),
                auth_state: %{creds: %{}},
                transport: {NoopTransport, %{}}
              )
@@ -330,12 +435,17 @@ defmodule BaileysEx.Connection.SupervisorTest do
     socket_pid = child_pid!(supervisor, Socket)
     store_pid = child_pid!(supervisor, Store)
     emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+    Process.exit(emitter_pid, :kill)
 
-    Process.exit(store_pid, :kill)
-
-    assert_eventually(fn -> child_pid!(supervisor, Store) != store_pid end)
     assert_eventually(fn -> child_pid!(supervisor, EventEmitter) != emitter_pid end)
-    assert child_pid!(supervisor, Socket) == socket_pid
+
+    assert_eventually(fn ->
+      child_pid!(supervisor, BaileysEx.Connection.Coordinator) != coordinator_pid
+    end)
+
+    assert_eventually(fn -> child_pid!(supervisor, Socket) != socket_pid end)
+    assert_eventually(fn -> child_pid!(supervisor, Store) != store_pid end)
   end
 
   test "supervisor does not auto-reconnect by default after an unexpected close" do
@@ -542,6 +652,86 @@ defmodule BaileysEx.Connection.SupervisorTest do
                    500
   end
 
+  test "failed message decryption sends a retry receipt and unhandled-error ack" do
+    {repo, _signal_store} = MessageSignalHelpers.new_repo()
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               config:
+                 Config.new(
+                   fire_init_queries: false,
+                   mark_online_on_connect: false
+                 ),
+               auth_state: %{
+                 creds: %{
+                   me: %{id: "15550001111:1@s.whatsapp.net"},
+                   registration_id: 1_234
+                 }
+               },
+               socket_module: FakeSocket,
+               test_pid: self(),
+               signal_repository: repo
+             )
+
+    assert_receive :fake_socket_connect
+
+    node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "decrypt-failure-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "participant" => "15551234567:2@s.whatsapp.net",
+        "t" => "1710000000"
+      },
+      content: [
+        %BinaryNode{tag: "enc", attrs: %{"type" => "msg"}, content: {:binary, <<1, 2, 3>>}}
+      ]
+    }
+
+    assert :ok =
+             supervisor
+             |> child_pid!(EventEmitter)
+             |> EventEmitter.emit(:socket_node, %{node: node})
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "receipt",
+                      attrs: %{
+                        "id" => "decrypt-failure-1",
+                        "to" => "15551234567@s.whatsapp.net",
+                        "participant" => "15551234567:2@s.whatsapp.net",
+                        "type" => "retry"
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "retry",
+                          attrs: %{
+                            "count" => "1",
+                            "error" => "0",
+                            "id" => "decrypt-failure-1",
+                            "t" => "1710000000",
+                            "v" => "1"
+                          }
+                        },
+                        %BinaryNode{tag: "registration", content: <<0, 0, 4, 210>>}
+                      ]
+                    }},
+                   500
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{
+                        "class" => "message",
+                        "error" => "500",
+                        "id" => "decrypt-failure-1",
+                        "participant" => "15551234567:2@s.whatsapp.net",
+                        "to" => "15551234567@s.whatsapp.net"
+                      }
+                    }},
+                   500
+  end
+
   test "send_message issues trusted-contact tokens after eligible direct sends" do
     name = {:phase17_test, System.unique_integer([:positive])}
     {repo, _signal_store} = MessageSignalHelpers.new_repo()
@@ -664,6 +854,183 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end)
   end
 
+  test "coordinator stays responsive and owns in-flight send tasks" do
+    {:ok, signal_store} = SignalStore.new()
+    gate = make_ref()
+
+    repo =
+      Repository.new(
+        adapter: BlockingSignalAdapter,
+        adapter_state: %{blocking_test_pid: self(), blocking_gate: gate},
+        store: signal_store
+      )
+
+    session = MessageSignalHelpers.session_fixture()
+
+    assert {:ok, repo} =
+             Repository.inject_e2e_session(repo, %{
+               jid: "15551234567:0@s.whatsapp.net",
+               session: session
+             })
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               signal_repository: repo,
+               max_send_queue: 1,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    assert %SignalStore{} = runtime_signal_store = Supervisor.signal_store(supervisor)
+
+    assert :ok =
+             SignalStore.set(runtime_signal_store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => []}
+             })
+
+    coordinator = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        jid = %BaileysEx.JID{user: "15551234567", server: "s.whatsapp.net"}
+
+        result =
+          try do
+            Supervisor.send_message(supervisor, jid, %{text: "blocked"})
+          catch
+            :exit, reason -> {:exit, reason}
+          end
+
+        send(parent, {:blocked_send_result, result})
+      end)
+
+    caller_ref = Process.monitor(caller)
+
+    assert_receive {:signal_encrypt_started, send_task_pid}
+    send_task_ref = Process.monitor(send_task_pid)
+
+    jid = %BaileysEx.JID{user: "15551234567", server: "s.whatsapp.net"}
+
+    assert {:error, :send_queue_full} =
+             Supervisor.send_message(supervisor, jid, %{text: "over capacity"})
+
+    emitter = child_pid!(supervisor, EventEmitter)
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :open})
+    assert_receive :fake_socket_unified_session, 100
+    assert_receive {:fake_socket_presence_update, presence}, 100
+    assert presence in [:available, :unavailable]
+
+    Process.exit(coordinator, :kill)
+
+    assert_receive {:DOWN, ^send_task_ref, :process, ^send_task_pid, _reason}, 500
+    assert_receive {:blocked_send_result, _result}, 500
+    assert_receive {:DOWN, ^caller_ref, :process, ^caller, :normal}, 500
+    assert_receive :fake_socket_connect, 500
+  end
+
+  test "repository-mutating message work does not delay receipt ACKs or connection events" do
+    {:ok, signal_store} = SignalStore.new()
+    gate = make_ref()
+
+    base_repo =
+      Repository.new(
+        adapter: MessageSignalHelpers.FakeAdapter,
+        adapter_state: %{},
+        store: signal_store
+      )
+
+    assert {:ok, base_repo} =
+             Repository.inject_e2e_session(base_repo, %{
+               jid: "15551234567:0@s.whatsapp.net",
+               session: MessageSignalHelpers.session_fixture()
+             })
+
+    plaintext = Message.encode(Builder.build(%{text: "blocked inbound"}))
+
+    assert {:ok, base_repo, %{ciphertext: ciphertext}} =
+             Repository.encrypt_message(base_repo, %{
+               jid: "15551234567:0@s.whatsapp.net",
+               data: plaintext
+             })
+
+    repository = %{
+      base_repo
+      | adapter: BlockingSignalAdapter,
+        adapter_state:
+          Map.merge(base_repo.adapter_state, %{
+            blocking_decrypt_test_pid: self(),
+            blocking_decrypt_gate: gate
+          })
+    }
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               signal_repository: repository,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    emitter = child_pid!(supervisor, EventEmitter)
+
+    message_node = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "blocked-receive-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => "1710000800"
+      },
+      content: [
+        %BinaryNode{tag: "enc", attrs: %{"type" => "pkmsg"}, content: {:binary, ciphertext}}
+      ]
+    }
+
+    assert :ok = EventEmitter.emit(emitter, :socket_node, %{node: message_node})
+    assert_receive {:signal_decrypt_started, decrypt_task}
+
+    receipt = %BinaryNode{
+      tag: "receipt",
+      attrs: %{
+        "id" => "unrelated-receipt-1",
+        "from" => "15557654321@s.whatsapp.net",
+        "t" => "1710000801"
+      },
+      content: nil
+    }
+
+    assert :ok = EventEmitter.emit(emitter, :socket_node, %{node: receipt})
+    assert :ok = EventEmitter.emit(emitter, :connection_update, %{connection: :open})
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{"class" => "receipt", "id" => "unrelated-receipt-1"}
+                    }},
+                   100
+
+    assert_receive :fake_socket_unified_session, 100
+    assert_receive {:fake_socket_presence_update, _presence}, 100
+
+    send(decrypt_task, {:continue_signal_decrypt, gate})
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "receipt",
+                      attrs: %{"id" => "blocked-receive-1"}
+                    }},
+                   500
+  end
+
   test "supervisor persists creds updates into the store" do
     name = {:phase6_test, System.unique_integer([:positive])}
 
@@ -742,7 +1109,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
              )
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
-    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
     unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
 
     assert :ok =
@@ -750,10 +1116,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                received_pending_notifications: true
              })
 
-    assert_eventually(fn ->
-      :sys.get_state(coordinator_pid).sync_state == :awaiting_initial_sync and
-        EventEmitter.buffering?(emitter_pid)
-    end)
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :messaging_history_set, %{
@@ -763,8 +1126,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
                sync_type: :recent
              })
 
-    assert_eventually(fn -> :sys.get_state(coordinator_pid).sync_state == :syncing end)
-    assert_eventually(fn -> :sys.get_state(coordinator_pid).sync_state == :online end)
     assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) == false end)
 
     assert_receive {:processed_events,
@@ -781,6 +1142,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
   test "pending notifications do not wait for history when should_sync_history_message disables RECENT" do
     name = {:phase10_test, System.unique_integer([:positive])}
+    parent = self()
 
     assert {:ok, supervisor} =
              Supervisor.start_link(
@@ -798,21 +1160,30 @@ defmodule BaileysEx.Connection.SupervisorTest do
              )
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
-    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :connection_update, %{
                received_pending_notifications: true
              })
 
-    assert_eventually(fn ->
-      :sys.get_state(coordinator_pid).sync_state == :online and
-        EventEmitter.buffering?(emitter_pid) == false
-    end)
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        sync_state: :online,
+                        initial_sync_complete: true,
+                        initial_sync_reason: :history_sync_disabled
+                      }
+                    }},
+                   500
+
+    refute EventEmitter.buffering?(emitter_pid)
+    unsubscribe.()
   end
 
   test "pending notifications use the Baileys default history-sync callback when config omits one" do
     name = {:phase10_test, System.unique_integer([:positive])}
+    parent = self()
 
     assert {:ok, supervisor} =
              Supervisor.start_link(
@@ -826,17 +1197,26 @@ defmodule BaileysEx.Connection.SupervisorTest do
              )
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
-    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :connection_update, %{
                received_pending_notifications: true
              })
 
-    assert_eventually(fn ->
-      :sys.get_state(coordinator_pid).sync_state == :awaiting_initial_sync and
-        EventEmitter.buffering?(emitter_pid)
-    end)
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        sync_state: :online,
+                        initial_sync_complete: true,
+                        initial_sync_reason: :timeout
+                      }
+                    }},
+                   500
+
+    unsubscribe.()
   end
 
   test "server_sync notifications trigger the built-in app state resync callback" do
@@ -969,16 +1349,13 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_receive :fake_socket_connect
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
-    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :connection_update, %{
                received_pending_notifications: true
              })
 
-    assert_eventually(fn ->
-      :sys.get_state(coordinator_pid).sync_state == :awaiting_initial_sync
-    end)
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :messaging_history_set, %{
@@ -987,8 +1364,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
                messages: [],
                sync_type: :recent
              })
-
-    assert_eventually(fn -> :sys.get_state(coordinator_pid).sync_state == :syncing end)
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "AQIDBA=="})
@@ -1009,8 +1384,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     assert Enum.map(collections, & &1.attrs["name"]) ==
              ["critical_block", "critical_unblock_low", "regular_high", "regular_low", "regular"]
-
-    assert_eventually(fn -> :sys.get_state(coordinator_pid).sync_state == :online end)
   end
 
   test "app state key arrival does not trigger an initial app state resync before syncing" do
@@ -1034,7 +1407,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_receive :fake_socket_connect
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
-    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
 
     assert :ok =
              EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "AQIDBA=="})
@@ -1042,71 +1414,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
     refute_receive {:fake_socket_query, %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}},
                     _timeout},
                    50
-
-    assert :sys.get_state(coordinator_pid).app_state_sync_ref == nil
-  end
-
-  test "app state key arrival resyncs blocked collections outside active initial sync" do
-    name = {:phase10_test, System.unique_integer([:positive])}
-
-    query_handler = fn
-      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}}, _timeout ->
-        {:ok,
-         %BinaryNode{
-           tag: "iq",
-           attrs: %{"type" => "result"},
-           content: [%BinaryNode{tag: "sync", attrs: %{}, content: []}]
-         }}
-
-      _node, _timeout ->
-        {:error, :unhandled}
-    end
-
-    assert {:ok, supervisor} =
-             Supervisor.start_link(
-               name: name,
-               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
-               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
-               socket_module: FakeSocket,
-               query_handler: query_handler,
-               test_pid: self(),
-               transport: {NoopTransport, %{}}
-             )
-
-    assert_receive :fake_socket_connect
-
-    emitter_pid = child_pid!(supervisor, EventEmitter)
-    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
-
-    :sys.replace_state(coordinator_pid, fn state -> %{state | sync_state: :online} end)
-    send(coordinator_pid, {:app_state_collection_blocked, :regular_high})
-
-    assert_eventually(fn ->
-      :regular_high in :sys.get_state(coordinator_pid).blocked_app_state_collections
-    end)
-
-    assert :ok =
-             EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "AQIDBA=="})
-
-    assert_receive {:fake_socket_sync_creds_update, %{my_app_state_key_id: "AQIDBA=="}}, 200
-
-    assert_receive {:fake_socket_query,
-                    %BinaryNode{
-                      attrs: %{"xmlns" => "w:sync:app:state"},
-                      content: [
-                        %BinaryNode{
-                          tag: "sync",
-                          content: [
-                            %BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}}
-                          ]
-                        }
-                      ]
-                    }, _timeout},
-                   300
-
-    assert_eventually(fn ->
-      MapSet.size(:sys.get_state(coordinator_pid).blocked_app_state_collections) == 0
-    end)
   end
 
   test "connection open fires init queries, updates store caches, and marks presence available" do
@@ -1760,7 +2067,6 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_receive :fake_socket_connect
 
     emitter_pid = child_pid!(supervisor, EventEmitter)
-    coordinator_pid = child_pid!(supervisor, BaileysEx.Connection.Coordinator)
     parent = self()
     unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:events, &1}))
 
@@ -1801,10 +2107,10 @@ defmodule BaileysEx.Connection.SupervisorTest do
                       }
                     }}
 
-    repo = :sys.get_state(coordinator_pid).signal_repository
-
-    assert {:ok, _repo, "12345@lid"} =
-             Repository.get_lid_for_pn(repo, "15551234567@s.whatsapp.net")
+    assert {:ok, "12345@lid"} =
+             supervisor
+             |> Supervisor.signal_store()
+             |> LIDMappingStore.get_lid_for_pn("15551234567@s.whatsapp.net")
 
     unsubscribe.()
   end

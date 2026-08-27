@@ -839,7 +839,7 @@ defmodule BaileysEx.Syncd.Codec do
   @spec extract_syncd_patches(map(), keyword()) ::
           {:ok,
            %{
-             atom() => %{
+             String.t() => %{
                patches: [map()],
                has_more_patches: boolean(),
                snapshot: map() | nil
@@ -848,7 +848,7 @@ defmodule BaileysEx.Syncd.Codec do
           | {:error, term()}
   def extract_syncd_patches(response, opts \\ [])
 
-  def extract_syncd_patches(%{tag: "iq", content: content}, opts) when is_list(content) do
+  def extract_syncd_patches(%{content: content}, opts) when is_list(content) do
     sync_node = Enum.find(content, &(&1.tag == "sync"))
     collection_nodes = if sync_node, do: get_children(sync_node, "collection"), else: []
     external_blob_fetcher = Keyword.get(opts, :external_blob_fetcher, &download_external_blob/1)
@@ -1055,17 +1055,19 @@ defmodule BaileysEx.Syncd.Codec do
   defp skippable_mutation_error?(_reason), do: false
 
   defp decode_collection_node(collection_node, external_blob_fetcher) do
-    name = String.to_existing_atom(collection_node.attrs["name"])
-    has_more = collection_node.attrs["has_more_patches"] == "true"
-
-    with {:ok, snapshot} <-
+    with name when is_binary(name) and name != "" <- collection_node.attrs["name"],
+         {:ok, snapshot} <-
            decode_snapshot_node(find_child(collection_node, "snapshot"), external_blob_fetcher) do
       {:ok, name,
        %{
          patches: decode_collection_patches(collection_node),
-         has_more_patches: has_more,
+         has_more_patches: collection_node.attrs["has_more_patches"] == "true",
          snapshot: snapshot
        }}
+    else
+      nil -> {:error, {:invalid_patch_name, nil}}
+      "" -> {:error, {:invalid_patch_name, ""}}
+      {:error, _reason} = error -> error
     end
   end
 

@@ -15,11 +15,11 @@ defmodule BaileysEx.Media.HTTP do
       |> List.wrap()
       |> Enum.map(fn {key, value} -> {String.downcase(to_string(key)), value} end)
 
-    normalized_keys = MapSet.new(Enum.map(normalized, &elem(&1, 0)))
+    normalized_keys = Map.new(normalized, fn {key, _value} -> {key, true} end)
 
     normalized ++
       Enum.reject(required, fn {key, _value} ->
-        MapSet.member?(normalized_keys, key)
+        Map.has_key?(normalized_keys, key)
       end)
   end
 end

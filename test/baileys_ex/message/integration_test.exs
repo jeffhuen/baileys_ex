@@ -103,7 +103,7 @@ defmodule BaileysEx.Message.IntegrationTest do
     parent = self()
     unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
 
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     session = %{
       registration_id: 42,
@@ -210,7 +210,7 @@ defmodule BaileysEx.Message.IntegrationTest do
     parent = self()
     unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
 
-    {:ok, store} = Store.start_link()
+    {:ok, store} = Store.new()
 
     session = %{
       registration_id: 42,

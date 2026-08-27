@@ -9,7 +9,7 @@ defmodule BaileysExTest do
     application = BaileysEx.MixProject.application()
 
     refute Keyword.has_key?(application, :mod)
-    assert Keyword.get(application, :extra_applications) == [:logger, :crypto]
+    assert Keyword.get(application, :extra_applications) == [:logger, :crypto, :inets, :ssl]
   end
 
   @tag :tmp_dir

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The initial app state sync now starts when history sync moves the
+  connection into syncing, even if the app state key has not arrived yet,
+  matching Baileys `doAppStateSync`. Collections that cannot be decrypted are
+  parked as blocked and resynced when `my_app_state_key_id` arrives. Before,
+  a late key meant the full sync (contacts, chat settings) never ran.
+
 ## [0.1.0-alpha.12] - 2026-08-26
 
 - This release matches the behavior of Baileys `v7.0.0-rc14`.

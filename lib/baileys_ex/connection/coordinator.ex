@@ -2498,15 +2498,11 @@ defmodule BaileysEx.Connection.Coordinator do
     Logger.warning("blocked app state resync failed: #{inspect(reason)}")
   end
 
-  defp maybe_launch_initial_app_state_sync(%State{} = state) do
-    case current_app_state_key_id(state) do
-      key_id when is_binary(key_id) and key_id != "" ->
-        launch_initial_app_state_sync(state)
-
-      _ ->
-        state
-    end
-  end
+  # Baileys runs doAppStateSync as soon as history moves the socket into Syncing,
+  # even before the app state key arrives: collections that cannot be decrypted
+  # yet are parked as blocked and resynced when `my_app_state_key_id` shows up.
+  defp maybe_launch_initial_app_state_sync(%State{} = state),
+    do: launch_initial_app_state_sync(state)
 
   defp launch_initial_app_state_sync(%State{} = state) do
     case fetch_socket_pid(state) do
@@ -2615,12 +2611,6 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp normalize_patch_name(name), do: {:error, {:unknown_patch_name, name}}
-
-  defp current_app_state_key_id(%State{} = state) do
-    state.store_ref
-    |> Store.get(:creds, %{})
-    |> Map.get(:my_app_state_key_id)
-  end
 
   defp current_me(%State{} = state) do
     state.store_ref

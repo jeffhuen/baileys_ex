@@ -1386,6 +1386,68 @@ defmodule BaileysEx.Connection.SupervisorTest do
              ["critical_block", "critical_unblock_low", "regular_high", "regular_low", "regular"]
   end
 
+  test "history sync starts the initial app state resync before the app state key arrives" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "sync", attrs: %{}, content: []}]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   fire_init_queries: false,
+                   mark_online_on_connect: false,
+                   initial_sync_timeout_ms: 50
+                 ),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               query_handler: query_handler,
+               test_pid: self(),
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :messaging_history_set, %{
+               chats: [%{id: "chat-1", conversation_timestamp: 1_710_000_000}],
+               contacts: [],
+               messages: [],
+               sync_type: :recent
+             })
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "w:sync:app:state"},
+                      content: [%BinaryNode{tag: "sync", content: collections}]
+                    }, _timeout},
+                   500
+
+    assert Enum.map(collections, & &1.attrs["name"]) ==
+             ["critical_block", "critical_unblock_low", "regular_high", "regular_low", "regular"]
+  end
+
   test "app state key arrival does not trigger an initial app state resync before syncing" do
     name = {:phase10_test, System.unique_integer([:positive])}
 

@@ -341,8 +341,30 @@ defmodule BaileysEx.Message.SenderTest do
                         "to" => "15551234567@s.whatsapp.net",
                         "type" => "media",
                         "id" => "3EB0MEDIAID"
-                      }
+                      },
+                      content: content
                     }}
+
+    enc_nodes =
+      for %BinaryNode{tag: "participants", content: tos} <- content,
+          %BinaryNode{tag: "to", content: [%BinaryNode{tag: "enc"} = enc]} <- tos,
+          do: enc
+
+    assert length(enc_nodes) == 2
+    assert Enum.all?(enc_nodes, &(&1.attrs["mediatype"] == "image"))
+  end
+
+  test "media_type/1 mirrors Baileys getMediaType" do
+    assert Sender.media_type(%Message{document_message: %Message.DocumentMessage{}}) == "document"
+    assert Sender.media_type(%Message{audio_message: %Message.AudioMessage{ptt: true}}) == "ptt"
+
+    assert Sender.media_type(%Message{audio_message: %Message.AudioMessage{ptt: false}}) ==
+             "audio"
+
+    assert Sender.media_type(%Message{video_message: %Message.VideoMessage{gif_playback: true}}) ==
+             "gif"
+
+    assert Sender.media_type(%Message{conversation: "hi"}) == ""
   end
 
   test "send/4 performs group sender-key fanout and persists sender-key memory" do

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Media messages now carry the `mediatype` attribute on every `enc` node
+  (direct recipients, the sender's own devices and group `skmsg`), ported from
+  Baileys `getMediaType` in `messages-send.ts`: `image`, `video`/`gif`,
+  `audio`/`ptt`, `document`, `sticker`, `vcard`, `contact_array`,
+  `livelocation`, `list`, `list_response`, `buttons_response`, `order`,
+  `product`, `native_flow_response` and `url`. Before, the server acked media
+  sends but recipient phones, including the sender's own phone, silently
+  dropped them, while text messages arrived normally.
+
 ## [0.1.0-alpha.12] - 2026-08-26
 
 - This release matches the behavior of Baileys `v7.0.0-rc14`.

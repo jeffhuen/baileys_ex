@@ -278,10 +278,11 @@ defmodule BaileysEx.Message.Sender do
     with {:ok, context} <- maybe_assert_sessions(context, recipient_devices ++ own_devices),
          dsm = wrap_device_sent_message(message, recipient_jid),
          recipient_message = if(same_user?(recipient_jid, me_id), do: dsm, else: message),
+         enc_attrs = media_enc_attrs(message),
          {:ok, repo, me_nodes, me_include_identity?} <-
-           create_participant_nodes(context.signal_repository, own_devices, dsm),
+           create_participant_nodes(context.signal_repository, own_devices, dsm, enc_attrs),
          {:ok, repo, other_nodes, other_include_identity?} <-
-           create_participant_nodes(repo, recipient_devices, recipient_message) do
+           create_participant_nodes(repo, recipient_devices, recipient_message, enc_attrs) do
       children =
         []
         |> maybe_append_participants(me_nodes ++ other_nodes)
@@ -332,7 +333,8 @@ defmodule BaileysEx.Message.Sender do
              create_participant_nodes(
                context.signal_repository,
                new_devices,
-               sender_key_message
+               sender_key_message,
+               media_enc_attrs(message)
              ) do
         :ok =
           Store.set(store, %{
@@ -348,7 +350,7 @@ defmodule BaileysEx.Message.Sender do
           [
             %BinaryNode{
               tag: "enc",
-              attrs: %{"type" => "skmsg", "v" => "2"},
+              attrs: Map.merge(%{"type" => "skmsg", "v" => "2"}, media_enc_attrs(message)),
               content: {:binary, ciphertext}
             }
           ]
@@ -367,7 +369,7 @@ defmodule BaileysEx.Message.Sender do
          %Repository{} = repo,
          device_jids,
          %Message{} = message,
-         enc_attrs \\ %{}
+         enc_attrs
        ) do
     bytes = Wire.encode(message)
 
@@ -824,6 +826,45 @@ defmodule BaileysEx.Message.Sender do
        do: %{message_id: message_id}
 
   defp send_result_metadata(_result), do: %{}
+
+  # Ports `getMediaType` from Baileys' messages-send.ts: media messages carry a `mediatype`
+  # attribute on every `enc` node, which recipient clients rely on to display them.
+  @media_types [
+    image_message: "image",
+    video_message: "video",
+    audio_message: "audio",
+    contact_message: "vcard",
+    document_message: "document",
+    contacts_array_message: "contact_array",
+    live_location_message: "livelocation",
+    sticker_message: "sticker",
+    list_message: "list",
+    list_response_message: "list_response",
+    buttons_response_message: "buttons_response",
+    order_message: "order",
+    product_message: "product",
+    interactive_response_message: "native_flow_response",
+    group_invite_message: "url"
+  ]
+
+  @doc false
+  def media_type(%Message{} = message) do
+    Enum.find_value(@media_types, "", fn {field, type} ->
+      case Map.get(message, field) do
+        nil -> nil
+        %{gif_playback: true} when field == :video_message -> "gif"
+        %{ptt: true} when field == :audio_message -> "ptt"
+        _ -> type
+      end
+    end)
+  end
+
+  defp media_enc_attrs(%Message{} = message) do
+    case media_type(message) do
+      "" -> %{}
+      type -> %{"mediatype" => type}
+    end
+  end
 
   defp stanza_type(%Message{reaction_message: %Message.ReactionMessage{}}), do: "reaction"
   defp stanza_type(%Message{protocol_message: %Message.ProtocolMessage{}}), do: "protocol"

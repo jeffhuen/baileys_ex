@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Bufferable events emitted while the event buffer is active are now merged
+  instead of replacing each other, matching Baileys `event-buffer.ts`
+  (`append`/`consolidateEvents`). Before, `EventEmitter` kept only the last
+  emit of each event (`Map.put`), so a flush delivered only the last
+  `messaging_history_set` chunk and the last `contacts_upsert` batch: the
+  address book from the initial app state sync arrived as a single contact,
+  and history arrived as the final `PUSH_NAME` chunk with no messages.
+  History chunks now merge chats, contacts, messages, `past_participants`
+  and `lid_pn_mappings` without duplicates (`is_latest` is kept if any chunk
+  set it); `chats_upsert`, `contacts_upsert`, `contacts_update` and
+  `groups_update` merge by id; `chats_delete` and `messages_delete` (`keys`)
+  are deduplicated; `messages_update` merges updates per message key;
+  `messages_reaction` and `message_receipt_update` accumulate.
+
 ## [0.1.0-alpha.12] - 2026-08-26
 
 - This release matches the behavior of Baileys `v7.0.0-rc14`.

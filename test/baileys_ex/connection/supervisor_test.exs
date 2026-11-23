@@ -1386,6 +1386,94 @@ defmodule BaileysEx.Connection.SupervisorTest do
              ["critical_block", "critical_unblock_low", "regular_high", "regular_low", "regular"]
   end
 
+  test "contacts upserted by the initial app state sync reach on_event subscribers" do
+    name = {:phase10_test, System.unique_integer([:positive])}
+    test_pid = self()
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "sync", attrs: %{}, content: []}]
+         }}
+
+      _node, _timeout ->
+        {:error, :unhandled}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   fire_init_queries: false,
+                   mark_online_on_connect: false,
+                   initial_sync_timeout_ms: 50
+                 ),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               query_handler: query_handler,
+               test_pid: self(),
+               transport: {NoopTransport, %{}},
+               initial_event_subscribers: [fn events -> send(test_pid, {:on_event, events}) end]
+             )
+
+    assert_receive :fake_socket_connect
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :messaging_history_set, %{
+               chats: [],
+               contacts: [],
+               messages: [],
+               sync_type: :recent
+             })
+
+    contact_count = 300
+
+    EventEmitter.create_buffered_function(emitter_pid, fn ->
+      for i <- 1..contact_count do
+        assert :ok =
+                 EventEmitter.emit(emitter_pid, :contacts_upsert, [
+                   %{id: "#{i}@s.whatsapp.net", name: "C#{i}"}
+                 ])
+
+        assert :ok =
+                 EventEmitter.emit(emitter_pid, :lid_mapping_update, %{
+                   lid: "#{i}@lid",
+                   pn: "#{i}@s.whatsapp.net"
+                 })
+      end
+    end).()
+
+    Process.sleep(400)
+
+    upserted =
+      collect_on_event([])
+      |> Enum.flat_map(&Map.get(&1, :contacts_upsert, []))
+      |> Enum.map(& &1.id)
+      |> Enum.uniq()
+
+    assert length(upserted) == contact_count
+  end
+
+  defp collect_on_event(acc) do
+    receive do
+      {:on_event, events} -> collect_on_event([events | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   test "app state key arrival does not trigger an initial app state resync before syncing" do
     name = {:phase10_test, System.unique_integer([:positive])}
 

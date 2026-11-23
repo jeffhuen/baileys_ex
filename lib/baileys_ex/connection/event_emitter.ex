@@ -336,19 +336,162 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
   end
 
   defp emit_event(%State{buffering?: true} = state, event, data) do
-    if Map.has_key?(@bufferable_events, event) do
-      state =
-        update_in(state.buffered_events, fn buffered_events ->
-          Map.put(buffered_events, event, data)
-        end)
-
-      {state, []}
+    if Map.has_key?(@bufferable_events, event) and mergeable?(event, data) do
+      {update_in(state.buffered_events, &buffer_event(&1, event, data)), []}
     else
       {state, [%{event => data}]}
     end
   end
 
   defp emit_event(%State{} = state, event, data), do: {state, [%{event => data}]}
+
+  # Ports `append` and `consolidateEvents` from Baileys' event-buffer.ts: buffered
+  # events of the same kind accumulate instead of replacing each other.
+  @keyed_by_id [:chats_upsert, :contacts_upsert, :contacts_update, :groups_update]
+  @appended [:messages_reaction, :message_receipt_update]
+
+  defp buffer_event(buffered_events, event, data) do
+    Map.put(buffered_events, event, merge_buffered(event, Map.get(buffered_events, event), data))
+  end
+
+  defp mergeable?(:messaging_history_set, data), do: is_map(data)
+  defp mergeable?(:messages_delete, %{keys: keys}) when is_list(keys), do: true
+  defp mergeable?(:messages_delete, _data), do: false
+  defp mergeable?(_event, data), do: is_list(data)
+
+  defp merge_buffered(:messaging_history_set, existing, data) do
+    acc =
+      existing ||
+        %{
+          chats: keyed_new(),
+          contacts: keyed_new(),
+          messages: keyed_new(),
+          past_participants: [],
+          lid_pn_mappings: [],
+          fields: %{}
+        }
+
+    fields = Map.drop(data, [:chats, :contacts, :messages, :past_participants, :lid_pn_mappings])
+
+    %{
+      acc
+      | chats:
+          Enum.reduce(List.wrap(data[:chats]), acc.chats, fn chat, chats ->
+            keyed_put(chats, item_id(chat), chat, fn old, new ->
+              Map.put(
+                old,
+                :end_of_history_transfer_type,
+                Map.get(new, :end_of_history_transfer_type)
+              )
+            end)
+          end),
+        contacts:
+          Enum.reduce(List.wrap(data[:contacts]), acc.contacts, fn contact, contacts ->
+            keyed_put(contacts, item_id(contact), contact, &merge_fields/2)
+          end),
+        messages:
+          Enum.reduce(List.wrap(data[:messages]), acc.messages, fn message, messages ->
+            keyed_put(messages, message_key_id(message), message, fn old, _new -> old end)
+          end),
+        past_participants:
+          Enum.uniq(acc.past_participants ++ List.wrap(data[:past_participants])),
+        lid_pn_mappings: Enum.uniq(acc.lid_pn_mappings ++ List.wrap(data[:lid_pn_mappings])),
+        fields:
+          acc.fields
+          |> Map.merge(fields)
+          |> Map.put(:is_latest, fields[:is_latest] == true or acc.fields[:is_latest] == true)
+    }
+  end
+
+  defp merge_buffered(event, existing, items) when event in @keyed_by_id do
+    Enum.reduce(items, existing || keyed_new(), fn item, acc ->
+      keyed_put(acc, item_id(item), item, &merge_fields/2)
+    end)
+  end
+
+  defp merge_buffered(:chats_delete, existing, ids) do
+    Enum.reduce(ids, existing || keyed_new(), fn id, acc ->
+      keyed_put(acc, id, id, fn old, _ -> old end)
+    end)
+  end
+
+  defp merge_buffered(:messages_delete, existing, %{keys: keys}) do
+    Enum.reduce(keys, existing || keyed_new(), fn key, acc ->
+      keyed_put(acc, key_id(key), key, fn old, _ -> old end)
+    end)
+  end
+
+  defp merge_buffered(:messages_update, existing, updates) do
+    Enum.reduce(updates, existing || keyed_new(), fn update, acc ->
+      keyed_put(acc, message_key_id(update), update, fn old, new ->
+        Map.put(
+          old,
+          :update,
+          Map.merge(Map.get(old, :update) || %{}, Map.get(new, :update) || %{})
+        )
+      end)
+    end)
+  end
+
+  defp merge_buffered(event, existing, items) when event in @appended,
+    do: (existing || []) ++ items
+
+  defp merge_buffered(_event, _existing, data), do: data
+
+  defp finalize_buffered(:messaging_history_set, acc) do
+    acc.fields
+    |> Map.put(:chats, keyed_values(acc.chats))
+    |> Map.put(:contacts, keyed_values(acc.contacts))
+    |> Map.put(:messages, keyed_values(acc.messages))
+    |> Map.put(:lid_pn_mappings, acc.lid_pn_mappings)
+    |> then(
+      &if(acc.past_participants == [],
+        do: &1,
+        else: Map.put(&1, :past_participants, acc.past_participants)
+      )
+    )
+  end
+
+  defp finalize_buffered(:messages_delete, acc), do: %{keys: keyed_values(acc)}
+
+  defp finalize_buffered(event, acc)
+       when event in @keyed_by_id or event in [:chats_delete, :messages_update],
+       do: keyed_values(acc)
+
+  defp finalize_buffered(_event, data), do: data
+
+  defp keyed_new, do: {[], %{}}
+
+  defp keyed_put({order, items}, nil, item, _merge) do
+    ref = make_ref()
+    {[ref | order], Map.put(items, ref, item)}
+  end
+
+  defp keyed_put({order, items}, key, item, merge) do
+    case items do
+      %{^key => old} -> {order, Map.put(items, key, merge.(old, item))}
+      _ -> {[key | order], Map.put(items, key, item)}
+    end
+  end
+
+  defp keyed_values({order, items}),
+    do: order |> Enum.reverse() |> Enum.map(&Map.fetch!(items, &1))
+
+  defp item_id(%{id: id}) when not is_nil(id), do: id
+  defp item_id(_item), do: nil
+
+  defp message_key_id(%{key: key}) when is_map(key), do: key_id(key)
+  defp message_key_id(_item), do: nil
+
+  defp key_id(%{} = key),
+    do: {Map.get(key, :remote_jid), Map.get(key, :id), Map.get(key, :from_me) == true}
+
+  defp key_id(_key), do: nil
+
+  defp merge_fields(old, new) when is_map(old) and is_map(new),
+    do: Map.merge(old, new |> Enum.reject(fn {_key, value} -> is_nil(value) end) |> Map.new())
+
+  defp merge_fields(_old, new), do: new
 
   defp flush_buffer(%State{} = state, mode) do
     {events_to_emit, buffered_events} = build_flush_payload(state.buffered_events, state.seed)
@@ -385,7 +528,7 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
       buffered_events
       |> Map.drop([:chats_update])
       |> Enum.reject(fn {_event, data} -> is_nil(data) end)
-      |> Map.new()
+      |> Map.new(fn {event, data} -> {event, finalize_buffered(event, data)} end)
 
     {chat_updates, unresolved_chat_updates} =
       buffered_events

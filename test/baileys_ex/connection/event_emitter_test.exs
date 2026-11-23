@@ -39,6 +39,111 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     refute_receive {:processed, _events}, 50
   end
 
+  test "buffered contacts_upsert batches accumulate by contact id instead of overwriting" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    EventEmitter.create_buffered_function(emitter, fn ->
+      :ok = EventEmitter.emit(emitter, :contacts_upsert, [%{id: "a@s.whatsapp.net", name: "A"}])
+
+      :ok =
+        EventEmitter.emit(emitter, :lid_mapping_update, %{lid: "1@lid", pn: "a@s.whatsapp.net"})
+
+      :ok = EventEmitter.emit(emitter, :contacts_upsert, [%{id: "b@s.whatsapp.net", name: "B"}])
+
+      :ok =
+        EventEmitter.emit(emitter, :contacts_upsert, [
+          %{id: "a@s.whatsapp.net", name: nil, notify: "Ann"}
+        ])
+    end).()
+
+    assert_receive {:processed_events, %{contacts_upsert: contacts}}, 1_000
+
+    assert contacts == [
+             %{id: "a@s.whatsapp.net", name: "A", notify: "Ann"},
+             %{id: "b@s.whatsapp.net", name: "B"}
+           ]
+  end
+
+  test "buffered history chunks and list events merge instead of keeping only the last one" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+    key = fn id -> %{remote_jid: "a@s.whatsapp.net", id: id, from_me: false} end
+
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "a@s.whatsapp.net"}],
+        contacts: [%{id: "a@s.whatsapp.net", name: "A"}],
+        messages: [%{key: key.("m1")}, %{key: key.("m2")}],
+        lid_pn_mappings: [%{lid: "1@lid", pn: "a@s.whatsapp.net"}],
+        sync_type: :INITIAL_BOOTSTRAP,
+        progress: 50,
+        is_latest: true
+      })
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "b@s.whatsapp.net"}],
+        contacts: [%{id: "a@s.whatsapp.net", name: nil, notify: "Ann"}],
+        messages: [%{key: key.("m2")}, %{key: key.("m3")}],
+        lid_pn_mappings: [%{lid: "2@lid", pn: "b@s.whatsapp.net"}],
+        sync_type: :PUSH_NAME,
+        progress: 100,
+        is_latest: false
+      })
+
+    :ok = EventEmitter.emit(emitter, :chats_upsert, [%{id: "c1"}])
+    :ok = EventEmitter.emit(emitter, :chats_upsert, [%{id: "c2"}])
+    :ok = EventEmitter.emit(emitter, :chats_delete, ["d1"])
+    :ok = EventEmitter.emit(emitter, :chats_delete, ["d2", "d1"])
+    :ok = EventEmitter.emit(emitter, :messages_update, [%{key: key.("m1"), update: %{status: 2}}])
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_update, [
+        %{key: key.("m1"), update: %{starred: true}},
+        %{key: key.("m4"), update: %{status: 3}}
+      ])
+
+    :ok = EventEmitter.emit(emitter, :messages_delete, %{keys: [key.("m5")]})
+    :ok = EventEmitter.emit(emitter, :messages_delete, %{keys: [key.("m6")]})
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_reaction, [%{key: key.("m1"), reaction: %{text: "a"}}])
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_reaction, [%{key: key.("m2"), reaction: %{text: "b"}}])
+
+    assert EventEmitter.flush(emitter)
+
+    assert_receive {:processed_events, events}, 1_000
+
+    history = events.messaging_history_set
+    assert Enum.map(history.chats, & &1.id) == ["a@s.whatsapp.net", "b@s.whatsapp.net"]
+    assert history.contacts == [%{id: "a@s.whatsapp.net", name: "A", notify: "Ann"}]
+    assert Enum.map(history.messages, & &1.key.id) == ["m1", "m2", "m3"]
+    assert %{sync_type: :PUSH_NAME, progress: 100, is_latest: true} = history
+
+    assert history.lid_pn_mappings == [
+             %{lid: "1@lid", pn: "a@s.whatsapp.net"},
+             %{lid: "2@lid", pn: "b@s.whatsapp.net"}
+           ]
+
+    assert events.chats_upsert == [%{id: "c1"}, %{id: "c2"}]
+    assert events.chats_delete == ["d1", "d2"]
+
+    assert events.messages_update == [
+             %{key: key.("m1"), update: %{status: 2, starred: true}},
+             %{key: key.("m4"), update: %{status: 3}}
+           ]
+
+    assert events.messages_delete == %{keys: [key.("m5"), key.("m6")]}
+    assert length(events.messages_reaction) == 2
+  end
+
   test "buffer/flush buffers bufferable events and flushes them as a batch" do
     test_pid = self()
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)

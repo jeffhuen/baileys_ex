@@ -530,6 +530,7 @@ defmodule BaileysEx.Connection.Socket do
          auth_state <- AuthState.merge_updates(data.auth_state, creds_update),
          data = %{data | auth_state: auth_state},
          :ok <- emit_event(data, :creds_update, creds_update),
+         node = %{node | attrs: Map.put(node.attrs, "id", generate_message_tag(data))},
          {:ok, data} <- send_node_internal(data, node) do
       {:keep_state, data, [{:reply, from, {:ok, pairing_code}}]}
     else

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Phone-number pairing now sends the `companion_hello` IQ with a message tag
+  `id`, matching Baileys `requestPairingCode`. Without it WhatsApp did not
+  register the code, and the phone rejected it as a wrong code.
+
 ## [0.1.0-alpha.12] - 2026-08-26
 
 - This release matches the behavior of Baileys `v7.0.0-rc14`.

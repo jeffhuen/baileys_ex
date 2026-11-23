@@ -1399,8 +1399,10 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert %BinaryNode{
              tag: "iq",
-             attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "md"}
+             attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "md", "id" => id}
            } = pairing_node
+
+    assert is_binary(id) and id != ""
 
     assert %BinaryNode{tag: "link_code_companion_reg", attrs: %{"stage" => "companion_hello"}} =
              BinaryNodeUtil.child(pairing_node, "link_code_companion_reg")

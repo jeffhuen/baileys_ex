@@ -24,10 +24,12 @@ defmodule BaileysEx.Signal.Repository do
             public_key: binary(),
             signature: binary()
           },
-          pre_key: %{
-            key_id: non_neg_integer(),
-            public_key: binary()
-          }
+          pre_key:
+            %{
+              key_id: non_neg_integer(),
+              public_key: binary()
+            }
+            | nil
         }
 
   @typedoc "Repository result for `validate_session/2`."
@@ -443,28 +445,38 @@ defmodule BaileysEx.Signal.Repository do
          registration_id: registration_id,
          identity_key: identity_key,
          signed_pre_key: %{key_id: signed_key_id, public_key: signed_key, signature: signature},
-         pre_key: %{key_id: pre_key_id, public_key: pre_key}
+         pre_key: pre_key
        })
        when is_integer(registration_id) and registration_id >= 0 and
               is_integer(signed_key_id) and signed_key_id >= 0 and
-              is_integer(pre_key_id) and pre_key_id >= 0 and
               is_binary(signature) and byte_size(signature) == 64 do
     with {:ok, identity_key} <- Curve.generate_signal_pub_key(identity_key),
          {:ok, signed_key} <- Curve.generate_signal_pub_key(signed_key),
-         {:ok, pre_key} <- Curve.generate_signal_pub_key(pre_key) do
+         {:ok, pre_key} <- normalize_pre_key(pre_key) do
       {:ok,
        %{
          registration_id: registration_id,
          identity_key: identity_key,
          signed_pre_key: %{key_id: signed_key_id, public_key: signed_key, signature: signature},
-         pre_key: %{key_id: pre_key_id, public_key: pre_key}
+         pre_key: pre_key
        }}
     else
       {:error, :invalid_public_key} -> {:error, :invalid_session}
+      {:error, :invalid_pre_key} -> {:error, :invalid_session}
     end
   end
 
   defp normalize_session(_session), do: {:error, :invalid_session}
+
+  defp normalize_pre_key(nil), do: {:ok, nil}
+
+  defp normalize_pre_key(%{key_id: key_id, public_key: public_key})
+       when is_integer(key_id) and key_id >= 0 do
+    with {:ok, public_key} <- Curve.generate_signal_pub_key(public_key),
+         do: {:ok, %{key_id: key_id, public_key: public_key}}
+  end
+
+  defp normalize_pre_key(_pre_key), do: {:error, :invalid_pre_key}
 
   defp normalize_migration(from_jid, to_jid) do
     case {parse_pn_source(from_jid), parse_lid_target(to_jid)} do

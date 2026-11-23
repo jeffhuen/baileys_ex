@@ -161,6 +161,9 @@ defmodule BaileysEx.Signal.Session do
     end
   end
 
+  # The one-time pre-key is optional: when the device has run out of them the server
+  # sends only the signed pre-key, and Baileys (`extractKey`) passes `undefined`.
+  defp decode_pre_key(nil), do: {:ok, nil}
   defp decode_pre_key(_node), do: {:error, :missing_pre_key}
 
   defp child_signal_public_key(node, tag) do

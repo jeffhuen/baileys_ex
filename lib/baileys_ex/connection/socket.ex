@@ -796,7 +796,7 @@ defmodule BaileysEx.Connection.Socket do
     do: apply_notification_node(:connected, node, data)
 
   defp apply_binary_node(current_state, %BinaryNode{tag: tag} = node, data)
-       when tag in ["message", "receipt", "ack"] do
+       when tag in ["message", "receipt", "ack", "call"] do
     emit_event(data, :socket_node, %{node: node, state: current_state})
     {:ok, current_state, data}
   end

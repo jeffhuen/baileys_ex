@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Inbound `call` nodes are now surfaced as `socket_node` events, so the
+  coordinator's existing call handler runs and acks them, as Baileys does in
+  `handleCall` (`messages-recv.ts`). Before, the socket dropped them in its
+  catch-all clause: calls were never emitted or acked, and while unacked calls
+  sat in the offline queue the server stopped delivering new messages.
+
 ## [0.1.0-alpha.12] - 2026-08-26
 
 - This release matches the behavior of Baileys `v7.0.0-rc14`.

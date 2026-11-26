@@ -389,6 +389,9 @@ defmodule BaileysEx.Signal.SessionCipher do
       chain_key.counter > previous_counter ->
         chain
 
+      previous_counter - chain_key.counter > @max_skipped_keys ->
+        chain
+
       true ->
         message_key_seed = Crypto.hmac_sha256(chain_key.key, @message_key_seed)
         next_key = Crypto.hmac_sha256(chain_key.key, @chain_key_seed)

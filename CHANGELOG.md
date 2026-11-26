@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Closing the previous receiving chain on a ratchet step no longer derives
+  keys without bound. A `previous_counter` more than 2000 messages past the
+  chain (the same `@max_skipped_keys` limit `decrypt_from_chain/4` already
+  enforces, and libsignal's `fillMessageKeys` limit) now closes the chain
+  without caching skipped keys. Before, a `pkmsg` announcing `previous_counter`
+  `0xFFFFFFFF` made the decrypt loop over four billion HMAC derivations until
+  the VM ran out of memory.
+
 ## [0.1.0-alpha.12] - 2026-08-26
 
 - This release matches the behavior of Baileys `v7.0.0-rc14`.

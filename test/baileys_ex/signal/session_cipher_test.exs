@@ -342,6 +342,46 @@ defmodule BaileysEx.Signal.SessionCipherTest do
              ]
   end
 
+  test "closing the previous receiving chain never caches more than the skipped-key limit" do
+    ctx = setup_session()
+
+    {:ok, alice_record, first_message} = SessionCipher.encrypt(ctx.alice_record, "hello")
+
+    {:ok, bob_record, "hello", _} =
+      SessionCipher.decrypt_pre_key_whisper_message(SessionRecord.new(), first_message.ciphertext,
+        identity_key_pair: ctx.bob_identity,
+        signed_pre_key_pair: ctx.bob_signed_pre_key,
+        pre_key_pair: ctx.bob_pre_key,
+        registration_id: ctx.bob_registration_id
+      )
+
+    {:ok, bob_record, bob_reply} = SessionCipher.encrypt(bob_record, "reply")
+
+    {:ok, alice_record, "reply"} =
+      SessionCipher.decrypt_whisper_message(alice_record, bob_reply.ciphertext,
+        ratchet_key_pair: key_pair(9)
+      )
+
+    # A peer can announce any uint32 as `previous_counter`; 0xFFFFFFFF reached us in production.
+    {_, alice_session} = SessionRecord.get_open_session(alice_record)
+    alice_session = put_in(alice_session.current_ratchet.previous_counter, 0xFFFFFFFF)
+
+    alice_record =
+      SessionRecord.put_session(alice_record, alice_session.index_info.base_key, alice_session)
+
+    {:ok, _alice_record, after_step} = SessionCipher.encrypt(alice_record, "after")
+
+    task =
+      Task.async(fn ->
+        SessionCipher.decrypt_whisper_message(bob_record, after_step.ciphertext)
+      end)
+
+    assert {:ok, {:ok, bob_record, "after"}} = Task.yield(task, 5_000) || Task.shutdown(task)
+
+    {_, bob_session} = SessionRecord.get_open_session(bob_record)
+    assert Enum.all?(Map.values(bob_session.chains), &(map_size(&1.message_keys) <= 2000))
+  end
+
   defp signal_public_key(public_key) do
     {:ok, signal_public_key} = Curve.generate_signal_pub_key(public_key)
     signal_public_key

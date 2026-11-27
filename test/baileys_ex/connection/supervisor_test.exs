@@ -111,6 +111,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
       {:ok,
        %{
          test_pid: Keyword.fetch!(opts, :test_pid),
+         connect_handler: Keyword.get(opts, :connect_handler, fn -> :ok end),
          query_handler:
            Keyword.get(opts, :query_handler, fn _node, _timeout -> {:error, :unhandled} end),
          send_node_handler: Keyword.get(opts, :send_node_handler, fn _node -> :ok end)
@@ -120,7 +121,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
     @impl true
     def handle_call(:connect, _from, state) do
       Kernel.send(state.test_pid, :fake_socket_connect)
-      {:reply, :ok, state}
+      {:reply, state.connect_handler.(), state}
     end
 
     def handle_call({:send_presence_update, type}, _from, state) do
@@ -4387,10 +4388,10 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
 
-    # 4. server_sync notification launches a tracked task that is also cancelled on close
+    # 4. server_sync notification defers ACK until completion; cancelling on close leaves it un-ACKed for redelivery
     notification = %BinaryNode{
       tag: "notification",
-      attrs: %{"type" => "server_sync", "from" => "s.whatsapp.net"},
+      attrs: %{"id" => "srv-close-1", "type" => "server_sync", "from" => "s.whatsapp.net"},
       content: [%BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}, content: nil}]
     }
 
@@ -4401,6 +4402,10 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert [server_task_pid] = Task.Supervisor.children(task_supervisor)
     server_mon = Process.monitor(server_task_pid)
 
+    refute_receive {:fake_socket_send_node,
+                    %BinaryNode{tag: "ack", attrs: %{"id" => "srv-close-1"}}},
+                   50
+
     assert :ok =
              EventEmitter.emit(emitter_pid, :connection_update, %{
                connection: :close,
@@ -4409,6 +4414,11 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     assert_receive {:DOWN, ^server_mon, :process, ^server_task_pid, _reason}, 1_000
     send(server_socket_pid, {:release_server, server_gate})
+
+    refute_receive {:fake_socket_send_node,
+                    %BinaryNode{tag: "ack", attrs: %{"id" => "srv-close-1"}}},
+                   50
+
     assert Process.alive?(coordinator_pid)
 
     # 5. Next reconnect WITHOUT history replay resumes :critical_block and advances counter on completion
@@ -4435,10 +4445,20 @@ defmodule BaileysEx.Connection.SupervisorTest do
     unsubscribe.()
   end
 
-  test "abnormal Coordinator restart terminates parked blocked-recovery and server_sync workers under :rest_for_one" do
+  test "abnormal Coordinator restart kills parked workers and auto-resumes pending work on connected socket" do
     name = {:release_coordinator_restart_tasks_test, System.unique_integer([:positive])}
     parent = self()
     gate = make_ref()
+    {:ok, connect_calls} = Agent.start_link(fn -> 0 end)
+
+    # Model real Socket.connect/1: first call succeeds, subsequent calls on surviving connected socket
+    # return {:error, {:invalid_state, :connected}} without emitting a new offline-complete frame.
+    connect_handler = fn ->
+      case Agent.get_and_update(connect_calls, fn n -> {n + 1, n + 1} end) do
+        1 -> :ok
+        _ -> {:error, {:invalid_state, :connected}}
+      end
+    end
 
     query_handler = fn
       %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}} = node, _timeout ->
@@ -4513,6 +4533,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                  ),
                auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
                socket_module: FakeSocket,
+               connect_handler: connect_handler,
                test_pid: parent,
                query_handler: query_handler,
                transport: {NoopTransport, %{}}
@@ -4549,7 +4570,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                     %{connection_update: %{sync_state: :online, initial_sync_complete: true}}},
                    1_000
 
-    # 1. Park a blocked-recovery task under the surviving Task.Supervisor, then kill ONLY Coordinator
+    # 1. Park a blocked-recovery task under surviving Task.Supervisor, then kill ONLY Coordinator
     assert :ok = EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "key-1"})
     assert_receive {:parked_blocked_query, blocked_socket_pid}, 1_000
     assert [blocked_task_pid] = Task.Supervisor.children(task_supervisor)
@@ -4558,23 +4579,22 @@ defmodule BaileysEx.Connection.SupervisorTest do
     Process.exit(coordinator_pid, :kill)
     assert_receive {:DOWN, ^blocked_mon, :process, ^blocked_task_pid, _reason}, 1_000
     send(blocked_socket_pid, {:release_blocked, gate})
-    assert_eventually(fn -> Task.Supervisor.children(task_supervisor) == [] end)
 
-    # Wait for :rest_for_one to restart Coordinator; Store retained pending :critical_block
-    assert_eventually(fn ->
-      case child_pid!(supervisor, Coordinator) do
-        new_pid when is_pid(new_pid) and new_pid != coordinator_pid -> true
-        _ -> false
-      end
-    end)
+    # Replacement Coordinator attaches to surviving connected socket ({:error, {:invalid_state, :connected}})
+    # and AUTOMATICALLY resumes :critical_block with NO synthesized transport event
+    assert_receive :fake_socket_connect, 1_000
+    assert_receive {:parked_blocked_query, resumed_blocked_socket_pid}, 1_000
+    send(resumed_blocked_socket_pid, {:release_blocked, gate})
+    assert_eventually(fn -> Store.get(store_ref, :creds, %{})[:account_sync_counter] == 1 end)
 
     restarted_coordinator = child_pid!(supervisor, Coordinator)
-    assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
+    refute restarted_coordinator == coordinator_pid
 
-    # 2. Park a server_sync task on the restarted Coordinator, then kill ONLY Coordinator again
+    # 2. Park a server_sync task (ACK deferred), kill ONLY Coordinator, verify ACK still omitted until
+    #    replacement Coordinator auto-resumes regular_high on the surviving connected socket
     server_notification = %BinaryNode{
       tag: "notification",
-      attrs: %{"type" => "server_sync", "from" => "s.whatsapp.net"},
+      attrs: %{"id" => "srv-restart-1", "type" => "server_sync", "from" => "s.whatsapp.net"},
       content: [%BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}, content: nil}]
     }
 
@@ -4588,27 +4608,39 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert [server_task_pid] = Task.Supervisor.children(task_supervisor)
     server_mon = Process.monitor(server_task_pid)
 
+    refute_receive {:fake_socket_send_node,
+                    %BinaryNode{tag: "ack", attrs: %{"id" => "srv-restart-1"}}},
+                   50
+
     Process.exit(restarted_coordinator, :kill)
     assert_receive {:DOWN, ^server_mon, :process, ^server_task_pid, _reason}, 1_000
     send(server_socket_pid, {:release_server, gate})
-    assert_eventually(fn -> Task.Supervisor.children(task_supervisor) == [] end)
 
-    assert_eventually(fn ->
-      case child_pid!(supervisor, Coordinator) do
-        third_pid when is_pid(third_pid) and third_pid != restarted_coordinator -> true
-        _ -> false
-      end
-    end)
+    refute_receive {:fake_socket_send_node,
+                    %BinaryNode{tag: "ack", attrs: %{"id" => "srv-restart-1"}}},
+                   50
 
-    # 3. Restarted Coordinator reconnects without history replay and resumes :critical_block cleanly
-    assert :ok =
-             EventEmitter.emit(emitter_pid, :connection_update, %{
-               received_pending_notifications: true
-             })
+    # Third Coordinator auto-resumes regular_high on the surviving connected socket and ACKs ONLY after completion
+    assert_receive :fake_socket_connect, 1_000
+    assert_receive {:parked_server_query, resumed_server_socket_pid}, 1_000
 
-    assert_receive {:parked_blocked_query, resumed_socket_pid}, 1_000
-    send(resumed_socket_pid, {:release_blocked, gate})
-    assert_eventually(fn -> Store.get(store_ref, :creds, %{})[:account_sync_counter] == 1 end)
+    refute_receive {:fake_socket_send_node,
+                    %BinaryNode{tag: "ack", attrs: %{"id" => "srv-restart-1"}}},
+                   50
+
+    send(resumed_server_socket_pid, {:release_server, gate})
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{
+                        "id" => "srv-restart-1",
+                        "class" => "notification",
+                        "type" => "server_sync",
+                        "to" => "s.whatsapp.net"
+                      }
+                    }},
+                   1_000
 
     unsubscribe.()
   end

@@ -514,16 +514,6 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   def handle_info(
-        {:start_server_app_state_resync, gen, collections, name},
-        %State{sync: %{generation: gen}} = state
-      ) do
-    {:noreply, launch_server_app_state_resync(state, collections, name)}
-  end
-
-  def handle_info({:start_server_app_state_resync, _gen, _collections, _name}, %State{} = state),
-    do: {:noreply, state}
-
-  def handle_info(
         {:app_state_collection_blocked, gen, name},
         %State{sync: %{generation: gen} = sync} = state
       )
@@ -567,9 +557,14 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp complete_bg_app_state_sync(%State{} = state, %{kind: :server, name: name}, result) do
+  defp complete_bg_app_state_sync(
+         %State{} = state,
+         %{kind: :server, name: name, ack_key: ack_key, ack_node: ack_node},
+         result
+       ) do
     log_server_app_state_sync_result(result, name)
-    state
+    state = delete_pending_server_sync(state, ack_key)
+    send_notification_ack(state, ack_node)
   end
 
   defp complete_bg_app_state_sync(
@@ -1055,6 +1050,17 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp handle_socket_node(
+         %State{resync_app_state_fun: nil} = state,
+         %{
+           socket_node: %{
+             node: %BinaryNode{tag: "notification", attrs: %{"type" => "server_sync"}} = node
+           }
+         }
+       ) do
+    handle_built_in_server_sync_notification(state, node)
+  end
+
+  defp handle_socket_node(
          %State{} = state,
          %{socket_node: %{node: %BinaryNode{tag: "notification"} = node}}
        ) do
@@ -1147,6 +1153,7 @@ defmodule BaileysEx.Connection.Coordinator do
          %State{sync: %{state: :connecting}} = state,
          %{connection_update: %{received_pending_notifications: true}}
        ) do
+    :ok = Store.put(state.store, :offline_notifications_received, true)
     :ok = EventEmitter.buffer(state.event_emitter)
     will_sync_history = should_sync_history_message?(state.config, %{sync_type: :RECENT})
     account_sync_counter = current_account_sync_counter(state)
@@ -1309,6 +1316,8 @@ defmodule BaileysEx.Connection.Coordinator do
     stop_bg_app_state_sync_tasks(state.task_supervisor, sync.bg_tasks)
 
     retained_pending = retained_pending_collections_on_close(state, sync)
+    :ok = Store.put(state.store, :offline_notifications_received, false)
+    :ok = Store.put(state.store, :pending_server_app_state_syncs, %{})
 
     %{
       state
@@ -1837,13 +1846,63 @@ defmodule BaileysEx.Connection.Coordinator do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} ->
         case state.socket_module.connect(socket_pid) do
-          :ok -> state
-          {:error, {:invalid_state, _state_name}} -> state
+          :ok ->
+            state
+
+          {:error, {:invalid_state, :connected}} ->
+            resume_attached_connected_socket(state)
+
+          {:error, {:invalid_state, _state_name}} ->
+            state
         end
 
       :error ->
         state
     end
+  end
+
+  defp resume_attached_connected_socket(%State{} = state) do
+    state
+    |> resume_initial_sync_on_attached_socket()
+    |> resume_pending_server_syncs()
+  end
+
+  defp resume_initial_sync_on_attached_socket(%State{} = state) do
+    if Store.get(state.store_ref, :offline_notifications_received, false) == true do
+      will_sync_history = should_sync_history_message?(state.config, %{sync_type: :RECENT})
+      account_sync_counter = current_account_sync_counter(state)
+
+      cond do
+        MapSet.size(state.sync.pending_collections) > 0 ->
+          collections = ordered_patch_names(state.sync.pending_collections)
+
+          state
+          |> cancel_initial_sync_timer()
+          |> put_sync(:state, :syncing)
+          |> launch_initial_app_state_sync(collections, reset_initial_tracking?: false)
+
+        account_sync_counter > 0 or not will_sync_history ->
+          _ = EventEmitter.flush(state.event_emitter)
+          put_sync(state, :state, :online)
+
+        true ->
+          state
+          |> schedule_initial_sync_timeout()
+          |> put_sync(:state, :awaiting_initial_sync)
+      end
+    else
+      state
+    end
+  end
+
+  defp resume_pending_server_syncs(%State{} = state) do
+    state.store_ref
+    |> pending_server_syncs()
+    |> Enum.reduce(state, fn {ack_key,
+                              %{collections: collections, name: name, ack_node: ack_node}},
+                             acc ->
+      launch_server_app_state_resync(acc, collections, name, ack_key, ack_node)
+    end)
   end
 
   defp fetch_socket_pid(%State{} = state) do
@@ -2481,7 +2540,6 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp notification_context(%State{} = state) do
-    resync_app_state_fun = state.resync_app_state_fun || built_in_resync_app_state_fun(state)
     me = current_me(state)
     me_id = me[:id] || me["id"]
 
@@ -2492,7 +2550,7 @@ defmodule BaileysEx.Connection.Coordinator do
     |> maybe_put_callback(:store_privacy_token_fun, privacy_token_store_fun(state.signal_store))
     |> maybe_put_callback(:handle_encrypt_notification_fun, state.handle_encrypt_notification_fun)
     |> maybe_put_callback(:device_notification_fun, state.device_notification_fun)
-    |> maybe_put_callback(:resync_app_state_fun, resync_app_state_fun)
+    |> maybe_put_callback(:resync_app_state_fun, state.resync_app_state_fun)
   end
 
   defp send_notification_ack(%State{} = state, %BinaryNode{attrs: attrs} = _node) do
@@ -3037,26 +3095,70 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp built_in_resync_app_state_fun(%State{sync: %{generation: gen}}) do
-    coordinator_pid = self()
+  defp handle_built_in_server_sync_notification(%State{} = state, %BinaryNode{} = node) do
+    case BinaryNodeUtil.child(node, "collection") do
+      %BinaryNode{attrs: %{"name" => name}} ->
+        case normalize_patch_names([name]) do
+          {:ok, collections} ->
+            ack_key = {name, node.attrs["id"] || make_ref()}
 
-    fn name ->
-      with {:ok, collections} <- normalize_patch_names([name]) do
-        Kernel.send(coordinator_pid, {:start_server_app_state_resync, gen, collections, name})
-        :ok
-      end
+            state
+            |> put_pending_server_sync(ack_key, %{
+              collections: collections,
+              name: name,
+              ack_node: node
+            })
+            |> launch_server_app_state_resync(collections, name, ack_key, node)
+
+          {:error, reason} ->
+            Logger.warning("server_sync resync failed for #{name}: #{inspect(reason)}")
+            send_notification_ack(state, node)
+        end
+
+      _ ->
+        send_notification_ack(state, node)
     end
   end
 
-  defp launch_server_app_state_resync(%State{} = state, collections, name) do
+  defp launch_server_app_state_resync(%State{} = state, collections, name, ack_key, ack_node) do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} ->
-        start_tracked_bg_app_state_sync(state, collections, socket_pid, :server, name: name)
+        case start_tracked_bg_app_state_sync_result(state, collections, socket_pid, :server,
+               name: name,
+               ack_key: ack_key,
+               ack_node: ack_node
+             ) do
+          {:ok, next_state} ->
+            next_state
+
+          {:error, reason} ->
+            Logger.warning("failed to start server app state resync: #{inspect(reason)}")
+            delete_pending_server_sync(state, ack_key)
+        end
 
       :error ->
         Logger.warning("server_sync resync skipped for #{name}: socket not available")
-        state
+        delete_pending_server_sync(state, ack_key)
     end
+  end
+
+  defp pending_server_syncs(store_ref) do
+    case Store.get(store_ref, :pending_server_app_state_syncs) do
+      %{} = pending -> pending
+      _ -> %{}
+    end
+  end
+
+  defp put_pending_server_sync(%State{} = state, ack_key, entry) do
+    updated = Map.put(pending_server_syncs(state.store_ref), ack_key, entry)
+    :ok = Store.put(state.store, :pending_server_app_state_syncs, updated)
+    state
+  end
+
+  defp delete_pending_server_sync(%State{} = state, ack_key) do
+    updated = Map.delete(pending_server_syncs(state.store_ref), ack_key)
+    :ok = Store.put(state.store, :pending_server_app_state_syncs, updated)
+    state
   end
 
   defp log_server_app_state_sync_result(:ok, _name), do: :ok
@@ -3196,17 +3298,6 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp start_tracked_bg_app_state_sync(state, collections, socket_pid, kind, opts) do
-    case start_tracked_bg_app_state_sync_result(state, collections, socket_pid, kind, opts) do
-      {:ok, next_state} ->
-        next_state
-
-      {:error, reason} ->
-        Logger.warning("failed to start #{kind} app state resync: #{inspect(reason)}")
-        state
-    end
-  end
-
   defp start_tracked_bg_app_state_sync_result(state, collections, socket_pid, kind, opts) do
     coordinator_pid = self()
     generation = state.sync.generation
@@ -3231,6 +3322,8 @@ defmodule BaileysEx.Connection.Coordinator do
           kind: kind,
           collections: collections,
           name: Keyword.get(opts, :name),
+          ack_key: Keyword.get(opts, :ack_key),
+          ack_node: Keyword.get(opts, :ack_node),
           resync_blocked?: false
         }
 

@@ -1,11 +1,15 @@
 defmodule BaileysEx.Signal.RepositoryTest do
   use ExUnit.Case, async: true
 
+  alias BaileysEx.Crypto
+  alias BaileysEx.Signal.Adapter.Signal, as: SignalAdapter
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.Group.Cipher, as: GroupCipher
   alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.Group.SenderKeyRecord
   alias BaileysEx.Signal.Group.SessionBuilder, as: GroupSessionBuilder
   alias BaileysEx.Signal.Repository
+  alias BaileysEx.Signal.SessionRecord
   alias BaileysEx.Signal.Store
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
@@ -375,6 +379,205 @@ defmodule BaileysEx.Signal.RepositoryTest do
       refute String.starts_with?(ciphertext, "5511999887766")
       assert String.starts_with?(ciphertext, "12345")
       assert String.ends_with?(ciphertext, "|hello")
+    end
+
+    test "resolves PN device JIDs to the canonical LID address across inject, delete, and resolve_session_address" do
+      repo = new_repo()
+
+      session = %{
+        registration_id: 42,
+        identity_key: fixed_bytes(32, 1),
+        signed_pre_key: %{
+          key_id: 7,
+          public_key: fixed_bytes(32, 2),
+          signature: fixed_bytes(64, 3)
+        },
+        pre_key: %{
+          key_id: 8,
+          public_key: fixed_bytes(32, 4)
+        }
+      }
+
+      assert {:ok, repo} =
+               Repository.store_lid_pn_mappings(repo, [
+                 %{lid: "12345@lid", pn: "5511999887766@s.whatsapp.net"}
+               ])
+
+      assert {:ok, "12345_1.2"} =
+               Repository.resolve_session_address(repo, "5511999887766:2@s.whatsapp.net")
+
+      assert {:ok, repo} =
+               Repository.inject_e2e_session(repo, %{
+                 jid: "5511999887766:2@s.whatsapp.net",
+                 session: session
+               })
+
+      assert %{last_injected: %{address: "12345_1.2"}} = repo.adapter_state
+      refute Map.has_key?(repo.adapter_state, "5511999887766.2")
+
+      assert {:ok, %{exists: true}} =
+               Repository.validate_session(repo, "5511999887766:2@s.whatsapp.net")
+
+      assert {:ok, repo, %{ciphertext: ciphertext}} =
+               Repository.encrypt_message(repo, %{
+                 jid: "5511999887766:2@s.whatsapp.net",
+                 data: "mapped"
+               })
+
+      assert ciphertext == "12345_1.2|mapped"
+
+      assert {:ok, repo} =
+               Repository.delete_session(repo, ["5511999887766:2@s.whatsapp.net"])
+
+      assert {:ok, %{exists: false, reason: :no_session}} =
+               Repository.validate_session(repo, "5511999887766:2@s.whatsapp.net")
+
+      assert {:ok, %{exists: false, reason: :no_session}} =
+               Repository.validate_session(repo, "12345:2@lid")
+    end
+
+    test "has_sender_key?/2 and get_sender_key_distribution_message/2 expose existing group sender keys" do
+      {:ok, sender_store} = Store.new()
+      sender_identity = Crypto.generate_key_pair(:x25519, private_key: <<601::256>>)
+      sender_spk = Crypto.generate_key_pair(:x25519, private_key: <<602::256>>)
+
+      sender_repo =
+        Repository.new(
+          adapter: SignalAdapter,
+          adapter_state:
+            SignalAdapter.new(
+              store: sender_store,
+              identity_key_pair: sender_identity,
+              registration_id: 6001,
+              signed_pre_key: %{key_id: 1, key_pair: sender_spk}
+            ),
+          store: sender_store
+        )
+
+      group_jid = "120363001234567890@g.us"
+      me_id = "5511999887766@s.whatsapp.net"
+
+      refute Repository.has_sender_key?(sender_repo, %{group: group_jid, me_id: me_id})
+
+      assert {:ok, sender_repo, %{ciphertext: ciphertext}} =
+               Repository.encrypt_group_message(sender_repo, %{
+                 group: group_jid,
+                 me_id: me_id,
+                 data: "first group msg"
+               })
+
+      assert Repository.has_sender_key?(sender_repo, %{group: group_jid, me_id: me_id})
+
+      assert {:ok, _sender_repo, skdm} =
+               Repository.get_sender_key_distribution_message(sender_repo, %{
+                 group: group_jid,
+                 me_id: me_id
+               })
+
+      assert {:ok, sender_repo, %{ciphertext: later_ciphertext}} =
+               Repository.encrypt_group_message(sender_repo, %{
+                 group: group_jid,
+                 me_id: me_id,
+                 data: "later group msg"
+               })
+
+      recipient_repo = new_repo()
+
+      assert {:ok, recipient_repo} =
+               Repository.process_sender_key_distribution_message(recipient_repo, %{
+                 author_jid: me_id,
+                 item: %{group_id: group_jid, axolotl_sender_key_distribution_message: skdm}
+               })
+
+      assert {:ok, _recipient_repo, "later group msg"} =
+               Repository.decrypt_group_message(recipient_repo, %{
+                 group: group_jid,
+                 author_jid: me_id,
+                 msg: later_ciphertext
+               })
+
+      assert is_binary(ciphertext)
+      assert is_struct(sender_repo, Repository)
+    end
+
+    test "session_info/2 reports remote registration ID for incoming pkmsg sessions and nil for legacy receiving records" do
+      {:ok, alice_store} = Store.new()
+      {:ok, bob_store} = Store.new()
+
+      alice_identity = Crypto.generate_key_pair(:x25519, private_key: <<611::256>>)
+      alice_spk = Crypto.generate_key_pair(:x25519, private_key: <<612::256>>)
+      bob_identity = Crypto.generate_key_pair(:x25519, private_key: <<613::256>>)
+      bob_spk = Crypto.generate_key_pair(:x25519, private_key: <<614::256>>)
+      {:ok, bob_spk_pub} = Curve.generate_signal_pub_key(bob_spk.public)
+      {:ok, bob_sig} = Curve.sign(bob_identity.private, bob_spk_pub)
+
+      alice_repo =
+        Repository.new(
+          adapter: SignalAdapter,
+          adapter_state:
+            SignalAdapter.new(
+              store: alice_store,
+              identity_key_pair: alice_identity,
+              registration_id: 9101,
+              signed_pre_key: %{key_id: 1, key_pair: alice_spk}
+            ),
+          store: alice_store
+        )
+
+      bob_repo =
+        Repository.new(
+          adapter: SignalAdapter,
+          adapter_state:
+            SignalAdapter.new(
+              store: bob_store,
+              identity_key_pair: bob_identity,
+              registration_id: 9202,
+              signed_pre_key: %{key_id: 2, key_pair: bob_spk}
+            ),
+          store: bob_store
+        )
+
+      assert {:ok, alice_repo} =
+               Repository.inject_e2e_session(alice_repo, %{
+                 jid: "15557654321@s.whatsapp.net",
+                 session: %{
+                   registration_id: 9202,
+                   identity_key: bob_identity.public,
+                   signed_pre_key: %{key_id: 2, public_key: bob_spk.public, signature: bob_sig},
+                   pre_key: nil
+                 }
+               })
+
+      assert {:ok, _alice_repo, %{type: :pkmsg, ciphertext: pkmsg_ct}} =
+               Repository.encrypt_message(alice_repo, %{
+                 jid: "15557654321@s.whatsapp.net",
+                 data: "hello bob"
+               })
+
+      assert {:ok, bob_repo, "hello bob"} =
+               Repository.decrypt_message(bob_repo, %{
+                 jid: "15550001111@s.whatsapp.net",
+                 type: :pkmsg,
+                 ciphertext: pkmsg_ct
+               })
+
+      assert {:ok, %{registration_id: 9101, base_key: base_key}} =
+               Repository.session_info(bob_repo, "15550001111@s.whatsapp.net")
+
+      assert is_binary(base_key)
+
+      # Legacy persisted receiving session without :remote_registration_id? flag
+      %{"15550001111.0" => record} = Store.get(bob_store, :session, ["15550001111.0"])
+      {open_key, open_session} = SessionRecord.get_open_session(record)
+
+      legacy_session =
+        open_session |> Map.delete(:remote_registration_id?) |> Map.put(:registration_id, 9202)
+
+      legacy_record = SessionRecord.put_session(record, open_key, legacy_session)
+      :ok = Store.set(bob_store, %{session: %{"15550001111.0" => legacy_record}})
+
+      assert {:ok, %{registration_id: nil, base_key: ^base_key}} =
+               Repository.session_info(bob_repo, "15550001111@s.whatsapp.net")
     end
 
     test "trusts first use and loads identity keys through the repository" do

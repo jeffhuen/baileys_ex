@@ -434,11 +434,15 @@ defmodule BaileysEx.Message.Sender do
 
   defp normalize_device_lookup_result({:error, _reason} = error, _context), do: error
 
-  defp maybe_assert_sessions(%{signal_repository: %Repository{}} = context, []),
+  defp maybe_assert_sessions(context, jids, opts \\ [])
+
+  defp maybe_assert_sessions(%{signal_repository: %Repository{}} = context, [], _opts),
     do: {:ok, context}
 
-  defp maybe_assert_sessions(%{signal_repository: %Repository{}} = context, jids) do
-    case Session.assert_sessions(context, jids, force: false) do
+  defp maybe_assert_sessions(%{signal_repository: %Repository{}} = context, jids, opts) do
+    force? = Keyword.get(opts, :force, false)
+
+    case Session.assert_sessions(context, jids, force: force?) do
       {:ok, next_context, _fetched?} -> {:ok, next_context}
       {:error, _reason} = error -> error
     end
@@ -524,12 +528,30 @@ defmodule BaileysEx.Message.Sender do
     participant_jid = participant[:jid]
     count = participant[:count] || 1
     destination_jid = JIDUtil.to_string(jid)
-    participant_message = retry_resend_message(context, message, destination_jid, participant_jid)
-    bytes = Wire.encode(participant_message)
+    group_or_status? = JIDUtil.group?(jid) or JIDUtil.status_broadcast?(jid)
 
-    with {:ok, updated_context} <- maybe_assert_sessions(context, [participant_jid]),
+    with {:ok, updated_context} <-
+           maybe_assert_sessions(context, [participant_jid],
+             force: Keyword.get(opts, :force_assert_sessions?, false)
+           ),
+         {repo, message_to_send} <-
+           maybe_attach_retry_skdm(
+             updated_context.signal_repository,
+             updated_context,
+             destination_jid,
+             message,
+             group_or_status?
+           ),
+         participant_message =
+           retry_resend_message(
+             updated_context,
+             message_to_send,
+             destination_jid,
+             participant_jid
+           ),
+         bytes = Wire.encode(participant_message),
          {:ok, repo, %{type: type, ciphertext: ciphertext}} <-
-           Repository.encrypt_message(updated_context.signal_repository, %{
+           Repository.encrypt_message(repo, %{
              jid: participant_jid,
              data: bytes
            }),
@@ -537,7 +559,7 @@ defmodule BaileysEx.Message.Sender do
            relay(
              %{updated_context | signal_repository: repo},
              retry_resend_node(
-               context,
+               updated_context,
                jid,
                participant,
                message_id,
@@ -560,6 +582,60 @@ defmodule BaileysEx.Message.Sender do
          message: message,
          timestamp: now(opts)
        }, %{updated_context | signal_repository: repo}}
+    end
+  end
+
+  defp maybe_attach_retry_skdm(repo, _context, _destination_jid, message, false),
+    do: {repo, message}
+
+  defp maybe_attach_retry_skdm(repo, context, destination_jid, %Message{} = message, true) do
+    case resolve_group_sender_identity(repo, context, destination_jid) do
+      nil ->
+        {repo, message}
+
+      group_sender_identity ->
+        case Repository.get_sender_key_distribution_message(repo, %{
+               group: destination_jid,
+               me_id: group_sender_identity
+             }) do
+          {:ok, next_repo, skdm} ->
+            updated_message = %Message{
+              message
+              | sender_key_distribution_message: %Message.SenderKeyDistributionMessage{
+                  group_id: destination_jid,
+                  axolotl_sender_key_distribution_message: skdm
+                }
+            }
+
+            {next_repo, updated_message}
+
+          {:error, reason} ->
+            require Logger
+
+            Logger.warning(
+              "failed to build SKDM for retry (#{destination_jid}): #{inspect(reason)}"
+            )
+
+            {repo, message}
+        end
+    end
+  end
+
+  defp resolve_group_sender_identity(repo, context, destination_jid) do
+    me_lid = context[:me_lid]
+    me_id = context[:me_id]
+
+    cond do
+      is_binary(me_lid) and
+          Repository.has_sender_key?(repo, %{group: destination_jid, me_id: me_lid}) ->
+        me_lid
+
+      is_binary(me_id) and
+          Repository.has_sender_key?(repo, %{group: destination_jid, me_id: me_id}) ->
+        me_id
+
+      true ->
+        nil
     end
   end
 
@@ -718,13 +794,22 @@ defmodule BaileysEx.Message.Sender do
   defp same_user?(jid1, jid2), do: JIDUtil.same_user?(jid1, jid2)
 
   defp retry_resend_message(%{} = context, %Message{} = message, destination_jid, participant_jid) do
-    me_identity = context[:me_lid] || context[:me_id]
-
-    if same_user?(participant_jid, me_identity) do
+    if retry_resend_is_me?(context, participant_jid) do
       wrap_device_sent_message(message, destination_jid)
     else
       message
     end
+  end
+
+  defp retry_resend_is_me?(%{} = context, participant_jid) do
+    me_identity =
+      if JIDUtil.lid?(participant_jid) or JIDUtil.hosted_lid?(participant_jid) do
+        context[:me_lid]
+      else
+        context[:me_id]
+      end
+
+    same_user?(participant_jid, me_identity)
   end
 
   defp retry_resend_node(
@@ -737,7 +822,6 @@ defmodule BaileysEx.Message.Sender do
        ) do
     participant_jid = participant[:jid]
     destination_jid = JIDUtil.to_string(jid)
-    me_identity = context[:me_lid] || context[:me_id]
 
     attrs =
       %{
@@ -753,7 +837,7 @@ defmodule BaileysEx.Message.Sender do
         JIDUtil.group?(jid) ->
           Map.put(attrs, "participant", participant_jid)
 
-        same_user?(participant_jid, me_identity) ->
+        retry_resend_is_me?(context, participant_jid) ->
           attrs
           |> Map.put("to", participant_jid)
           |> Map.put("recipient", destination_jid)

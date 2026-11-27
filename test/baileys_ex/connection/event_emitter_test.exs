@@ -847,6 +847,396 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     assert_receive {:DOWN, ^task_ref, :process, ^task, _reason}, 300
   end
 
+  test "buffered chat updates preserve explicit nil clears for pin and mute_end_time while keeping absent keys" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :chats_upsert, [
+        %{
+          id: "chat-pin@s.whatsapp.net",
+          pin: 1_710_000_001,
+          mute_end_time: 1_710_009_999,
+          name: "Keep"
+        }
+      ])
+
+    :ok =
+      EventEmitter.emit(emitter, :chats_update, [
+        %{id: "chat-pin@s.whatsapp.net", pin: nil},
+        %{id: "chat-pin@s.whatsapp.net", mute_end_time: nil},
+        %{id: "chat-standalone@s.whatsapp.net", pin: 100, archived: true},
+        %{id: "chat-standalone@s.whatsapp.net", pin: nil},
+        %{id: "chat-mute@s.whatsapp.net", mute_end_time: 500},
+        %{id: "chat-mute@s.whatsapp.net", mute_end_time: nil}
+      ])
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, events}, 1_000
+
+    assert events.chats_upsert == [
+             %{
+               id: "chat-pin@s.whatsapp.net",
+               pin: nil,
+               mute_end_time: nil,
+               name: "Keep"
+             }
+           ]
+
+    assert events.chats_update == [
+             %{id: "chat-standalone@s.whatsapp.net", pin: nil, archived: true},
+             %{id: "chat-mute@s.whatsapp.net", mute_end_time: nil}
+           ]
+  end
+
+  test "messages_upsert type change drains only message upserts, keeps other buffered events, and preserves watchdog timer" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 80)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "hist@s.whatsapp.net"}],
+        contacts: [],
+        messages: [],
+        sync_type: :INITIAL_BOOTSTRAP
+      })
+
+    :ok = EventEmitter.emit(emitter, :chats_update, [%{id: "u@s.whatsapp.net", archived: true}])
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :append,
+        messages: [%{key: %{remote_jid: "a@s.whatsapp.net", id: "append-1", from_me: false}}]
+      })
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        messages: [%{key: %{remote_jid: "a@s.whatsapp.net", id: "notify-1", from_me: false}}]
+      })
+
+    # Immediate drain emits ONLY the previous :append upsert — NOT history or chat updates
+    assert_receive {:processed_events, first_batch}, 500
+
+    assert first_batch == %{
+             messages_upsert: %{
+               type: :append,
+               messages: [
+                 %{key: %{remote_jid: "a@s.whatsapp.net", id: "append-1", from_me: false}}
+               ]
+             }
+           }
+
+    assert EventEmitter.buffering?(emitter)
+
+    # Watchdog timer remains intact and auto-flushes the :notify upsert alongside pending history + chat updates
+    assert_receive {:processed_events, second_batch}, 500
+
+    assert %{
+             messaging_history_set: %{chats: [%{id: "hist@s.whatsapp.net"}]},
+             chats_update: [%{id: "u@s.whatsapp.net", archived: true}],
+             messages_upsert: %{
+               type: :notify,
+               messages: [
+                 %{key: %{remote_jid: "a@s.whatsapp.net", id: "notify-1", from_me: false}}
+               ]
+             }
+           } = second_batch
+
+    refute EventEmitter.buffering?(emitter)
+  end
+
+  test "buffered messages_upsert preserves request_id and does not coalesce across different request_ids" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        request_id: "pdo-req-1",
+        messages: [%{key: %{remote_jid: "a@s.whatsapp.net", id: "restored-1", from_me: false}}]
+      })
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        request_id: "pdo-req-1",
+        messages: [%{key: %{remote_jid: "a@s.whatsapp.net", id: "restored-2", from_me: false}}]
+      })
+
+    # Different request_id drains the first group cleanly without losing request_id
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        request_id: "pdo-req-2",
+        messages: [%{key: %{remote_jid: "a@s.whatsapp.net", id: "restored-3", from_me: false}}]
+      })
+
+    assert_receive {:processed_events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        request_id: "pdo-req-1",
+                        messages: [
+                          %{key: %{id: "restored-1"}},
+                          %{key: %{id: "restored-2"}}
+                        ]
+                      }
+                    }},
+                   500
+
+    assert EventEmitter.flush(emitter)
+
+    assert_receive {:processed_events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        request_id: "pdo-req-2",
+                        messages: [%{key: %{id: "restored-3"}}]
+                      }
+                    }},
+                   500
+  end
+
+  test "buffered reactions and receipts fold into matching upserts and consolidate standalone entries per author/user" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    group_key = fn id -> %{remote_jid: "g1@g.us", id: id, from_me: true} end
+
+    :ok = EventEmitter.buffer(emitter)
+
+    # Upsert message that will absorb both reaction and receipts
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        messages: [%{key: group_key.("m-in-buf"), message: %{conversation: "hi"}}]
+      })
+
+    # Reactions on buffered upsert: same author replaces first reaction; other author kept
+    :ok =
+      EventEmitter.emit(emitter, :messages_reaction, [
+        %{
+          key: group_key.("m-in-buf"),
+          reaction: %{
+            key: %{
+              remote_jid: "g1@g.us",
+              participant: "u1@s.whatsapp.net",
+              from_me: false,
+              id: "r1"
+            },
+            text: "👍"
+          }
+        },
+        %{
+          key: group_key.("m-in-buf"),
+          reaction: %{
+            key: %{
+              remote_jid: "g1@g.us",
+              participant: "u1@s.whatsapp.net",
+              from_me: false,
+              id: "r2"
+            },
+            text: "❤️"
+          }
+        },
+        %{
+          key: group_key.("m-in-buf"),
+          reaction: %{
+            key: %{
+              remote_jid: "g1@g.us",
+              participant: "u2@s.whatsapp.net",
+              from_me: false,
+              id: "r3"
+            },
+            text: "🔥"
+          }
+        }
+      ])
+
+    # Receipts on buffered upsert: delivery + read for u1 merge together
+    :ok =
+      EventEmitter.emit(emitter, :message_receipt_update, [
+        %{
+          key: Map.put(group_key.("m-in-buf"), :participant, "u1@s.whatsapp.net"),
+          receipt: %{user_jid: "u1@s.whatsapp.net", receipt_timestamp: 100}
+        },
+        %{
+          key: Map.put(group_key.("m-in-buf"), :participant, "u1@s.whatsapp.net"),
+          receipt: %{user_jid: "u1@s.whatsapp.net", read_timestamp: 200}
+        }
+      ])
+
+    # Standalone reactions + receipts (message not in buffer) also consolidate per author/user
+    :ok =
+      EventEmitter.emit(emitter, :messages_reaction, [
+        %{
+          key: group_key.("m-standalone"),
+          reaction: %{
+            key: %{
+              remote_jid: "g1@g.us",
+              participant: "u1@s.whatsapp.net",
+              from_me: false,
+              id: "r4"
+            },
+            text: "😀"
+          }
+        },
+        %{
+          key: group_key.("m-standalone"),
+          reaction: %{
+            key: %{
+              remote_jid: "g1@g.us",
+              participant: "u1@s.whatsapp.net",
+              from_me: false,
+              id: "r5"
+            },
+            text: "🎉"
+          }
+        }
+      ])
+
+    :ok =
+      EventEmitter.emit(emitter, :message_receipt_update, [
+        %{
+          key: Map.put(group_key.("m-standalone"), :participant, "u1@s.whatsapp.net"),
+          receipt: %{user_jid: "u1@s.whatsapp.net", receipt_timestamp: 300}
+        },
+        %{
+          key: Map.put(group_key.("m-standalone"), :participant, "u1@s.whatsapp.net"),
+          receipt: %{user_jid: "u1@s.whatsapp.net", read_timestamp: 400}
+        },
+        %{
+          key: Map.put(group_key.("m-standalone"), :participant, "u2@s.whatsapp.net"),
+          receipt: %{user_jid: "u2@s.whatsapp.net", receipt_timestamp: 350}
+        }
+      ])
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, events}, 1_000
+
+    assert %{
+             messages_upsert: %{
+               type: :notify,
+               messages: [
+                 %{
+                   key: %{id: "m-in-buf"},
+                   reactions: [
+                     %{key: %{id: "r2", participant: "u1@s.whatsapp.net"}, text: "❤️"},
+                     %{key: %{id: "r3", participant: "u2@s.whatsapp.net"}, text: "🔥"}
+                   ],
+                   user_receipt: [
+                     %{user_jid: "u1@s.whatsapp.net", receipt_timestamp: 100, read_timestamp: 200}
+                   ]
+                 }
+               ]
+             },
+             messages_reaction: [
+               %{
+                 key: %{id: "m-standalone"},
+                 reaction: %{key: %{id: "r5", participant: "u1@s.whatsapp.net"}, text: "🎉"}
+               }
+             ],
+             message_receipt_update: [
+               %{
+                 key: %{id: "m-standalone"},
+                 receipt: %{
+                   user_jid: "u1@s.whatsapp.net",
+                   receipt_timestamp: 300,
+                   read_timestamp: 400
+                 }
+               },
+               %{
+                 key: %{id: "m-standalone"},
+                 receipt: %{user_jid: "u2@s.whatsapp.net", receipt_timestamp: 350}
+               }
+             ]
+           } = events
+  end
+
+  test "history deduplication persists across flushes, permits later named contacts, and resets above max cache size" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000, max_history_cache_size: 4)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+    msg_key = fn id -> %{remote_jid: "c1@s.whatsapp.net", id: id, from_me: false} end
+
+    # First flush populates the cross-flush history cache (3 entries: chat c1, contact c1, msg m1)
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "c1@s.whatsapp.net"}],
+        contacts: [%{id: "c1@s.whatsapp.net"}],
+        messages: [%{key: msg_key.("m1")}],
+        sync_type: :INITIAL_BOOTSTRAP
+      })
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, %{messaging_history_set: first}}, 500
+    assert Enum.map(first.chats, & &1.id) == ["c1@s.whatsapp.net"]
+    assert first.contacts == [%{id: "c1@s.whatsapp.net"}]
+    assert Enum.map(first.messages, & &1.key.id) == ["m1"]
+
+    # Second flush overlaps c1 and m1, adds a nameless duplicate c1 (skipped) and a named c1 (permitted!), plus m2
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "c1@s.whatsapp.net"}, %{id: "c2@s.whatsapp.net"}],
+        contacts: [%{id: "c1@s.whatsapp.net"}],
+        messages: [%{key: msg_key.("m1")}, %{key: msg_key.("m2")}],
+        sync_type: :RECENT
+      })
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, %{messaging_history_set: second}}, 500
+    assert Enum.map(second.chats, & &1.id) == ["c2@s.whatsapp.net"]
+    assert second.contacts == []
+    assert Enum.map(second.messages, & &1.key.id) == ["m2"]
+
+    # Cache size is now 5 (> max_history_cache_size 4), so flush cleared it; also verify named contact always passes
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "c1@s.whatsapp.net"}],
+        contacts: [%{id: "c1@s.whatsapp.net", name: "Alice"}],
+        messages: [%{key: msg_key.("m1")}],
+        sync_type: :FULL
+      })
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, %{messaging_history_set: third}}, 500
+    assert Enum.map(third.chats, & &1.id) == ["c1@s.whatsapp.net"]
+    assert third.contacts == [%{id: "c1@s.whatsapp.net", name: "Alice"}]
+    assert Enum.map(third.messages, & &1.key.id) == ["m1"]
+
+    # Immediately following flush (cache size 3 <= 4): nameless contact skipped, named contact still emitted
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [],
+        contacts: [%{id: "c1@s.whatsapp.net", notify: "Alice Push"}],
+        messages: [],
+        sync_type: :PUSH_NAME
+      })
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, %{messaging_history_set: fourth}}, 500
+    assert fourth.contacts == [%{id: "c1@s.whatsapp.net", notify: "Alice Push"}]
+  end
+
   defp child_pid!(supervisor, child_id) do
     supervisor
     |> Supervisor.which_children()

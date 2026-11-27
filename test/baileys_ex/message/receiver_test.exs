@@ -5,6 +5,7 @@ defmodule BaileysEx.Message.ReceiverTest do
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Store, as: ConnectionStore
   alias BaileysEx.Message.Builder
+  alias BaileysEx.Message.Normalizer
   alias BaileysEx.Message.Receiver
   alias BaileysEx.Message.Retry
   alias BaileysEx.Protocol.Proto.Conversation
@@ -2156,6 +2157,17 @@ defmodule BaileysEx.Message.ReceiverTest do
                     }}
 
     unsubscribe.()
+  end
+
+  test "Normalizer.extract_fetched_message/1 normalizes all documented get_message_fun return contracts" do
+    msg = %Message{conversation: "contract"}
+    assert Normalizer.extract_fetched_message(msg) == msg
+    assert Normalizer.extract_fetched_message(%{message: msg}) == msg
+    assert Normalizer.extract_fetched_message({:ok, msg}) == msg
+    assert Normalizer.extract_fetched_message({:ok, %{message: msg}}) == msg
+    assert Normalizer.extract_fetched_message(nil) == nil
+    assert Normalizer.extract_fetched_message(:error) == nil
+    assert Normalizer.extract_fetched_message({:error, :not_found}) == nil
   end
 
   defp verified_name_cert(name) do

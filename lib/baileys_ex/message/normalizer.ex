@@ -102,7 +102,7 @@ defmodule BaileysEx.Message.Normalizer do
          opts
        ) do
     with %MessageKey{} = source_key <- poll_update_message.poll_creation_message_key,
-         %{message: %Message{} = source_message} <- fetch_message(source_key, opts),
+         %Message{} = source_message <- fetch_message(source_key, opts),
          %MessageContextInfo{message_secret: secret} when is_binary(secret) <-
            source_message.message_context_info,
          {:ok, vote} <-
@@ -144,7 +144,7 @@ defmodule BaileysEx.Message.Normalizer do
          opts
        ) do
     with %MessageKey{} = source_key <- enc_event_response_message.event_creation_message_key,
-         %{message: %Message{} = source_message} <- fetch_message(source_key, opts),
+         %Message{} = source_message <- fetch_message(source_key, opts),
          %MessageContextInfo{message_secret: secret} when is_binary(secret) <-
            source_message.message_context_info,
          {:ok, response} <-
@@ -177,10 +177,21 @@ defmodule BaileysEx.Message.Normalizer do
 
   defp event_response_side_effect(_received_message, _message, _opts), do: nil
 
+  @doc false
+  @spec extract_fetched_message(term()) :: Message.t() | nil
+  def extract_fetched_message(%Message{} = message), do: message
+  def extract_fetched_message(%{message: %Message{} = message}), do: message
+  def extract_fetched_message({:ok, %Message{} = message}), do: message
+  def extract_fetched_message({:ok, %{message: %Message{} = message}}), do: message
+  def extract_fetched_message(_other), do: nil
+
   defp fetch_message(%MessageKey{} = key, opts) do
     case opts[:get_message_fun] do
-      fun when is_function(fun, 1) -> fun.(message_key_to_map(key))
-      _ -> nil
+      fun when is_function(fun, 1) ->
+        key |> message_key_to_map() |> fun.() |> extract_fetched_message()
+
+      _ ->
+        nil
     end
   end
 

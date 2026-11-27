@@ -327,6 +327,61 @@ defmodule BaileysEx.Message.RetryTest do
              Retry.handle_retry_receipt(ref, too_many, resend_fun: fn _, _ -> :ok end)
   end
 
+  test "handle_retry_receipt/3 enforces bounded local per-device outbound attempts and base-chat lookup" do
+    {:ok, store} = Store.start_link()
+    ref = Store.wrap(store)
+
+    # Cached under base chat JID, retried from companion device JID
+    assert :ok =
+             Retry.add_recent_message(
+               ref,
+               "15551234567@s.whatsapp.net",
+               "retry-local-1",
+               %Message{}
+             )
+
+    receipt = %BinaryNode{
+      tag: "receipt",
+      attrs: %{
+        "id" => "retry-local-1",
+        "from" => "15551234567:2@s.whatsapp.net",
+        "type" => "retry"
+      },
+      content: [%BinaryNode{tag: "retry", attrs: %{"count" => "1"}, content: nil}]
+    }
+
+    assert Retry.will_send_message_again?(
+             ref,
+             "retry-local-1",
+             "15551234567:2@s.whatsapp.net",
+             max_retry_count: 2
+           )
+
+    assert {:ok, [%{id: "retry-local-1"}]} =
+             Retry.handle_retry_receipt(ref, receipt, max_retry_count: 2)
+
+    assert {:ok, [%{id: "retry-local-1"}]} =
+             Retry.handle_retry_receipt(ref, receipt, max_retry_count: 2)
+
+    refute Retry.will_send_message_again?(
+             ref,
+             "retry-local-1",
+             "15551234567:2@s.whatsapp.net",
+             max_retry_count: 2
+           )
+
+    assert {:error, :max_retries_exceeded} =
+             Retry.handle_retry_receipt(ref, receipt, max_retry_count: 2)
+
+    # Different device for the same message has its own independent counter
+    assert Retry.will_send_message_again?(
+             ref,
+             "retry-local-1",
+             "15551234567:3@s.whatsapp.net",
+             max_retry_count: 2
+           )
+  end
+
   test "send_retry_request/3 emits a retry receipt, increments counters, and schedules placeholder resend" do
     {:ok, store} = Store.start_link()
     ref = Store.wrap(store)

@@ -44,7 +44,9 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
               buffering?: false,
               buffer_count: 0,
               seed: %{},
-              buffered_events: EventBuffer.new()
+              buffered_events: EventBuffer.new(),
+              history_cache: MapSet.new(),
+              max_history_cache_size: 10_000
   end
 
   defmodule Subscriber do
@@ -188,6 +190,8 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
       buffer_timeout_ms: Keyword.get(opts, :buffer_timeout_ms, 30_000),
       task_supervisor: Keyword.get(opts, :task_supervisor),
       max_dispatch_queue: normalize_max_dispatch_queue(Keyword.get(opts, :max_dispatch_queue)),
+      max_history_cache_size:
+        normalize_max_history_cache_size(Keyword.get(opts, :max_history_cache_size)),
       ref_fun: Keyword.get(opts, :ref_fun, &make_ref/0)
     }
 
@@ -246,7 +250,7 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
   end
 
   def handle_call(:flush, _from, %State{} = state) do
-    {flushed_state, deliveries} = flush_buffer(state, :stop)
+    {flushed_state, deliveries} = flush_buffer(state)
 
     case enqueue_dispatch(flushed_state, [], deliveries) do
       {:ok, state} -> {:reply, true, state}
@@ -307,31 +311,37 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
   defp emit_event(
          %State{buffering?: true} = state,
          :messages_upsert,
-         %{type: type, messages: messages} = data
+         %{type: _type, messages: messages} = data
        )
        when is_list(messages) do
-    {state, deliveries} =
-      if EventBuffer.messages_upsert_type_mismatch?(state.buffered_events, type) do
-        flush_buffer(state, :keep)
+    {deliveries, buffered_events} =
+      if EventBuffer.messages_upsert_flush_needed?(state.buffered_events, data) do
+        case EventBuffer.pop_message_upserts(state.buffered_events) do
+          {nil, next_buffer} -> {[], next_buffer}
+          {payload, next_buffer} -> {[%{messages_upsert: payload}], next_buffer}
+        end
       else
-        {state, []}
+        {[], state.buffered_events}
       end
 
-    state = %{
-      state
-      | buffered_events:
-          EventBuffer.append(state.buffered_events, state.seed, :messages_upsert, data)
-    }
+    {buffered_events, history_cache} =
+      EventBuffer.append(
+        buffered_events,
+        state.history_cache,
+        state.seed,
+        :messages_upsert,
+        data
+      )
 
-    {state, deliveries}
+    {%{state | buffered_events: buffered_events, history_cache: history_cache}, deliveries}
   end
 
   defp emit_event(%State{buffering?: true} = state, event, data) do
     if Map.has_key?(@bufferable_events, event) and EventBuffer.mergeable?(event, data) do
-      {%{
-         state
-         | buffered_events: EventBuffer.append(state.buffered_events, state.seed, event, data)
-       }, []}
+      {buffered_events, history_cache} =
+        EventBuffer.append(state.buffered_events, state.history_cache, state.seed, event, data)
+
+      {%{state | buffered_events: buffered_events, history_cache: history_cache}, []}
     else
       {state, [%{event => data}]}
     end
@@ -339,7 +349,14 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
 
   defp emit_event(%State{} = state, event, data), do: {state, [%{event => data}]}
 
-  defp flush_buffer(%State{} = state, mode) do
+  defp flush_buffer(%State{} = state) do
+    history_cache =
+      if MapSet.size(state.history_cache) > state.max_history_cache_size do
+        MapSet.new()
+      else
+        state.history_cache
+      end
+
     {events_to_emit, buffered_events} = EventBuffer.flush(state.buffered_events, state.seed)
 
     state =
@@ -347,9 +364,10 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
       |> maybe_cancel_buffer_timer()
       |> maybe_cancel_pending_flush()
       |> Map.put(:buffered_events, buffered_events)
+      |> Map.put(:history_cache, history_cache)
       |> Map.put(:buffer_timer, nil)
       |> Map.put(:flush_pending_timer, nil)
-      |> Map.put(:buffering?, mode == :keep)
+      |> Map.put(:buffering?, false)
       |> Map.put(:buffer_count, 0)
 
     deliveries =
@@ -357,13 +375,6 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
         []
       else
         [events_to_emit]
-      end
-
-    state =
-      if mode == :keep do
-        ensure_buffering(%{state | buffer_timer: nil})
-      else
-        state
       end
 
     {state, deliveries}
@@ -872,7 +883,7 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
   defp schedule_dispatch_retry(%State{} = state), do: state
 
   defp flush_when_dispatch_available(%State{} = state) do
-    {flushed_state, deliveries} = flush_buffer(state, :stop)
+    {flushed_state, deliveries} = flush_buffer(state)
 
     case enqueue_dispatch(flushed_state, [], deliveries) do
       {:ok, state} ->
@@ -942,4 +953,7 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
 
   defp normalize_max_dispatch_queue(value) when is_integer(value) and value > 0, do: value
   defp normalize_max_dispatch_queue(_value), do: 1_024
+
+  defp normalize_max_history_cache_size(value) when is_integer(value) and value > 0, do: value
+  defp normalize_max_history_cache_size(_value), do: 10_000
 end

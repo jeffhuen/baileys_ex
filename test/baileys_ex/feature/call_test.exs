@@ -243,4 +243,53 @@ defmodule BaileysEx.Feature.CallTest do
                       }
                     }}
   end
+
+  test "handle_node/2 still sends a call ack when info child is missing" do
+    parent = self()
+
+    node = %BinaryNode{
+      tag: "call",
+      attrs: %{"id" => "call-empty-1", "from" => "15551234567@s.whatsapp.net"},
+      content: []
+    }
+
+    assert {:error, :missing_call_info} =
+             Call.handle_node(node,
+               send_node_fun: fn ack ->
+                 send(parent, {:ack, ack})
+                 :ok
+               end
+             )
+
+    assert_receive {:ack,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{
+                        "id" => "call-empty-1",
+                        "to" => "15551234567@s.whatsapp.net",
+                        "class" => "call"
+                      }
+                    }}
+  end
+
+  test "handle_node/2 logs and does not crash when ack send fails with {:error, :not_connected}" do
+    offer_node = %BinaryNode{
+      tag: "call",
+      attrs: %{
+        "id" => "call-disconnected-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "t" => "1710000000"
+      },
+      content: [
+        %BinaryNode{
+          tag: "offer",
+          attrs: %{"call-id" => "call-disc", "call-creator" => "15551234567@s.whatsapp.net"},
+          content: nil
+        }
+      ]
+    }
+
+    assert {:ok, %{id: "call-disc", status: :offer}} =
+             Call.handle_node(offer_node, send_node_fun: fn _ack -> {:error, :not_connected} end)
+  end
 end

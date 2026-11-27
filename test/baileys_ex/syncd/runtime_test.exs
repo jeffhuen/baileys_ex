@@ -514,8 +514,51 @@ defmodule BaileysEx.Syncd.RuntimeTest do
         {:ok, %{tag: "iq", attrs: %{}, content: [%{tag: "sync", attrs: %{}, content: []}]}}
       end
 
-      assert :ok = AppState.resync_app_state(queryable, store, [:regular_high])
+      assert {:error, {:missing_collections, [:regular_high]}} =
+               AppState.resync_app_state(queryable, store, [:regular_high])
+
       assert Agent.get(calls, & &1) == 2
+    end
+
+    test "returns missing_collections when a collection disappears after an initial page with more patches" do
+      store = start_store()
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+      queryable = fn _node ->
+        call = Agent.get_and_update(calls, fn count -> {count + 1, count + 1} end)
+
+        if call == 1 do
+          {:ok,
+           %{
+             tag: "iq",
+             attrs: %{},
+             content: [
+               %{
+                 tag: "sync",
+                 attrs: %{},
+                 content: [
+                   %{
+                     tag: "collection",
+                     attrs: %{
+                       "name" => "regular_high",
+                       "version" => "1",
+                       "has_more_patches" => "true"
+                     },
+                     content: []
+                   }
+                 ]
+               }
+             ]
+           }}
+        else
+          {:ok, %{tag: "iq", attrs: %{}, content: [%{tag: "sync", attrs: %{}, content: []}]}}
+        end
+      end
+
+      assert {:error, {:missing_collections, [:regular_high]}} =
+               AppState.resync_app_state(queryable, store, [:regular_high])
+
+      assert Agent.get(calls, & &1) == 3
     end
 
     test "successful resync diagnostics do not log at warning level" do

@@ -78,6 +78,25 @@ defmodule BaileysEx.Signal.SessionCipherTest do
     assert SessionRecord.have_open_session?(bob_record)
   end
 
+  test "incoming PreKeyWhisperMessage persists the sender's remote registration_id rather than local opts" do
+    ctx = setup_session()
+
+    {:ok, _alice_record, encrypted} =
+      SessionCipher.encrypt(ctx.alice_record, "from alice", registration_id: 7777)
+
+    {:ok, bob_record, "from alice", _used_pre_key_id} =
+      SessionCipher.decrypt_pre_key_whisper_message(SessionRecord.new(), encrypted.ciphertext,
+        identity_key_pair: ctx.bob_identity,
+        signed_pre_key_pair: ctx.bob_signed_pre_key,
+        pre_key_pair: ctx.bob_pre_key,
+        registration_id: 9999
+      )
+
+    {_base_key, session} = SessionRecord.get_open_session(bob_record)
+    assert session.registration_id == 7777
+    assert session.remote_registration_id? == true
+  end
+
   test "bidirectional messaging after session establishment" do
     ctx = setup_session()
 

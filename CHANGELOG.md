@@ -18,7 +18,8 @@ and fixes companion-device protocol bugs.
 - Windows desktop connections now send the `WIN_HYBRID` sub-platform instead of
   the retired `WIN32` value.
 - GitHub Actions CI now tests both Elixir 1.19 on OTP 28 and Elixir 1.20 on
-  OTP 29. CI also runs `cargo fmt --check` and `cargo clippy --all-targets`.
+  OTP 29. CI also runs `cargo fmt --check` and
+  `cargo clippy --all-targets -- -D warnings`.
 
 ### Fixed
 

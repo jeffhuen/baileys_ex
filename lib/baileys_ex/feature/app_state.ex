@@ -93,6 +93,7 @@ defmodule BaileysEx.Feature.AppState do
 
       case do_resync_loop(context, collections, %{
              attempts_map: %{},
+             missing_collections: [],
              initial_version_map: %{},
              force_snapshot_collections: %{},
              on_blocked_collection: context.on_blocked_collection,
@@ -100,18 +101,25 @@ defmodule BaileysEx.Feature.AppState do
              global_mutation_order_chunks: []
            }) do
         {:ok,
-         %{global_mutation_map: final_mutations, global_mutation_order: final_mutation_order}} ->
+         %{
+           global_mutation_map: final_mutations,
+           global_mutation_order: final_mutation_order,
+           missing_collections: missing_collections
+         }} ->
           log_resync_complete(is_initial_sync, final_mutation_order)
 
-          emit_mutation_map(
-            event_emitter,
-            final_mutations,
-            final_mutation_order,
-            me,
-            initial_sync: is_initial_sync,
-            account_settings:
-              normalize_account_settings(get_in(fetch_creds(store, opts), [:account_settings]))
-          )
+          emit_result =
+            emit_mutation_map(
+              event_emitter,
+              final_mutations,
+              final_mutation_order,
+              me,
+              initial_sync: is_initial_sync,
+              account_settings:
+                normalize_account_settings(get_in(fetch_creds(store, opts), [:account_settings]))
+            )
+
+          finalize_resync_result(emit_result, missing_collections)
 
         {:error, _} = err ->
           Logger.warning("[AppStateDiag] resync loop returned error: #{inspect(err)}")
@@ -123,6 +131,13 @@ defmodule BaileysEx.Feature.AppState do
       end
     end)
   end
+
+  defp finalize_resync_result(:ok, []), do: :ok
+
+  defp finalize_resync_result(:ok, missing),
+    do: {:error, {:missing_collections, Enum.reverse(missing)}}
+
+  defp finalize_resync_result(other, _missing), do: other
 
   defp log_resync_complete(is_initial_sync, final_mutation_order) do
     app_state_diag(fn ->
@@ -846,27 +861,34 @@ defmodule BaileysEx.Feature.AppState do
     [mutation_order | Map.get(loop_state, :global_mutation_order_chunks, [])]
   end
 
-  defp maybe_remove_collection(loop_state, _name, true), do: loop_state
+  defp maybe_remove_collection(loop_state, name, true) do
+    %{loop_state | attempts_map: Map.delete(loop_state.attempts_map, name)}
+  end
 
   defp maybe_remove_collection(loop_state, name, false) do
-    %{loop_state | remaining: List.delete(loop_state.remaining, name)}
+    %{
+      loop_state
+      | attempts_map: Map.delete(loop_state.attempts_map, name),
+        remaining: List.delete(loop_state.remaining, name)
+    }
   end
 
   defp handle_missing_collection(loop_state, name) do
     attempts = Map.get(loop_state.attempts_map, name, 0) + 1
 
-    remaining =
-      if attempts >= @max_sync_attempts do
-        List.delete(loop_state.remaining, name)
-      else
-        loop_state.remaining
-      end
-
-    %{
-      loop_state
-      | attempts_map: Map.put(loop_state.attempts_map, name, attempts),
-        remaining: remaining
-    }
+    if attempts >= @max_sync_attempts do
+      %{
+        loop_state
+        | attempts_map: Map.put(loop_state.attempts_map, name, attempts),
+          remaining: List.delete(loop_state.remaining, name),
+          missing_collections: [name | Map.get(loop_state, :missing_collections, [])]
+      }
+    else
+      %{
+        loop_state
+        | attempts_map: Map.put(loop_state.attempts_map, name, attempts)
+      }
+    end
   end
 
   defp handle_collection_failure(loop_state, _state_store, name, reason) do

@@ -12,6 +12,8 @@ defmodule BaileysEx.Message.HistorySync do
   alias BaileysEx.Protocol.Proto.HistorySync, as: HistorySyncProto
   alias BaileysEx.Protocol.Proto.HistorySyncMsg
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Protocol.Proto.PastParticipant
+  alias BaileysEx.Protocol.Proto.PastParticipants
   alias BaileysEx.Protocol.Proto.Pushname
 
   @type context :: %{
@@ -84,6 +86,7 @@ defmodule BaileysEx.Message.HistorySync do
       contacts: Enum.reverse(contacts),
       messages: Enum.reverse(messages),
       lid_pn_mappings: lid_pn_mappings |> Enum.reverse() |> Enum.uniq(),
+      past_participants: format_past_participants(history_sync.past_participants),
       sync_type: sync_type,
       progress: history_sync.progress
     }
@@ -92,6 +95,7 @@ defmodule BaileysEx.Message.HistorySync do
   defp process_history_sync(%HistorySyncProto{
          sync_type: :PUSH_NAME,
          pushnames: pushnames,
+         past_participants: past_participants,
          progress: progress
        }) do
     %{
@@ -99,20 +103,48 @@ defmodule BaileysEx.Message.HistorySync do
       contacts: Enum.map(pushnames, &pushname_to_contact/1),
       messages: [],
       lid_pn_mappings: [],
+      past_participants: format_past_participants(past_participants),
       sync_type: :PUSH_NAME,
       progress: progress
     }
   end
 
-  defp process_history_sync(%HistorySyncProto{sync_type: sync_type, progress: progress}) do
+  defp process_history_sync(%HistorySyncProto{
+         sync_type: sync_type,
+         past_participants: past_participants,
+         progress: progress
+       }) do
     %{
       chats: [],
       contacts: [],
       messages: [],
       lid_pn_mappings: [],
+      past_participants: format_past_participants(past_participants),
       sync_type: sync_type,
       progress: progress
     }
+  end
+
+  defp format_past_participants(entries) when is_list(entries) do
+    Enum.map(entries, fn %PastParticipants{} = entry ->
+      %{
+        group_jid: entry.group_jid,
+        past_participants:
+          entry.past_participants
+          |> List.wrap()
+          |> Enum.map(&past_participant_to_map/1)
+      }
+      |> compact_map()
+    end)
+  end
+
+  defp past_participant_to_map(%PastParticipant{} = participant) do
+    %{
+      user_jid: participant.user_jid,
+      leave_reason: participant.leave_reason,
+      leave_ts: participant.leave_ts
+    }
+    |> compact_map()
   end
 
   defp explicit_mappings(%HistorySyncProto{} = history_sync) do

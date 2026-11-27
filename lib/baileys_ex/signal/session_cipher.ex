@@ -355,7 +355,11 @@ defmodule BaileysEx.Signal.SessionCipher do
       with {:ok, record} <-
              SessionBuilder.init_incoming(
                record,
-               %{identity_key: pkmsg.identity_key, base_key: pkmsg.base_key},
+               %{
+                 identity_key: pkmsg.identity_key,
+                 base_key: pkmsg.base_key,
+                 registration_id: pkmsg.registration_id
+               },
                our_keys,
                opts
              ) do

@@ -89,7 +89,8 @@ defmodule BaileysEx.Signal.SessionBuilder do
           signed_pre_key_id: signed_pre_key_id,
           base_key: base_key_pair.public
         },
-        registration_id: registration_id
+        registration_id: registration_id,
+        remote_registration_id?: true
       }
 
       record =
@@ -111,19 +112,41 @@ defmodule BaileysEx.Signal.SessionBuilder do
   def init_incoming(%SessionRecord{} = record, their_message, our_keys, opts \\ []) do
     their_identity_key = their_message.identity_key
     their_base_key = their_message.base_key
+    their_registration_id = Map.get(their_message, :registration_id)
 
     if SessionRecord.get_session(record, their_base_key) do
       {:ok, record}
     else
-      do_init_incoming(record, their_identity_key, their_base_key, our_keys, opts)
+      do_init_incoming(
+        record,
+        their_identity_key,
+        their_base_key,
+        their_registration_id,
+        our_keys,
+        opts
+      )
     end
   end
 
-  defp do_init_incoming(record, their_identity_key, their_base_key, our_keys, opts) do
+  defp do_init_incoming(
+         record,
+         their_identity_key,
+         their_base_key,
+         their_registration_id,
+         our_keys,
+         opts
+       ) do
     our_identity_key = Keyword.fetch!(opts, :identity_key_pair)
     our_signed_pre_key = our_keys.signed_pre_key |> Curve.ensure_signal_key_pair!()
     our_pre_key = our_keys |> Map.get(:pre_key) |> maybe_ensure_signal_key_pair()
-    registration_id = Keyword.get(opts, :registration_id, 0)
+
+    {registration_id, remote_registration_id?} =
+      if is_integer(their_registration_id) and their_registration_id >= 0 do
+        {their_registration_id, true}
+      else
+        {Keyword.get(opts, :registration_id, 0), false}
+      end
+
     their_base_key = Curve.ensure_signal_public_key!(their_base_key)
 
     with {:ok, shared_secret} <-
@@ -156,7 +179,8 @@ defmodule BaileysEx.Signal.SessionBuilder do
         },
         chains: %{},
         pending_pre_key: nil,
-        registration_id: registration_id
+        registration_id: registration_id,
+        remote_registration_id?: remote_registration_id?
       }
 
       record =

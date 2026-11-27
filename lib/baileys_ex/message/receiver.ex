@@ -36,6 +36,19 @@ defmodule BaileysEx.Message.Receiver do
                                             &{&1, true}
                                           )
 
+  @typedoc """
+  Accepted return contract for `get_message_fun/1` across retry fallback and
+  poll/event normalization: a proto message struct, `%{message: struct()}`,
+  `{:ok, struct() | %{message: struct()}}`, or `nil` / `:error` / `{:error, term()}`.
+  """
+  @type get_message_result ::
+          struct()
+          | %{message: struct()}
+          | {:ok, struct() | %{message: struct()}}
+          | nil
+          | :error
+          | {:error, term()}
+
   @type context :: %{
           required(:signal_repository) => Repository.t(),
           required(:event_emitter) => GenServer.server(),
@@ -53,7 +66,7 @@ defmodule BaileysEx.Message.Receiver do
           optional(:send_placeholder_request_fun) => (struct() ->
                                                         {:ok, String.t() | nil, context()}
                                                         | {:error, term()}),
-          optional(:get_message_fun) => (map() -> map() | nil),
+          optional(:get_message_fun) => (map() -> get_message_result()),
           optional(atom()) => term()
         }
   @type bad_ack_context :: %{

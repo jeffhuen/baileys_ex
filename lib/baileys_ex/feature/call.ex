@@ -10,6 +10,7 @@ defmodule BaileysEx.Feature.Call do
   alias BaileysEx.Message.Receipt
   import BaileysEx.Connection.TransportAdapter, only: [query: 3]
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  require Logger
   @timeout 60_000
   @terminal_statuses [:reject, :accept, :timeout, :terminate]
 
@@ -54,13 +55,14 @@ defmodule BaileysEx.Feature.Call do
 
         maybe_store_offer(opts[:store_ref], call, status)
         maybe_emit_call(opts[:event_emitter], call)
-        :ok = maybe_send_ack(opts[:send_node_fun], Receipt.build_ack_stanza(node))
 
         {:ok, call}
 
       [] ->
         {:error, :missing_call_info}
     end
+  after
+    maybe_send_ack(opts[:send_node_fun], Receipt.build_ack_stanza(node))
   end
 
   @doc """
@@ -182,7 +184,24 @@ defmodule BaileysEx.Feature.Call do
   end
 
   defp maybe_send_ack(nil, _ack), do: :ok
-  defp maybe_send_ack(fun, ack) when is_function(fun, 1), do: fun.(ack)
+
+  defp maybe_send_ack(fun, ack) when is_function(fun, 1) do
+    case fun.(ack) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("failed to ack call: #{inspect(reason)}")
+        :ok
+
+      _other ->
+        :ok
+    end
+  rescue
+    error ->
+      Logger.warning("failed to ack call: #{Exception.message(error)}")
+      :ok
+  end
 
   defp cached_offer(%Store.Ref{} = store_ref, id) do
     store_ref

@@ -178,10 +178,11 @@ defmodule BaileysEx.Protocol.JID do
   def hosted_lid?(_), do: false
 
   @doc "Check if JID is the status broadcast."
-  @spec status_broadcast?(JID.t() | String.t()) :: boolean()
+  @spec status_broadcast?(JID.t() | String.t() | nil) :: boolean()
   def status_broadcast?(%JID{user: "status", server: @broadcast}), do: true
   def status_broadcast?(%JID{}), do: false
   def status_broadcast?(jid) when is_binary(jid), do: jid == "status@broadcast"
+  def status_broadcast?(_), do: false
 
   @doc """
   Normalize a JID for comparison.

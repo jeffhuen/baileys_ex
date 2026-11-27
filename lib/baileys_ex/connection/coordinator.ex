@@ -1430,7 +1430,12 @@ defmodule BaileysEx.Connection.Coordinator do
 
     node = %BinaryNode{
       tag: "iq",
-      attrs: %{"to" => @s_whatsapp_net, "type" => "set", "xmlns" => "urn:xmpp:whatsapp:dirty"},
+      attrs: %{
+        "id" => Integer.to_string(System.unique_integer([:positive, :monotonic])),
+        "to" => @s_whatsapp_net,
+        "type" => "set",
+        "xmlns" => "urn:xmpp:whatsapp:dirty"
+      },
       content: [%BinaryNode{tag: "clean", attrs: attrs, content: nil}]
     }
 

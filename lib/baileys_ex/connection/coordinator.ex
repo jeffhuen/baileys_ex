@@ -88,7 +88,7 @@ defmodule BaileysEx.Connection.Coordinator do
       :resync_app_state_fun,
       :reconnect_timer,
       :initial_sync_timer,
-      :app_state_sync_ref,
+      :app_state_sync,
       :send_task,
       :send_from,
       :send_operation,
@@ -364,17 +364,13 @@ defmodule BaileysEx.Connection.Coordinator do
     {:noreply, finish_send(state)}
   end
 
-  def handle_info({:EXIT, _pid, _reason}, %State{} = state), do: {:noreply, state}
-
-  def handle_info({task_ref, _result}, %State{} = state) when is_reference(task_ref),
-    do: {:noreply, state}
-
   def handle_info(:reconnect_socket, %State{} = state) do
     {:noreply, connect_socket(%{state | reconnect_timer: nil})}
   end
 
   def handle_info(:initial_sync_timeout, %State{sync_state: :awaiting_initial_sync} = state) do
     Logger.debug("[SyncDiag] initial sync timeout fired, forcing :online")
+    increment_account_sync_counter(state)
 
     {:noreply,
      state
@@ -386,14 +382,13 @@ defmodule BaileysEx.Connection.Coordinator do
     {:noreply, %{state | initial_sync_timer: nil}}
   end
 
+  def handle_info(:complete_initial_sync, %State{app_state_sync: %{ref: _}} = state) do
+    {:noreply, state}
+  end
+
   def handle_info(:complete_initial_sync, %State{sync_state: :syncing} = state) do
     Logger.debug("[SyncDiag] completing initial sync, transitioning to :online")
     {:noreply, complete_initial_sync_online(state, :initial_sync_complete)}
-  end
-
-  def handle_info(:complete_initial_sync, %State{app_state_sync_ref: ref} = state)
-      when not is_nil(ref) do
-    {:noreply, state}
   end
 
   def handle_info(:complete_initial_sync, %State{} = state) do
@@ -443,17 +438,17 @@ defmodule BaileysEx.Connection.Coordinator do
 
   def handle_info(
         {ref, result},
-        %State{app_state_sync_ref: ref} = state
+        %State{app_state_sync: %{ref: ref, resync_blocked?: resync_blocked?}} = state
       ) do
     Process.demonitor(ref, [:flush])
-    {:noreply, complete_app_state_sync(state, result)}
+    {:noreply, complete_app_state_sync(state, result, resync_blocked?)}
   end
 
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
-        %State{app_state_sync_ref: ref} = state
+        %State{app_state_sync: %{ref: ref, resync_blocked?: resync_blocked?}} = state
       ) do
-    {:noreply, complete_app_state_sync(state, {:error, {:task_exit, reason}})}
+    {:noreply, complete_app_state_sync(state, {:error, {:task_exit, reason}}, resync_blocked?)}
   end
 
   def handle_info({:app_state_collection_blocked, name}, %State{} = state)
@@ -461,6 +456,11 @@ defmodule BaileysEx.Connection.Coordinator do
     blocked = Map.put(blocked_app_state_collections(state), name, true)
     {:noreply, %{state | blocked_app_state_collections: blocked}}
   end
+
+  def handle_info({:EXIT, _pid, _reason}, %State{} = state), do: {:noreply, state}
+
+  def handle_info({task_ref, _result}, %State{} = state) when is_reference(task_ref),
+    do: {:noreply, state}
 
   @impl true
   def terminate(_reason, %State{unsubscribe: unsubscribe}) when is_function(unsubscribe, 0) do
@@ -470,24 +470,29 @@ defmodule BaileysEx.Connection.Coordinator do
 
   def terminate(_reason, _state), do: :ok
 
-  defp complete_app_state_sync(%State{} = state, result) do
-    state = %{state | app_state_sync_ref: nil}
+  defp complete_app_state_sync(%State{} = state, result, resync_blocked?) do
+    blocked = blocked_app_state_collections(state)
+    state = %{state | app_state_sync: nil}
 
-    case result do
-      :ok ->
-        Logger.debug(
-          "[AppStateDiag] initial app state sync complete " <>
-            "store_name=#{inspect(AuthState.me_name(%{me: current_me(state)}))}"
-        )
+    if resync_blocked? and map_size(blocked) > 0 do
+      launch_initial_app_state_sync(state, Map.keys(blocked))
+    else
+      case result do
+        :ok ->
+          Logger.debug(
+            "[AppStateDiag] initial app state sync complete " <>
+              "store_name=#{inspect(AuthState.me_name(%{me: current_me(state)}))}"
+          )
 
-        increment_account_sync_counter(state)
+          increment_account_sync_counter(state)
 
-      {:error, reason} ->
-        Logger.warning("initial app state sync failed: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("initial app state sync failed: #{inspect(reason)}")
+      end
+
+      _ = Process.send_after(self(), :complete_initial_sync, 25)
+      state
     end
-
-    _ = Process.send_after(self(), :complete_initial_sync, 25)
-    state
   end
 
   defp enqueue_send(%State{} = state, from, operation) do
@@ -805,7 +810,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
     case Receiver.process_node(node, receiver_context(state, repository)) do
       {:ok, _message, %{signal_repository: %Repository{} = updated_repository}} ->
-        Logger.warning("[Coordinator] message #{msg_id} processed OK")
+        Logger.debug(fn -> "[Coordinator] message #{msg_id} processed OK" end)
         %{state | signal_repository: updated_repository}
 
       {:error, reason} ->
@@ -949,14 +954,26 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp handle_connection_update(
          %State{} = state,
-         %{connection_update: %{connection: :close, last_disconnect: last_disconnect}}
+         %{connection_update: %{connection: :close} = update}
        ) do
-    reason = disconnect_reason(last_disconnect)
+    state =
+      state
+      |> cancel_initial_sync_timer()
+      |> Map.put(:sync_state, :connecting)
+      |> Map.put(:app_state_sync, nil)
 
-    if should_schedule_reconnect?(state.config, reason, state.reconnect_attempts + 1) do
-      schedule_reconnect(state, reason)
-    else
-      cancel_reconnect(state)
+    case Map.fetch(update, :last_disconnect) do
+      {:ok, last_disconnect} ->
+        reason = disconnect_reason(last_disconnect)
+
+        if should_schedule_reconnect?(state.config, reason, state.reconnect_attempts + 1) do
+          schedule_reconnect(state, reason)
+        else
+          cancel_reconnect(state)
+        end
+
+      :error ->
+        state
     end
   end
 
@@ -966,33 +983,37 @@ defmodule BaileysEx.Connection.Coordinator do
        ) do
     :ok = EventEmitter.buffer(state.event_emitter)
     will_sync_history = should_sync_history_message?(state.config, %{sync_type: :RECENT})
+    account_sync_counter = current_account_sync_counter(state)
 
     Logger.debug(
       "[SyncDiag] received_pending_notifications=true sync_state=:connecting " <>
-        "will_sync_history=#{inspect(will_sync_history)}"
+        "will_sync_history=#{inspect(will_sync_history)} " <>
+        "account_sync_counter=#{inspect(account_sync_counter)}"
     )
 
-    if will_sync_history do
-      timer =
-        Process.send_after(self(), :initial_sync_timeout, state.config.initial_sync_timeout_ms)
+    cond do
+      not will_sync_history ->
+        state
+        |> cancel_initial_sync_timer()
+        |> Map.put(:initial_sync_timer, nil)
+        |> complete_initial_sync_online(:history_sync_disabled)
 
-      %{
-        cancel_initial_sync_timer(state)
-        | initial_sync_timer: timer,
-          sync_state: :awaiting_initial_sync
-      }
-    else
-      state
-      |> cancel_initial_sync_timer()
-      |> Map.put(:initial_sync_timer, nil)
-      |> complete_initial_sync_online(:history_sync_disabled)
+      account_sync_counter > 0 ->
+        state
+        |> cancel_initial_sync_timer()
+        |> Map.put(:initial_sync_timer, nil)
+        |> complete_initial_sync_online(:reconnection_existing_sync)
+
+      true ->
+        timer =
+          Process.send_after(self(), :initial_sync_timeout, state.config.initial_sync_timeout_ms)
+
+        %{
+          cancel_initial_sync_timer(state)
+          | initial_sync_timer: timer,
+            sync_state: :awaiting_initial_sync
+        }
     end
-  end
-
-  defp handle_connection_update(%State{} = state, %{connection_update: %{connection: :close}}) do
-    state
-    |> cancel_initial_sync_timer()
-    |> Map.put(:sync_state, :connecting)
   end
 
   defp handle_connection_update(%State{} = state, _events), do: state
@@ -1430,7 +1451,12 @@ defmodule BaileysEx.Connection.Coordinator do
 
     node = %BinaryNode{
       tag: "iq",
-      attrs: %{"to" => @s_whatsapp_net, "type" => "set", "xmlns" => "urn:xmpp:whatsapp:dirty"},
+      attrs: %{
+        "id" => Integer.to_string(System.unique_integer([:positive, :monotonic])),
+        "to" => @s_whatsapp_net,
+        "type" => "set",
+        "xmlns" => "urn:xmpp:whatsapp:dirty"
+      },
       content: [%BinaryNode{tag: "clean", attrs: attrs, content: nil}]
     }
 
@@ -1700,15 +1726,14 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp maybe_handle_retry_receipt(
          %State{signal_repository: %Repository{} = repository} = state,
-         %BinaryNode{attrs: %{"type" => "retry"}} = node
+         %BinaryNode{attrs: %{"type" => "retry"} = attrs} = node
        ) do
     case Retry.handle_retry_receipt(state.store_ref, node,
            max_retry_count: state.config.max_msg_retry_count
          ) do
       {:ok, entries} ->
-        Enum.reduce(entries, state, fn %{id: id, message: message}, acc ->
-          resend_retry_message(acc, repository_for_retry(acc, repository), node, id, message)
-        end)
+        entries = maybe_fallback_get_messages(state, attrs, node, entries)
+        resend_retry_entries(state, repository, node, entries)
 
       {:error, _reason} ->
         state
@@ -1716,6 +1741,205 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp maybe_handle_retry_receipt(%State{} = state, %BinaryNode{}), do: state
+
+  defp resend_retry_entries(%State{} = state, _repository, _node, []), do: state
+
+  defp resend_retry_entries(%State{} = state, %Repository{} = repository, node, entries) do
+    {state, prepared_repo} = prepare_retry_resend_session(state, repository, node)
+
+    Enum.reduce(entries, %{state | signal_repository: prepared_repo}, fn
+      %{id: id, message: message}, acc ->
+        resend_retry_message(acc, acc.signal_repository, node, id, message)
+    end)
+  end
+
+  defp maybe_fallback_get_messages(
+         %State{get_message_fun: get_message_fun},
+         attrs,
+         node,
+         entries
+       )
+       when is_function(get_message_fun, 1) do
+    found_ids = MapSet.new(entries, & &1.id)
+    remote_jid = attrs["from"] || attrs["recipient"] || attrs["to"]
+
+    fallback_entries =
+      attrs
+      |> retry_receipt_ids(node)
+      |> Enum.reject(&MapSet.member?(found_ids, &1))
+      |> Enum.flat_map(&fetch_fallback_retry_message(get_message_fun, remote_jid, &1))
+
+    entries ++ fallback_entries
+  end
+
+  defp maybe_fallback_get_messages(_state, _attrs, _node, entries), do: entries
+
+  defp fetch_fallback_retry_message(get_message_fun, remote_jid, id) do
+    case get_message_fun.(%{remote_jid: remote_jid, id: id, from_me: true}) do
+      %BaileysEx.Protocol.Proto.Message{} = message -> [%{id: id, message: message}]
+      {:ok, %BaileysEx.Protocol.Proto.Message{} = message} -> [%{id: id, message: message}]
+      _ -> []
+    end
+  end
+
+  defp retry_receipt_ids(attrs, node) do
+    list_ids =
+      node
+      |> BinaryNodeUtil.child("list")
+      |> BinaryNodeUtil.children("item")
+      |> Enum.map(& &1.attrs["id"])
+      |> Enum.reject(&is_nil/1)
+
+    [attrs["id"] | list_ids] |> Enum.reject(&is_nil/1)
+  end
+
+  defp prepare_retry_resend_session(
+         %State{} = state,
+         %Repository{} = repository,
+         %BinaryNode{attrs: attrs} = node
+       ) do
+    remote_jid = attrs["from"] || attrs["recipient"] || attrs["to"]
+    participant_jid = attrs["participant"] || remote_jid
+    retry_count = retry_node_count(node)
+    msg_id = attrs["id"]
+
+    {repository, injected_from_bundle?} =
+      maybe_inject_retry_bundle(repository, participant_jid, node)
+
+    repository =
+      if injected_from_bundle? do
+        repository
+      else
+        maybe_reset_mismatched_registration(repository, participant_jid, node)
+      end
+
+    repository =
+      maybe_handle_retry_base_key_collision(
+        state.store_ref,
+        repository,
+        participant_jid,
+        msg_id,
+        retry_count
+      )
+
+    if is_binary(remote_jid) and BaileysEx.Protocol.JID.group?(remote_jid) and
+         state.signal_store != nil do
+      _ = SignalStore.set(state.signal_store, %{:"sender-key-memory" => %{remote_jid => nil}})
+    end
+
+    {state, repository}
+  end
+
+  defp maybe_inject_retry_bundle(repository, participant_jid, node)
+       when is_binary(participant_jid) do
+    with {:ok, bundle} <- Session.extract_e2e_session_from_retry_receipt(node),
+         {:ok, next_repo} <-
+           Repository.inject_e2e_session(repository, %{jid: participant_jid, session: bundle}) do
+      {next_repo, true}
+    else
+      _ -> {repository, false}
+    end
+  end
+
+  defp maybe_inject_retry_bundle(repository, _participant_jid, _node), do: {repository, false}
+
+  defp maybe_reset_mismatched_registration(repository, participant_jid, node)
+       when is_binary(participant_jid) do
+    with {:ok, received_reg_id} <- extract_registration_id(node),
+         {:ok, %{registration_id: stored_reg_id}}
+         when stored_reg_id != 0 and stored_reg_id != received_reg_id <-
+           Repository.session_info(repository, participant_jid),
+         {:ok, next_repo} <- Repository.delete_session(repository, [participant_jid]) do
+      next_repo
+    else
+      _ -> repository
+    end
+  end
+
+  defp maybe_reset_mismatched_registration(repository, _participant_jid, _node), do: repository
+
+  defp extract_registration_id(node) do
+    case BinaryNodeUtil.child(node, "registration") do
+      %BinaryNode{content: {:binary, bytes}} when byte_size(bytes) == 4 ->
+        {:ok, :binary.decode_unsigned(bytes)}
+
+      %BinaryNode{content: bytes} when is_binary(bytes) and byte_size(bytes) == 4 ->
+        {:ok, :binary.decode_unsigned(bytes)}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp maybe_handle_retry_base_key_collision(
+         store_ref,
+         repository,
+         participant_jid,
+         msg_id,
+         retry_count
+       )
+       when is_binary(participant_jid) and is_binary(msg_id) and retry_count >= 2 do
+    with {:ok, session_id} <- Repository.jid_to_signal_protocol_address(participant_jid),
+         {:ok, %{base_key: base_key}} when is_binary(base_key) <-
+           Repository.session_info(repository, participant_jid) do
+      handle_base_key_collision_count(
+        store_ref,
+        repository,
+        participant_jid,
+        session_id,
+        msg_id,
+        base_key,
+        retry_count
+      )
+    else
+      _ -> repository
+    end
+  end
+
+  defp maybe_handle_retry_base_key_collision(
+         _store_ref,
+         repository,
+         _participant_jid,
+         _msg_id,
+         _retry_count
+       ),
+       do: repository
+
+  defp handle_base_key_collision_count(
+         store_ref,
+         repository,
+         _participant_jid,
+         session_id,
+         msg_id,
+         base_key,
+         2
+       ) do
+    :ok = Retry.save_base_key(store_ref, session_id, msg_id, base_key)
+    repository
+  end
+
+  defp handle_base_key_collision_count(
+         store_ref,
+         repository,
+         participant_jid,
+         session_id,
+         msg_id,
+         base_key,
+         _retry_count
+       ) do
+    repository =
+      if Retry.has_same_base_key?(store_ref, session_id, msg_id, base_key) do
+        case Repository.delete_session(repository, [participant_jid]) do
+          {:ok, next_repo} -> next_repo
+          {:error, _reason} -> repository
+        end
+      else
+        repository
+      end
+
+    :ok = Retry.delete_base_key(store_ref, session_id, msg_id)
+    repository
+  end
 
   defp resend_retry_message(
          %State{} = state,
@@ -1726,13 +1950,15 @@ defmodule BaileysEx.Connection.Coordinator do
        ) do
     with {:ok, jid} <- normalize_retry_jid(attrs["from"] || attrs["recipient"] || attrs["to"]),
          participant <- retry_participant(node),
+         resend_opts =
+           [message_id_fun: fn -> message_id end]
+           |> maybe_put_retry_target_opts(participant),
          {:ok, _result, %{signal_repository: %Repository{} = updated_repository}} <-
            Sender.send_proto(
              sender_context(%{state | signal_repository: repository}, repository),
              jid,
              message,
-             message_id_fun: fn -> message_id end,
-             participant: participant
+             resend_opts
            ) do
       %{state | signal_repository: updated_repository}
     else
@@ -1740,23 +1966,30 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp repository_for_retry(%State{signal_repository: %Repository{} = repository}, _fallback),
-    do: repository
+  defp maybe_put_retry_target_opts(opts, nil),
+    do: Keyword.put(opts, :use_user_devices_cache, false)
 
-  defp repository_for_retry(%State{}, %Repository{} = repository), do: repository
+  defp maybe_put_retry_target_opts(opts, participant),
+    do: Keyword.put(opts, :participant, participant)
 
-  defp retry_participant(%BinaryNode{attrs: %{"participant" => participant}} = node)
-       when is_binary(participant) do
-    count =
-      case BinaryNodeUtil.child(node, "retry") do
-        %BinaryNode{attrs: %{"count" => retry_count}} -> parse_retry_count(retry_count)
-        _ -> 1
-      end
+  defp retry_participant(%BinaryNode{attrs: attrs} = node) do
+    participant_jid = attrs["participant"] || attrs["from"]
 
-    %{jid: participant, count: count}
+    case is_binary(participant_jid) && BaileysEx.Protocol.JID.parse(participant_jid) do
+      %BaileysEx.JID{device: device} when is_integer(device) and device > 0 ->
+        %{jid: participant_jid, count: retry_node_count(node)}
+
+      _ ->
+        nil
+    end
   end
 
-  defp retry_participant(_node), do: nil
+  defp retry_node_count(%BinaryNode{} = node) do
+    case BinaryNodeUtil.child(node, "retry") do
+      %BinaryNode{attrs: %{"count" => retry_count}} -> parse_retry_count(retry_count)
+      _ -> 1
+    end
+  end
 
   defp parse_retry_count(count) when is_binary(count) do
     case Integer.parse(count) do
@@ -2411,14 +2644,14 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp maybe_start_initial_app_state_sync(
-         %State{sync_state: :syncing, app_state_sync_ref: nil} = state,
+         %State{sync_state: :syncing, app_state_sync: nil} = state,
          %{messaging_history_set: _history}
        ) do
     maybe_launch_initial_app_state_sync(state)
   end
 
   defp maybe_start_initial_app_state_sync(
-         %State{sync_state: :syncing, app_state_sync_ref: nil} = state,
+         %State{sync_state: :syncing, app_state_sync: nil} = state,
          %{creds_update: %{my_app_state_key_id: key_id}}
        )
        when is_binary(key_id) and key_id != "" do
@@ -2434,14 +2667,17 @@ defmodule BaileysEx.Connection.Coordinator do
        when is_binary(key_id) and key_id != "" do
     blocked = blocked_app_state_collections(state)
 
-    cond do
-      map_size(blocked) == 0 ->
+    case {state.sync_state, state.app_state_sync} do
+      {:syncing, %{ref: ref}} ->
+        %{state | app_state_sync: %{ref: ref, resync_blocked?: true}}
+
+      _ when map_size(blocked) == 0 ->
         state
 
-      state.sync_state == :syncing ->
+      {:syncing, nil} ->
         %{state | blocked_app_state_collections: %{}}
 
-      true ->
+      _ ->
         launch_blocked_app_state_sync(
           %{state | blocked_app_state_collections: %{}},
           blocked
@@ -2498,22 +2734,17 @@ defmodule BaileysEx.Connection.Coordinator do
     Logger.warning("blocked app state resync failed: #{inspect(reason)}")
   end
 
-  defp maybe_launch_initial_app_state_sync(%State{} = state) do
-    case current_app_state_key_id(state) do
-      key_id when is_binary(key_id) and key_id != "" ->
-        launch_initial_app_state_sync(state)
+  # Baileys runs doAppStateSync as soon as history moves the socket into Syncing,
+  # even before the app state key arrives: collections that cannot be decrypted
+  # yet are parked as blocked and resynced when `my_app_state_key_id` arrives.
+  defp maybe_launch_initial_app_state_sync(%State{} = state),
+    do: launch_initial_app_state_sync(state)
 
-      _ ->
-        state
-    end
-  end
-
-  defp launch_initial_app_state_sync(%State{} = state) do
+  defp launch_initial_app_state_sync(%State{} = state, collections \\ SyncdCodec.patch_names()) do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} ->
         coordinator_pid = self()
         me = current_me(state)
-        collections = SyncdCodec.patch_names()
 
         task =
           Task.Supervisor.async(state.task_supervisor, fn ->
@@ -2532,7 +2763,11 @@ defmodule BaileysEx.Connection.Coordinator do
             normalize_sync_result(result)
           end)
 
-        %{state | app_state_sync_ref: task.ref}
+        %{
+          state
+          | app_state_sync: %{ref: task.ref, resync_blocked?: false},
+            blocked_app_state_collections: %{}
+        }
 
       :error ->
         _ = Process.send_after(self(), :complete_initial_sync, 25)
@@ -2571,11 +2806,15 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp blocked_app_state_collections(%State{}), do: %{}
 
+  defp current_account_sync_counter(%State{} = state) do
+    case state.store_ref |> Store.get(:creds, %{}) |> Map.get(:account_sync_counter, 0) do
+      counter when is_integer(counter) -> counter
+      _ -> 0
+    end
+  end
+
   defp increment_account_sync_counter(%State{} = state) do
-    current_counter =
-      state.store_ref
-      |> Store.get(:creds, %{})
-      |> Map.get(:account_sync_counter, 0)
+    current_counter = current_account_sync_counter(state)
 
     :ok =
       EventEmitter.emit(state.event_emitter, :creds_update, %{
@@ -2615,12 +2854,6 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp normalize_patch_name(name), do: {:error, {:unknown_patch_name, name}}
-
-  defp current_app_state_key_id(%State{} = state) do
-    state.store_ref
-    |> Store.get(:creds, %{})
-    |> Map.get(:my_app_state_key_id)
-  end
 
   defp current_me(%State{} = state) do
     state.store_ref

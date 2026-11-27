@@ -33,26 +33,27 @@ defmodule BaileysEx.Signal.SessionTest do
 
   defp bytes_node(tag, bytes), do: %BinaryNode{tag: tag, attrs: %{}, content: {:binary, bytes}}
 
-  defp user_node_without_one_time_pre_key(bob) do
+  defp user_node_without_one_time_pre_key(bob, extra_children \\ []) do
     {:ok, signed_public} = Curve.generate_signal_pub_key(bob.signed_pre_key.public)
     {:ok, signature} = Curve.sign(bob.identity.private, signed_public)
 
     %BinaryNode{
       tag: "user",
       attrs: %{"jid" => @bob_jid},
-      content: [
-        bytes_node("registration", <<4000::unsigned-big-32>>),
-        bytes_node("identity", bob.identity.public),
-        %BinaryNode{
-          tag: "skey",
-          attrs: %{},
-          content: [
-            bytes_node("id", <<7::unsigned-big-24>>),
-            bytes_node("value", bob.signed_pre_key.public),
-            bytes_node("signature", signature)
-          ]
-        }
-      ]
+      content:
+        [
+          bytes_node("registration", <<4000::unsigned-big-32>>),
+          bytes_node("identity", bob.identity.public),
+          %BinaryNode{
+            tag: "skey",
+            attrs: %{},
+            content: [
+              bytes_node("id", <<7::unsigned-big-24>>),
+              bytes_node("value", bob.signed_pre_key.public),
+              bytes_node("signature", signature)
+            ]
+          }
+        ] ++ extra_children
     }
   end
 
@@ -80,5 +81,103 @@ defmodule BaileysEx.Signal.SessionTest do
 
     assert {:ok, _bob_state, "hello bob"} =
              SignalAdapter.decrypt_message(bob.state, alice_address, :pkmsg, ciphertext)
+  end
+
+  test "parse_and_inject_e2e_sessions/2 still rejects a present but malformed one-time pre-key node" do
+    alice = adapter(501, 3001)
+    bob = adapter(601, 4001)
+
+    repo = Repository.new(adapter: SignalAdapter, adapter_state: alice.state, store: alice.store)
+    malformed_key = %BinaryNode{tag: "key", attrs: %{}, content: []}
+
+    response = %BinaryNode{
+      tag: "iq",
+      attrs: %{},
+      content: [
+        %BinaryNode{
+          tag: "list",
+          attrs: %{},
+          content: [user_node_without_one_time_pre_key(bob, [malformed_key])]
+        }
+      ]
+    }
+
+    assert {:error, {:missing_child, "id"}} =
+             Session.parse_and_inject_e2e_sessions(response, repo)
+  end
+
+  test "extract_e2e_session_from_retry_receipt/1 extracts valid bundles with and without one-time pre-keys" do
+    bob = adapter(602, 4002)
+    one_time = key_pair(699)
+    {:ok, signed_public} = Curve.generate_signal_pub_key(bob.signed_pre_key.public)
+    {:ok, signature} = Curve.sign(bob.identity.private, signed_public)
+
+    base_keys_children = [
+      bytes_node("type", <<5>>),
+      bytes_node("identity", bob.identity.public),
+      %BinaryNode{
+        tag: "skey",
+        attrs: %{},
+        content: [
+          bytes_node("id", <<7::unsigned-big-24>>),
+          bytes_node("value", bob.signed_pre_key.public),
+          bytes_node("signature", signature)
+        ]
+      }
+    ]
+
+    receipt_without_otpk = %BinaryNode{
+      tag: "receipt",
+      attrs: %{"type" => "retry"},
+      content: [
+        bytes_node("registration", <<4002::unsigned-big-32>>),
+        %BinaryNode{tag: "keys", attrs: %{}, content: base_keys_children}
+      ]
+    }
+
+    assert {:ok, %{registration_id: 4002, pre_key: nil, signed_pre_key: %{key_id: 7}}} =
+             Session.extract_e2e_session_from_retry_receipt(receipt_without_otpk)
+
+    receipt_with_otpk = %BinaryNode{
+      tag: "receipt",
+      attrs: %{"type" => "retry"},
+      content: [
+        bytes_node("registration", <<4002::unsigned-big-32>>),
+        %BinaryNode{
+          tag: "keys",
+          attrs: %{},
+          content:
+            base_keys_children ++
+              [
+                %BinaryNode{
+                  tag: "key",
+                  attrs: %{},
+                  content: [
+                    bytes_node("id", <<9::unsigned-big-24>>),
+                    bytes_node("value", one_time.public)
+                  ]
+                }
+              ]
+        }
+      ]
+    }
+
+    assert {:ok, %{registration_id: 4002, pre_key: %{key_id: 9}, signed_pre_key: %{key_id: 7}}} =
+             Session.extract_e2e_session_from_retry_receipt(receipt_with_otpk)
+
+    invalid_type_receipt = %BinaryNode{
+      tag: "receipt",
+      attrs: %{"type" => "retry"},
+      content: [
+        bytes_node("registration", <<4002::unsigned-big-32>>),
+        %BinaryNode{
+          tag: "keys",
+          attrs: %{},
+          content: [bytes_node("type", <<9>>)]
+        }
+      ]
+    }
+
+    assert :error = Session.extract_e2e_session_from_retry_receipt(invalid_type_receipt)
   end
 end

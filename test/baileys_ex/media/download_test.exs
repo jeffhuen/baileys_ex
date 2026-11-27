@@ -38,6 +38,35 @@ defmodule BaileysEx.Media.DownloadTest do
   end
 
   @tag :tmp_dir
+  test "download/2 falls back to mmg.whatsapp.net when url uses the a.whatsapp.net placeholder host",
+       %{tmp_dir: tmp_dir} do
+    parent = self()
+    media_key = :binary.copy(<<7>>, 32)
+    plaintext = "downloaded sticker payload"
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :sticker, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+
+    request_fun = fn request ->
+      uri = URI.parse(request[:url])
+      send(parent, {:download_request, uri.host, uri.path})
+      {:ok, %Req.Response{status: 200, body: encrypted}}
+    end
+
+    message = %Message.StickerMessage{
+      url: "https://a.whatsapp.net/v/t62.15575-24/123_456_n.enc?mms3=true",
+      media_key: media_key,
+      direct_path: "/v/t62.15575-24/123_456_n.enc"
+    }
+
+    assert {:ok, ^plaintext} = Download.download(message, request_fun: request_fun)
+
+    assert_receive {:download_request, "mmg.whatsapp.net", "/v/t62.15575-24/123_456_n.enc"}
+  end
+
+  @tag :tmp_dir
   test "download/2 allows an explicit media host override for direct_path downloads",
        %{tmp_dir: tmp_dir} do
     parent = self()

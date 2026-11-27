@@ -49,7 +49,7 @@ defmodule BaileysEx.Auth.ConnectionValidatorTest do
 
     encoded = ClientPayload.encode(payload)
     assert {:ok, decoded} = ClientPayload.decode(encoded)
-    assert decoded.web_info.web_sub_platform == 4
+    assert decoded.web_info.web_sub_platform == 5
   end
 
   test "generate_registration_node/2 includes device props and pairing registration data" do

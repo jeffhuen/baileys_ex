@@ -80,7 +80,7 @@ defmodule BaileysEx.Connection.Config do
 
   @web_sub_platforms %{
     "Mac OS" => 3,
-    "Windows" => 4
+    "Windows" => 5
   }
 
   defstruct ws_url: "wss://web.whatsapp.com/ws/chat",

@@ -9,6 +9,7 @@ defmodule BaileysEx.Media.Download do
   alias BaileysEx.Telemetry
 
   @default_media_host "mmg.whatsapp.net"
+  @placeholder_media_host "a.whatsapp.net"
   @aes_chunk_size 16
 
   @type media_message :: %{
@@ -114,8 +115,11 @@ defmodule BaileysEx.Media.Download do
 
   defp extract_host(url) when is_binary(url) and byte_size(url) > 0 do
     case URI.parse(url) do
-      %URI{host: host} when is_binary(host) -> host
-      _ -> nil
+      %URI{host: host} when is_binary(host) ->
+        if String.downcase(host) == @placeholder_media_host, do: nil, else: host
+
+      _ ->
+        nil
     end
   end
 

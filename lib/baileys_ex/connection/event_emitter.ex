@@ -3,6 +3,8 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
 
   use GenServer
 
+  alias BaileysEx.Connection.EventBuffer
+
   @bufferable_events Map.new(
                        [
                          :messaging_history_set,
@@ -42,7 +44,7 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
               buffering?: false,
               buffer_count: 0,
               seed: %{},
-              buffered_events: %{}
+              buffered_events: EventBuffer.new()
   end
 
   defmodule Subscriber do
@@ -302,47 +304,34 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
 
   def handle_info(_message, %State{} = state), do: {:noreply, state}
 
-  defp emit_event(%State{buffering?: true} = state, :messages_upsert, %{type: type} = data) do
+  defp emit_event(
+         %State{buffering?: true} = state,
+         :messages_upsert,
+         %{type: type, messages: messages} = data
+       )
+       when is_list(messages) do
     {state, deliveries} =
-      case get_in(state.buffered_events, [:messages_upsert, :type]) do
-        nil ->
-          {state, []}
-
-        ^type ->
-          {state, []}
-
-        _buffered_type ->
-          flush_buffer(state, :keep)
+      if EventBuffer.messages_upsert_type_mismatch?(state.buffered_events, type) do
+        flush_buffer(state, :keep)
+      else
+        {state, []}
       end
 
-    state =
-      update_in(state.buffered_events, fn buffered_events ->
-        Map.update(buffered_events, :messages_upsert, data, fn existing ->
-          %{existing | messages: existing.messages ++ data.messages}
-        end)
-      end)
+    state = %{
+      state
+      | buffered_events:
+          EventBuffer.append(state.buffered_events, state.seed, :messages_upsert, data)
+    }
 
     {state, deliveries}
   end
 
-  defp emit_event(%State{buffering?: true} = state, :chats_update, updates)
-       when is_list(updates) do
-    state =
-      update_in(state.buffered_events, fn buffered_events ->
-        Map.update(buffered_events, :chats_update, updates, &(&1 ++ updates))
-      end)
-
-    {state, []}
-  end
-
   defp emit_event(%State{buffering?: true} = state, event, data) do
-    if Map.has_key?(@bufferable_events, event) do
-      state =
-        update_in(state.buffered_events, fn buffered_events ->
-          Map.put(buffered_events, event, data)
-        end)
-
-      {state, []}
+    if Map.has_key?(@bufferable_events, event) and EventBuffer.mergeable?(event, data) do
+      {%{
+         state
+         | buffered_events: EventBuffer.append(state.buffered_events, state.seed, event, data)
+       }, []}
     else
       {state, [%{event => data}]}
     end
@@ -351,7 +340,7 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
   defp emit_event(%State{} = state, event, data), do: {state, [%{event => data}]}
 
   defp flush_buffer(%State{} = state, mode) do
-    {events_to_emit, buffered_events} = build_flush_payload(state.buffered_events, state.seed)
+    {events_to_emit, buffered_events} = EventBuffer.flush(state.buffered_events, state.seed)
 
     state =
       state
@@ -379,50 +368,6 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
 
     {state, deliveries}
   end
-
-  defp build_flush_payload(buffered_events, seed) do
-    generic_events =
-      buffered_events
-      |> Map.drop([:chats_update])
-      |> Enum.reject(fn {_event, data} -> is_nil(data) end)
-      |> Map.new()
-
-    {chat_updates, unresolved_chat_updates} =
-      buffered_events
-      |> Map.get(:chats_update, [])
-      |> Enum.reduce({[], []}, fn update, {ready, pending} ->
-        case evaluate_chat_update(update, seed) do
-          {:emit, emitted_update} -> {[emitted_update | ready], pending}
-          {:pending, pending_update} -> {ready, [pending_update | pending]}
-          :drop -> {ready, pending}
-        end
-      end)
-
-    events_to_emit =
-      generic_events
-      |> maybe_put(:chats_update, Enum.reverse(chat_updates), chat_updates != [])
-
-    buffered_events =
-      %{}
-      |> maybe_put(
-        :chats_update,
-        Enum.reverse(unresolved_chat_updates),
-        unresolved_chat_updates != []
-      )
-
-    {events_to_emit, buffered_events}
-  end
-
-  defp evaluate_chat_update(%{conditional: condition} = update, seed)
-       when is_function(condition, 1) do
-    case condition.(seed) do
-      true -> {:emit, Map.delete(update, :conditional)}
-      nil -> {:pending, update}
-      _ -> :drop
-    end
-  end
-
-  defp evaluate_chat_update(update, _seed), do: {:emit, update}
 
   defp ensure_buffering(%State{buffering?: true} = state), do: state
 
@@ -997,7 +942,4 @@ defmodule BaileysEx.Connection.EventEmitter.Server do
 
   defp normalize_max_dispatch_queue(value) when is_integer(value) and value > 0, do: value
   defp normalize_max_dispatch_queue(_value), do: 1_024
-
-  defp maybe_put(map, _key, _value, false), do: map
-  defp maybe_put(map, key, value, true), do: Map.put(map, key, value)
 end

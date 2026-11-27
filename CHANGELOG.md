@@ -26,6 +26,14 @@
   history wait on reconnects with `account_sync_counter > 0` by
   [@Rodericuss](https://github.com/Rodericuss)
   [(#19)](https://github.com/jeffhuen/baileys_ex/pull/19).
+- `Connection.EventEmitter` now merges and consolidates buffered events across
+  event kinds (`messaging_history_set`, `chats_upsert`, `chats_update`,
+  `chats_delete`, `contacts_upsert`, `contacts_update`, `messages_upsert`,
+  `messages_update`, `messages_delete`, `messages_reaction`,
+  `message_receipt_update`, and `groups_update`) via `Connection.EventBuffer`,
+  matching Baileys `event-buffer.ts` by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#20)](https://github.com/jeffhuen/baileys_ex/pull/20).
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

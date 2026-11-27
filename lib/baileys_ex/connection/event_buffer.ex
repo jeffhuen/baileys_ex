@@ -627,7 +627,7 @@ defmodule BaileysEx.Connection.EventBuffer do
 
     buffer = %{buffer | message_updates: message_updates}
 
-    if history_has_message?(buffer, key) do
+    if history_has_message?(buffer, key) and not has_request_id?(meta) do
       put_in(
         buffer.history_sets.messages,
         keyed_put(buffer.history_sets.messages, key, message, fn _old, new -> new end)
@@ -636,6 +636,8 @@ defmodule BaileysEx.Connection.EventBuffer do
       put_message_upsert(buffer, type, meta, key, message)
     end
   end
+
+  defp has_request_id?(meta), do: not is_nil(Map.get(meta, :request_id))
 
   defp put_message_upsert(%EventBuffer{message_upserts: nil} = buffer, type, meta, key, message) do
     %{

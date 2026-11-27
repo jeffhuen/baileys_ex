@@ -4,10 +4,13 @@ defmodule BaileysEx.Message.ReceiverTest do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.EventEmitter
   alias BaileysEx.Connection.Store, as: ConnectionStore
+  alias BaileysEx.Crypto
+  alias BaileysEx.JID
   alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Normalizer
   alias BaileysEx.Message.Receiver
   alias BaileysEx.Message.Retry
+  alias BaileysEx.Message.Sender
   alias BaileysEx.Protocol.Proto.Conversation
   alias BaileysEx.Protocol.Proto.HistorySync, as: HistorySyncProto
   alias BaileysEx.Protocol.Proto.HistorySyncMsg
@@ -21,6 +24,8 @@ defmodule BaileysEx.Message.ReceiverTest do
   alias BaileysEx.Protocol.Proto.PhoneNumberToLIDMapping
   alias BaileysEx.Protocol.Proto.WebMessageInfo
   alias BaileysEx.Protocol.Proto.Wire
+  alias BaileysEx.Signal.Adapter.Signal, as: SignalAdapter
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
   alias BaileysEx.TestHelpers.MessageSignalHelpers
@@ -2168,6 +2173,181 @@ defmodule BaileysEx.Message.ReceiverTest do
     assert Normalizer.extract_fetched_message(nil) == nil
     assert Normalizer.extract_fetched_message(:error) == nil
     assert Normalizer.extract_fetched_message({:error, :not_found}) == nil
+  end
+
+  test "process_node/3 unwraps own-companion DSM group retry, persists nested SKDM, and decrypts follow-up skmsg" do
+    {:ok, emitter} = EventEmitter.start_link()
+    parent = self()
+    unsubscribe = EventEmitter.process(emitter, &send(parent, {:events, &1}))
+
+    {:ok, sender_store} = Store.new()
+    {:ok, companion_store} = Store.new()
+
+    sender_id = Crypto.generate_key_pair(:x25519, private_key: <<701::256>>)
+    sender_spk = Crypto.generate_key_pair(:x25519, private_key: <<702::256>>)
+    companion_id = Crypto.generate_key_pair(:x25519, private_key: <<703::256>>)
+    companion_spk = Crypto.generate_key_pair(:x25519, private_key: <<704::256>>)
+    {:ok, companion_spk_pub} = Curve.generate_signal_pub_key(companion_spk.public)
+    {:ok, companion_spk_sig} = Curve.sign(companion_id.private, companion_spk_pub)
+    {:ok, companion_id_pub} = Curve.generate_signal_pub_key(companion_id.public)
+
+    sender_repo =
+      Repository.new(
+        adapter: SignalAdapter,
+        adapter_state:
+          SignalAdapter.new(
+            store: sender_store,
+            identity_key_pair: sender_id,
+            registration_id: 7001,
+            signed_pre_key: %{key_id: 11, key_pair: sender_spk}
+          ),
+        store: sender_store
+      )
+
+    companion_repo =
+      Repository.new(
+        adapter: SignalAdapter,
+        adapter_state:
+          SignalAdapter.new(
+            store: companion_store,
+            identity_key_pair: companion_id,
+            registration_id: 7002,
+            signed_pre_key: %{key_id: 12, key_pair: companion_spk}
+          ),
+        store: companion_store
+      )
+
+    sender_jid = "15550001111:1@s.whatsapp.net"
+    companion_jid = "15550001111:2@s.whatsapp.net"
+    group_jid = "120363001234567890@g.us"
+
+    assert {:ok, sender_repo} =
+             Repository.inject_e2e_session(sender_repo, %{
+               jid: companion_jid,
+               session: %{
+                 registration_id: 7002,
+                 identity_key: companion_id_pub,
+                 signed_pre_key: %{
+                   key_id: 12,
+                   public_key: companion_spk_pub,
+                   signature: companion_spk_sig
+                 },
+                 pre_key: nil
+               }
+             })
+
+    # Establish the sender's group sender key via the initial group send that the companion missed
+    assert {:ok, sender_repo, %{ciphertext: _initial_skmsg}} =
+             Repository.encrypt_group_message(sender_repo, %{
+               group: group_jid,
+               me_id: sender_jid,
+               data: BaileysEx.Message.Wire.encode(%Message{conversation: "hello group retry"})
+             })
+
+    sender_context = %{
+      signal_repository: sender_repo,
+      signal_store: sender_store,
+      me_id: sender_jid,
+      send_node_fun: fn node ->
+        send(parent, {:sent_retry_node, node})
+        :ok
+      end
+    }
+
+    assert {:ok, _sent, %{signal_repository: sender_repo}} =
+             Sender.send_proto(
+               sender_context,
+               %JID{user: "120363001234567890", server: "g.us"},
+               %Message{conversation: "hello group retry"},
+               participant: %{jid: companion_jid, count: 2},
+               message_id_fun: fn -> "dsm-skdm-retry-1" end
+             )
+
+    assert_receive {:sent_retry_node, %BinaryNode{tag: "message", content: retry_content}}
+    assert %BinaryNode{tag: "enc"} = enc_node = Enum.find(retry_content, &(&1.tag == "enc"))
+
+    # Deliver the own-companion retry stanza to companion device 2
+    inbound_retry = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "dsm-skdm-retry-1",
+        "from" => group_jid,
+        "participant" => sender_jid,
+        "t" => "1710000900"
+      },
+      content: [enc_node]
+    }
+
+    companion_context = %{
+      signal_repository: companion_repo,
+      event_emitter: emitter,
+      me_id: companion_jid
+    }
+
+    assert {:ok, received_retry, companion_context} =
+             Receiver.process_node(inbound_retry, companion_context)
+
+    assert received_retry.message.conversation == "hello group retry"
+    assert received_retry.message.device_sent_message == nil
+
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        messages: [
+                          %{
+                            key: %{id: "dsm-skdm-retry-1", remote_jid: ^group_jid, from_me: true},
+                            message: %Message{
+                              conversation: "hello group retry",
+                              device_sent_message: nil
+                            }
+                          }
+                        ]
+                      }
+                    }}
+
+    # Subsequent group skmsg from sender device 1 must decrypt using the SKDM extracted from inside DSM
+    follow_up_bytes = BaileysEx.Message.Wire.encode(%Message{conversation: "follow-up skmsg"})
+
+    assert {:ok, _sender_repo, %{ciphertext: skmsg_ciphertext}} =
+             Repository.encrypt_group_message(sender_repo, %{
+               group: group_jid,
+               me_id: sender_jid,
+               data: follow_up_bytes
+             })
+
+    inbound_skmsg = %BinaryNode{
+      tag: "message",
+      attrs: %{
+        "id" => "dsm-skdm-followup-2",
+        "from" => group_jid,
+        "participant" => sender_jid,
+        "t" => "1710000901"
+      },
+      content: [
+        %BinaryNode{tag: "enc", attrs: %{"type" => "skmsg"}, content: {:binary, skmsg_ciphertext}}
+      ]
+    }
+
+    assert {:ok, received_followup, _companion_context} =
+             Receiver.process_node(inbound_skmsg, companion_context)
+
+    assert received_followup.message.conversation == "follow-up skmsg"
+
+    assert_receive {:events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        messages: [
+                          %{
+                            key: %{id: "dsm-skdm-followup-2", remote_jid: ^group_jid},
+                            message: %Message{conversation: "follow-up skmsg"}
+                          }
+                        ]
+                      }
+                    }}
+
+    unsubscribe.()
   end
 
   defp verified_name_cert(name) do

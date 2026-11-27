@@ -28,11 +28,15 @@ defmodule BaileysEx.Signal.Session do
       )
       when is_list(jids) do
     force? = Keyword.get(opts, :force, false)
+    require_injected? = Keyword.get(opts, :require_injected, false)
 
     with {:ok, repo, jids_requiring_fetch} <- jids_requiring_fetch(repo, jids, force?),
          {:ok, repo, wire_jids} <- resolve_wire_jids(repo, jids_requiring_fetch),
          {:ok, response} <- maybe_query_sessions(context[:query_fun], wire_jids, force?),
-         {:ok, repo} <- parse_and_inject_e2e_sessions(response, repo) do
+         {:ok, repo, injected_addresses} <-
+           parse_and_inject_e2e_sessions_with_addresses(response, repo),
+         :ok <-
+           verify_required_injections(repo, wire_jids, injected_addresses, require_injected?) do
       {:ok, %{context | signal_repository: repo}, wire_jids != []}
     end
   end
@@ -43,12 +47,22 @@ defmodule BaileysEx.Signal.Session do
   @spec parse_and_inject_e2e_sessions(BinaryNode.t(), Repository.t()) ::
           {:ok, Repository.t()} | {:error, term()}
   def parse_and_inject_e2e_sessions(%BinaryNode{} = response, %Repository{} = repo) do
+    with {:ok, next_repo, _injected_addresses} <-
+           parse_and_inject_e2e_sessions_with_addresses(response, repo) do
+      {:ok, next_repo}
+    end
+  end
+
+  defp parse_and_inject_e2e_sessions_with_addresses(
+         %BinaryNode{} = response,
+         %Repository{} = repo
+       ) do
     users =
       response
       |> BinaryNodeUtil.child("list")
       |> BinaryNodeUtil.children("user")
 
-    Enum.reduce_while(users, {:ok, repo}, fn user_node, {:ok, acc_repo} ->
+    Enum.reduce_while(users, {:ok, repo, MapSet.new()}, fn user_node, {:ok, acc_repo, injected} ->
       with :ok <- BinaryNodeUtil.assert_error_free(user_node),
            {:ok, jid} <- fetch_attr(user_node, "jid"),
            {:ok, registration_id} <- child_uint(user_node, "registration"),
@@ -64,12 +78,31 @@ defmodule BaileysEx.Signal.Session do
                  signed_pre_key: signed_pre_key,
                  pre_key: pre_key
                }
-             }) do
-        {:cont, {:ok, next_repo}}
+             }),
+           {:ok, canonical_address} <- Repository.resolve_session_address(next_repo, jid) do
+        {:cont, {:ok, next_repo, MapSet.put(injected, canonical_address)}}
       else
         {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  defp verify_required_injections(_repo, _wire_jids, _injected_addresses, false), do: :ok
+  defp verify_required_injections(_repo, [], _injected_addresses, true), do: :ok
+
+  defp verify_required_injections(repo, wire_jids, injected_addresses, true) do
+    missing =
+      Enum.reject(wire_jids, fn jid ->
+        case Repository.resolve_session_address(repo, jid) do
+          {:ok, canonical} -> MapSet.member?(injected_addresses, canonical)
+          {:error, _reason} -> false
+        end
+      end)
+
+    case missing do
+      [] -> :ok
+      missing_jids -> {:error, {:missing_session_bundles, missing_jids}}
+    end
   end
 
   @doc """

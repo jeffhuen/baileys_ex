@@ -26,7 +26,10 @@ defmodule BaileysEx.Signal.Device do
           {:ok, context(), [String.t()]} | {:error, term()}
   def get_devices(context, jids, opts \\ [])
 
-  def get_devices(%{signal_store: %Store{}} = context, jids, _opts) when is_list(jids) do
+  def get_devices(%{signal_store: %Store{}} = context, jids, opts)
+      when is_list(jids) and is_list(opts) do
+    use_cache? = Keyword.get(opts, :use_user_devices_cache, true)
+
     explicit_devices =
       jids
       |> Enum.filter(&explicit_device_jid?/1)
@@ -38,10 +41,27 @@ defmodule BaileysEx.Signal.Device do
       |> Enum.map(&normalize_user_jid/1)
       |> Enum.uniq()
 
+    {cached, missing} = resolve_cached_devices(context.signal_store, base_jids, use_cache?)
+
+    with {:ok, context, fetched} <- maybe_fetch_devices(context, missing) do
+      devices =
+        explicit_devices ++
+          List.flatten(Map.values(cached)) ++
+          List.flatten(Map.values(fetched))
+
+      {:ok, context, Enum.uniq(devices)}
+    end
+  end
+
+  def get_devices(_context, _jids, _opts), do: {:error, :signal_store_not_configured}
+
+  defp resolve_cached_devices(_signal_store, base_jids, false), do: {%{}, base_jids}
+
+  defp resolve_cached_devices(signal_store, base_jids, true) do
     {cached, missing} =
       Enum.reduce(base_jids, {%{}, []}, fn jid, {acc, misses} ->
         parsed = JIDUtil.parse(jid)
-        devices = Store.get(context.signal_store, :"device-list", [parsed.user || ""])
+        devices = Store.get(signal_store, :"device-list", [parsed.user || ""])
         user = parsed.user
 
         case Map.get(devices, user) do
@@ -54,17 +74,8 @@ defmodule BaileysEx.Signal.Device do
         end
       end)
 
-    with {:ok, context, fetched} <- maybe_fetch_devices(context, Enum.reverse(missing)) do
-      devices =
-        explicit_devices ++
-          List.flatten(Map.values(cached)) ++
-          List.flatten(Map.values(fetched))
-
-      {:ok, context, Enum.uniq(devices)}
-    end
+    {cached, Enum.reverse(missing)}
   end
-
-  def get_devices(_context, _jids, _opts), do: {:error, :signal_store_not_configured}
 
   defp maybe_fetch_devices(context, []), do: {:ok, context, %{}}
 

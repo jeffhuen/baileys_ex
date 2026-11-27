@@ -127,6 +127,7 @@ defmodule BaileysEx.Message.Receiver do
     case Wire.decode(plaintext) do
       {:ok, proto_message} ->
         :ok = maybe_cancel_phone_request(context, node.attrs["id"])
+        proto_message = unwrap_device_sent_message(proto_message)
 
         case process_decoded_message(node, envelope, decrypted_repo, proto_message, context) do
           {:ok, _message, _context} = success ->
@@ -143,6 +144,19 @@ defmodule BaileysEx.Message.Receiver do
         handle_failed_decryption(node, envelope, updated_context, reason, error, opts)
     end
   end
+
+  defp unwrap_device_sent_message(%Message{
+         device_sent_message: %Message.DeviceSentMessage{message: %Message{} = inner},
+         message_context_info: outer_context_info
+       }) do
+    if is_nil(inner.message_context_info) and not is_nil(outer_context_info) do
+      %Message{inner | message_context_info: outer_context_info}
+    else
+      inner
+    end
+  end
+
+  defp unwrap_device_sent_message(%Message{} = message), do: message
 
   defp process_decoded_message(node, envelope, decrypted_repo, proto_message, context) do
     with {:ok, signal_repository} <-

@@ -4228,6 +4228,669 @@ defmodule BaileysEx.Connection.SupervisorTest do
              Repository.session_info(alice_repo, "15551234567:2@s.whatsapp.net")
   end
 
+  test "close cancels tracked blocked-recovery and server_sync tasks and preserves incomplete initial sync across reconnect" do
+    name = {:release_bg_task_ownership_test, System.unique_integer([:positive])}
+    parent = self()
+    blocked_gate = make_ref()
+    server_gate = make_ref()
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}} = node, _timeout ->
+        collections =
+          node
+          |> BinaryNodeUtil.child("sync")
+          |> BinaryNodeUtil.children("collection")
+          |> Enum.map(& &1.attrs["name"])
+
+        reply =
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "sync",
+                 attrs: %{},
+                 content:
+                   Enum.map(collections, fn col ->
+                     %BinaryNode{
+                       tag: "collection",
+                       attrs: %{"name" => col, "version" => "0", "has_more_patches" => "false"},
+                       content: []
+                     }
+                   end)
+               }
+             ]
+           }}
+
+        cond do
+          collections == ["critical_block"] ->
+            send(parent, {:blocked_recovery_started, self()})
+
+            receive do
+              {:release_blocked, ^blocked_gate} -> reply
+            after
+              2_000 -> {:error, :timeout}
+            end
+
+          collections == ["regular_high"] ->
+            send(parent, {:server_sync_started, self()})
+
+            receive do
+              {:release_server, ^server_gate} -> reply
+            after
+              2_000 -> {:error, :timeout}
+            end
+
+          true ->
+            send(parent, {:initial_sync_query, self(), collections})
+
+            receive do
+              {:release_initial, ^blocked_gate} -> reply
+            after
+              2_000 -> {:error, :timeout}
+            end
+        end
+
+      _node, _timeout ->
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: []}}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   fire_init_queries: false,
+                   mark_online_on_connect: false,
+                   initial_sync_timeout_ms: 400,
+                   reconnect_policy: :disabled
+                 ),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: parent,
+               query_handler: query_handler,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, Coordinator)
+    task_supervisor = child_pid!(supervisor, Task.Supervisor)
+    store_ref = Store.wrap(child_pid!(supervisor, Store))
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
+
+    # 1. Start initial sync, park :critical_block, finish pass 1 without key share
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :messaging_history_set, %{
+               chats: [],
+               contacts: [],
+               messages: [],
+               sync_type: :INITIAL_BOOTSTRAP
+             })
+
+    assert_receive {:initial_sync_query, init_socket_pid, _collections}, 1_000
+    send(coordinator_pid, {:app_state_collection_blocked, 0, :critical_block})
+    send(init_socket_pid, {:release_initial, blocked_gate})
+
+    assert_receive {:processed_events,
+                    %{connection_update: %{sync_state: :online, initial_sync_complete: true}}},
+                   1_000
+
+    # Parked collection means initial sync is NOT complete -> account_sync_counter stays 0
+    assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
+
+    # 2. Key share starts a tracked blocked-recovery task; close kills it before it finishes
+    assert :ok = EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "key-1"})
+    assert_receive {:blocked_recovery_started, blocked_socket_pid}, 1_000
+    assert [blocked_task_pid] = Task.Supervisor.children(task_supervisor)
+    blocked_mon = Process.monitor(blocked_task_pid)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               connection: :close,
+               last_disconnect: %{error: %{reason: :connection_closed}}
+             })
+
+    assert_receive {:DOWN, ^blocked_mon, :process, ^blocked_task_pid, _reason}, 1_000
+    send(blocked_socket_pid, {:release_blocked, blocked_gate})
+    assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
+
+    # 3. Reconnect must NOT skip initial sync because account_sync_counter remained 0
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    refute_receive {:processed_events,
+                    %{connection_update: %{initial_sync_reason: :reconnection_existing_sync}}},
+                   80
+
+    # 4. server_sync notification launches a tracked task that is also cancelled on close
+    notification = %BinaryNode{
+      tag: "notification",
+      attrs: %{"type" => "server_sync", "from" => "s.whatsapp.net"},
+      content: [%BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}, content: nil}]
+    }
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{node: notification, state: :connected})
+
+    assert_receive {:server_sync_started, server_socket_pid}, 1_000
+    assert [server_task_pid] = Task.Supervisor.children(task_supervisor)
+    server_mon = Process.monitor(server_task_pid)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               connection: :close,
+               last_disconnect: %{error: %{reason: :connection_closed}}
+             })
+
+    assert_receive {:DOWN, ^server_mon, :process, ^server_task_pid, _reason}, 1_000
+    send(server_socket_pid, {:release_server, server_gate})
+    assert Process.alive?(coordinator_pid)
+
+    unsubscribe.()
+  end
+
+  test "online blocked-collection recovery advances account_sync_counter once the parked collection completes" do
+    name = {:release_online_blocked_recovery_test, System.unique_integer([:positive])}
+    parent = self()
+    gate = make_ref()
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}} = node, _timeout ->
+        collections =
+          node
+          |> BinaryNodeUtil.child("sync")
+          |> BinaryNodeUtil.children("collection")
+          |> Enum.map(& &1.attrs["name"])
+
+        reply =
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "sync",
+                 attrs: %{},
+                 content:
+                   Enum.map(collections, fn col ->
+                     %BinaryNode{
+                       tag: "collection",
+                       attrs: %{"name" => col, "version" => "0", "has_more_patches" => "false"},
+                       content: []
+                     }
+                   end)
+               }
+             ]
+           }}
+
+        if collections == ["critical_block"] do
+          send(parent, {:online_blocked_recovery_query, collections})
+          reply
+        else
+          send(parent, {:online_initial_query, self(), collections})
+
+          receive do
+            {:release, ^gate} -> reply
+          after
+            2_000 -> {:error, :timeout}
+          end
+        end
+
+      _node, _timeout ->
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: []}}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: parent,
+               query_handler: query_handler,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, Coordinator)
+    store_ref = Store.wrap(child_pid!(supervisor, Store))
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :messaging_history_set, %{
+               chats: [],
+               contacts: [],
+               messages: [],
+               sync_type: :INITIAL_BOOTSTRAP
+             })
+
+    assert_receive {:online_initial_query, init_socket_pid, _collections}, 1_000
+    send(coordinator_pid, {:app_state_collection_blocked, 0, :critical_block})
+    send(init_socket_pid, {:release, gate})
+
+    assert_receive {:processed_events,
+                    %{connection_update: %{sync_state: :online, initial_sync_complete: true}}},
+                   1_000
+
+    assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
+
+    assert :ok = EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "key-1"})
+    assert_receive {:online_blocked_recovery_query, ["critical_block"]}, 1_000
+    assert_eventually(fn -> Store.get(store_ref, :creds, %{})[:account_sync_counter] == 1 end)
+
+    unsubscribe.()
+  end
+
+  test "mixed omitted and blocked collections during initial sync do not advance account_sync_counter after follow-on blocked pass" do
+    name = {:release_mixed_omitted_blocked_test, System.unique_integer([:positive])}
+    parent = self()
+    gate = make_ref()
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}} = node, _timeout ->
+        call = Agent.get_and_update(counter, fn n -> {n + 1, n + 1} end)
+
+        collections =
+          node
+          |> BinaryNodeUtil.child("sync")
+          |> BinaryNodeUtil.children("collection")
+          |> Enum.map(& &1.attrs["name"])
+
+        send(parent, {:mixed_app_state_query, call, self(), collections})
+
+        # Omit "regular" on initial pass so it exhausts omission retries while :critical_block parks
+        returned_collections =
+          if collections == ["critical_block"] do
+            collections
+          else
+            Enum.reject(collections, &(&1 == "regular"))
+          end
+
+        reply =
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "sync",
+                 attrs: %{},
+                 content:
+                   Enum.map(returned_collections, fn col ->
+                     %BinaryNode{
+                       tag: "collection",
+                       attrs: %{"name" => col, "version" => "0", "has_more_patches" => "false"},
+                       content: []
+                     }
+                   end)
+               }
+             ]
+           }}
+
+        if call == 1 do
+          receive do
+            {:release_pass_1, ^gate} -> reply
+          after
+            2_000 -> {:error, :timeout}
+          end
+        else
+          reply
+        end
+
+      _node, _timeout ->
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: []}}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   fire_init_queries: false,
+                   mark_online_on_connect: false,
+                   initial_sync_timeout_ms: 400,
+                   reconnect_policy: :disabled
+                 ),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: parent,
+               query_handler: query_handler,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, Coordinator)
+    store_ref = Store.wrap(child_pid!(supervisor, Store))
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :messaging_history_set, %{
+               chats: [],
+               contacts: [],
+               messages: [],
+               sync_type: :INITIAL_BOOTSTRAP
+             })
+
+    assert_receive {:mixed_app_state_query, 1, first_socket_pid, _collections}, 1_000
+    send(coordinator_pid, {:app_state_collection_blocked, 0, :critical_block})
+    assert :ok = EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "key-1"})
+    send(first_socket_pid, {:release_pass_1, gate})
+
+    # Pass 1 retries "regular" once more, fails with missing_collections, then follows up on :critical_block
+    assert_receive {:mixed_app_state_query, 2, _socket_pid, ["regular"]}, 1_000
+    assert_receive {:mixed_app_state_query, 3, _socket_pid, ["critical_block"]}, 1_000
+
+    assert_receive {:processed_events,
+                    %{connection_update: %{sync_state: :online, initial_sync_complete: true}}},
+                   1_000
+
+    # Follow-on pass for :critical_block succeeded, but :regular was omitted -> counter MUST stay 0!
+    assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
+
+    unsubscribe.()
+  end
+
+  test "bundle-less retry aborts resend when forced encrypt IQ omits requester while still ACKing receipt" do
+    name = {:release_empty_encrypt_iq_test, System.unique_integer([:positive])}
+    parent = self()
+    {repo, _signal_store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    assert {:ok, repo} =
+             Repository.inject_e2e_session(repo, %{
+               jid: "15551234567:2@s.whatsapp.net",
+               session: session
+             })
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "encrypt", "type" => "get"}}, _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "list", attrs: %{}, content: []}]
+         }}
+
+      _node, _timeout ->
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: []}}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               signal_repository: repo,
+               query_handler: query_handler,
+               test_pid: parent,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    runtime_store = supervisor |> child_pid!(Store) |> Store.wrap()
+
+    assert :ok =
+             Retry.add_recent_message(
+               runtime_store,
+               "15551234567@s.whatsapp.net",
+               "empty-encrypt-retry-1",
+               Builder.build(%{text: "must not resend on stale session"})
+             )
+
+    receipt = %BinaryNode{
+      tag: "receipt",
+      attrs: %{
+        "id" => "empty-encrypt-retry-1",
+        "from" => "15551234567:2@s.whatsapp.net",
+        "type" => "retry"
+      },
+      content: [%BinaryNode{tag: "retry", attrs: %{"count" => "1"}, content: nil}]
+    }
+
+    assert :ok =
+             supervisor
+             |> child_pid!(EventEmitter)
+             |> EventEmitter.emit(:socket_node, %{node: receipt})
+
+    assert_receive {:fake_socket_query,
+                    %BinaryNode{
+                      attrs: %{"xmlns" => "encrypt", "type" => "get"},
+                      content: [
+                        %BinaryNode{
+                          tag: "key",
+                          content: [
+                            %BinaryNode{
+                              tag: "user",
+                              attrs: %{
+                                "jid" => "15551234567:2@s.whatsapp.net",
+                                "reason" => "identity"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }, _timeout},
+                   1_000
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "ack",
+                      attrs: %{
+                        "class" => "receipt",
+                        "id" => "empty-encrypt-retry-1",
+                        "type" => "retry"
+                      }
+                    }},
+                   1_000
+
+    refute_receive {:fake_socket_send_node,
+                    %BinaryNode{tag: "message", attrs: %{"id" => "empty-encrypt-retry-1"}}},
+                   100
+  end
+
+  test "primary-device retry bypasses device-list cache via USync and fans out to newly discovered companion devices" do
+    name = {:release_primary_retry_usync_test, System.unique_integer([:positive])}
+    parent = self()
+    {repo, signal_store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    # Stale cache only knows about primary device 0
+    assert :ok = SignalStore.set(signal_store, %{:"device-list" => %{"15551234567" => ["0"]}})
+
+    assert {:ok, repo} =
+             Repository.inject_e2e_session(repo, %{
+               jid: "15551234567@s.whatsapp.net",
+               session: session
+             })
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "usync"}} = node, _timeout ->
+        send(parent, {:primary_retry_usync, node})
+
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "usync",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "list",
+                   attrs: %{},
+                   content: [
+                     %BinaryNode{
+                       tag: "user",
+                       attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                       content: [
+                         %BinaryNode{
+                           tag: "devices",
+                           attrs: %{},
+                           content: [
+                             %BinaryNode{
+                               tag: "device-list",
+                               attrs: %{},
+                               content: [
+                                 %BinaryNode{tag: "device", attrs: %{"id" => "0"}},
+                                 %BinaryNode{tag: "device", attrs: %{"id" => "3"}}
+                               ]
+                             }
+                           ]
+                         }
+                       ]
+                     }
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+
+      %BinaryNode{
+        attrs: %{"xmlns" => "encrypt", "type" => "get"},
+        content: [%BinaryNode{tag: "key", content: user_nodes}]
+      },
+      _timeout ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "list",
+               attrs: %{},
+               content:
+                 Enum.map(user_nodes, fn %BinaryNode{attrs: %{"jid" => user_jid}} ->
+                   %BinaryNode{
+                     tag: "user",
+                     attrs: %{"jid" => user_jid},
+                     content: [
+                       %BinaryNode{
+                         tag: "registration",
+                         attrs: %{},
+                         content: {:binary, <<0, 0, 0, 42>>}
+                       },
+                       %BinaryNode{
+                         tag: "identity",
+                         attrs: %{},
+                         content: {:binary, session.identity_key}
+                       },
+                       %BinaryNode{
+                         tag: "skey",
+                         attrs: %{},
+                         content: [
+                           %BinaryNode{tag: "id", attrs: %{}, content: {:binary, <<0, 0, 0, 7>>}},
+                           %BinaryNode{
+                             tag: "value",
+                             attrs: %{},
+                             content: {:binary, session.signed_pre_key.public_key}
+                           },
+                           %BinaryNode{
+                             tag: "signature",
+                             attrs: %{},
+                             content: {:binary, session.signed_pre_key.signature}
+                           }
+                         ]
+                       }
+                     ]
+                   }
+                 end)
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: []}}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               signal_repository: repo,
+               signal_store: signal_store,
+               query_handler: query_handler,
+               test_pid: parent,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    runtime_store = supervisor |> child_pid!(Store) |> Store.wrap()
+
+    assert :ok =
+             Retry.add_recent_message(
+               runtime_store,
+               "15551234567@s.whatsapp.net",
+               "primary-usync-retry-1",
+               Builder.build(%{text: "fanout to newly added companion"})
+             )
+
+    receipt = %BinaryNode{
+      tag: "receipt",
+      attrs: %{
+        "id" => "primary-usync-retry-1",
+        "from" => "15551234567@s.whatsapp.net",
+        "type" => "retry"
+      },
+      content: [%BinaryNode{tag: "retry", attrs: %{"count" => "1"}, content: nil}]
+    }
+
+    assert :ok =
+             supervisor
+             |> child_pid!(EventEmitter)
+             |> EventEmitter.emit(:socket_node, %{node: receipt})
+
+    assert_receive {:primary_retry_usync, %BinaryNode{tag: "iq", attrs: %{"xmlns" => "usync"}}},
+                   1_000
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{"id" => "primary-usync-retry-1"},
+                      content: children
+                    }},
+                   1_000
+
+    assert %BinaryNode{tag: "participants", content: participant_nodes} =
+             Enum.find(children, &(&1.tag == "participants"))
+
+    sent_jids = Enum.map(participant_nodes, & &1.attrs["jid"])
+    assert "15551234567@s.whatsapp.net" in sent_jids
+    assert "15551234567:3@s.whatsapp.net" in sent_jids
+  end
+
   defp child_pid!(supervisor, child_id) do
     supervisor
     |> Supervisor.which_children()

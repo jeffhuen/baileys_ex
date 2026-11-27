@@ -1237,6 +1237,48 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     assert fourth.contacts == [%{id: "c1@s.whatsapp.net", notify: "Alice Push"}]
   end
 
+  test "buffered PDO messages_upsert with request_id is not absorbed into buffered messaging_history_set" do
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+    msg_key = %{remote_jid: "c1@s.whatsapp.net", id: "pdo-m1", from_me: false}
+
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "c1@s.whatsapp.net"}],
+        contacts: [],
+        messages: [%{key: msg_key, message_timestamp: 1_710_000_100}],
+        sync_type: :RECENT
+      })
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        request_id: "pdo-req-42",
+        messages: [%{key: msg_key, message: %{conversation: "restored from phone"}}]
+      })
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, events}, 1_000
+
+    assert %{
+             messaging_history_set: %{messages: [%{key: ^msg_key}]},
+             messages_upsert: %{
+               type: :notify,
+               request_id: "pdo-req-42",
+               messages: [
+                 %{
+                   key: ^msg_key,
+                   message: %{conversation: "restored from phone"},
+                   message_timestamp: 1_710_000_100
+                 }
+               ]
+             }
+           } = events
+  end
+
   defp child_pid!(supervisor, child_id) do
     supervisor
     |> Supervisor.which_children()

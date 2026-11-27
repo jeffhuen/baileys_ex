@@ -185,4 +185,76 @@ defmodule BaileysEx.Signal.DeviceTest do
     assert {:ok, _context, ["15551234567@s.whatsapp.net", "15551234567:99@hosted"]} =
              Device.get_devices(context, ["15551234567@s.whatsapp.net"])
   end
+
+  test "get_devices/3 bypasses populated cache when use_user_devices_cache is false while preserving explicit device JIDs" do
+    {:ok, store} = Store.new()
+    parent = self()
+
+    assert :ok = Store.set(store, %{:"device-list" => %{"15551234567" => ["0", "2"]}})
+
+    context = %{
+      signal_store: store,
+      me_id: "15550001111:1@s.whatsapp.net",
+      query_fun: fn node ->
+        send(parent, {:usync_query, node})
+
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "usync",
+               attrs: %{},
+               content: [
+                 %BinaryNode{
+                   tag: "list",
+                   attrs: %{},
+                   content: [
+                     %BinaryNode{
+                       tag: "user",
+                       attrs: %{"jid" => "15551234567@s.whatsapp.net"},
+                       content: [
+                         %BinaryNode{
+                           tag: "devices",
+                           attrs: %{},
+                           content: [
+                             %BinaryNode{
+                               tag: "device-list",
+                               attrs: %{},
+                               content: [
+                                 %BinaryNode{tag: "device", attrs: %{"id" => "0"}},
+                                 %BinaryNode{tag: "device", attrs: %{"id" => "2"}},
+                                 %BinaryNode{tag: "device", attrs: %{"id" => "3"}}
+                               ]
+                             }
+                           ]
+                         }
+                       ]
+                     }
+                   ]
+                 }
+               ]
+             }
+           ]
+         }}
+      end
+    }
+
+    assert {:ok, _context,
+            [
+              "15559990000:4@s.whatsapp.net",
+              "15551234567@s.whatsapp.net",
+              "15551234567:2@s.whatsapp.net",
+              "15551234567:3@s.whatsapp.net"
+            ]} =
+             Device.get_devices(
+               context,
+               ["15551234567@s.whatsapp.net", "15559990000:4@s.whatsapp.net"],
+               use_user_devices_cache: false
+             )
+
+    assert_received {:usync_query, %BinaryNode{tag: "iq", attrs: %{"xmlns" => "usync"}}}
+    assert %{"15551234567" => ["0", "2", "3"]} = Store.get(store, :"device-list", ["15551234567"])
+  end
 end

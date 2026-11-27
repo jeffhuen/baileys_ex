@@ -4,6 +4,7 @@ defmodule BaileysEx.Media.DownloadTest do
   alias BaileysEx.Media.Crypto
   alias BaileysEx.Media.Download
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.TestHelpers.LoopbackHTTPServer
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
   @tag :tmp_dir
@@ -410,6 +411,194 @@ defmodule BaileysEx.Media.DownloadTest do
                request_fun: fn _request ->
                  {:ok, %Req.Response{status: 200, body: <<1, 2, 3>>}}
                end
+             )
+  end
+
+  @tag :tmp_dir
+  test "real Req transport streams 200, ranged 206, and 410 responses cleanly with raw: true",
+       %{tmp_dir: tmp_dir} do
+    parent = self()
+    media_key = :binary.copy(<<11>>, 32)
+    plaintext = String.duplicate("req-stream-media-payload-", 40)
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+    full_chunks = chunk_binary(encrypted, 37)
+    ranged_chunks = chunk_binary(binary_part(encrypted, 0, 49), 13)
+
+    {:ok, server} =
+      LoopbackHTTPServer.start(fn req ->
+        send(parent, {:download_http_request, req.path, req.headers})
+
+        case req.path do
+          "/full" ->
+            {200, [{"content-type", "application/json"}], full_chunks}
+
+          "/ranged" ->
+            {206, [{"content-type", "application/octet-stream"}], ranged_chunks}
+
+          "/gone" ->
+            {410, [{"content-type", "text/plain"}], "media expired"}
+        end
+      end)
+
+    on_exit(server.stop)
+
+    # 1. Full streaming download to file over real Req
+    output_path = Path.join(tmp_dir, "real-req-full.bin")
+
+    assert {:ok, ^output_path} =
+             Download.download_to_file(
+               %Message.ImageMessage{media_key: media_key, url: "#{server.url}/full"},
+               output_path,
+               req_options: [retry: false]
+             )
+
+    assert_receive {:download_http_request, "/full", %{"origin" => "https://web.whatsapp.com"}}
+    assert File.read!(output_path) == plaintext
+
+    # 2. Ranged 206 streaming download over real Req
+    expected_range = binary_part(plaintext, 20, 12)
+
+    assert {:ok, ^expected_range} =
+             Download.download(
+               %Message.ImageMessage{media_key: media_key, url: "#{server.url}/ranged"},
+               start_byte: 20,
+               end_byte: 32,
+               req_options: [retry: false]
+             )
+
+    assert_receive {:download_http_request, "/ranged",
+                    %{"origin" => "https://web.whatsapp.com", "range" => "bytes=0-48"}}
+
+    # 3. Non-2xx response returns error body cleanly and leaves no partial file
+    missing_path = Path.join(tmp_dir, "real-req-missing.bin")
+
+    assert {:error, {:http_error, 410, "media expired"}} =
+             Download.download_to_file(
+               %Message.ImageMessage{media_key: media_key, url: "#{server.url}/gone"},
+               missing_path,
+               req_options: [retry: false]
+             )
+
+    refute File.exists?(missing_path)
+  end
+
+  @tag :tmp_dir
+  test "download_to_file/3 truncates partial file before Req retry after mid-stream TCP close",
+       %{tmp_dir: tmp_dir} do
+    media_key = :binary.copy(<<12>>, 32)
+    plaintext = String.duplicate("retry-reset-file-payload-", 40)
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+    first_partial = binary_part(encrypted, 0, 128)
+    full_chunks = chunk_binary(encrypted, 41)
+    ranged_partial = binary_part(encrypted, 0, 32)
+    ranged_chunks = chunk_binary(binary_part(encrypted, 0, 49), 13)
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+    {:ok, ranged_attempts} = Agent.start_link(fn -> 0 end)
+
+    {:ok, server} =
+      LoopbackHTTPServer.start(fn req ->
+        case req.path do
+          "/flaky" ->
+            case Agent.get_and_update(attempts, fn n -> {n + 1, n + 1} end) do
+              1 ->
+                {200, [{"content-type", "application/octet-stream"}],
+                 {:truncate_after, first_partial}}
+
+              _ ->
+                {200, [{"content-type", "application/octet-stream"}], full_chunks}
+            end
+
+          "/flaky-ranged" ->
+            case Agent.get_and_update(ranged_attempts, fn n -> {n + 1, n + 1} end) do
+              1 ->
+                {206, [{"content-type", "application/octet-stream"}],
+                 {:truncate_after, ranged_partial}}
+
+              _ ->
+                {206, [{"content-type", "application/octet-stream"}], ranged_chunks}
+            end
+
+          "/redirect" ->
+            {302, [{"location", "/final"}], "moved"}
+
+          "/redirect-empty-gone" ->
+            {302, [{"location", "/empty-gone"}], "moved"}
+
+          "/empty-gone" ->
+            {410, [{"content-type", "text/plain"}], ""}
+
+          "/final" ->
+            {200, [{"content-type", "application/octet-stream"}], full_chunks}
+        end
+      end)
+
+    on_exit(server.stop)
+
+    # 1. Mid-stream TCP close on attempt 1 followed by Req retry must not corrupt output file
+    retry_path = Path.join(tmp_dir, "retried-output.bin")
+
+    assert {:ok, ^retry_path} =
+             Download.download_to_file(
+               %Message.ImageMessage{media_key: media_key, url: "#{server.url}/flaky"},
+               retry_path,
+               req_options: [
+                 headers: %{"X-Test-Header" => "retry-map"},
+                 retry: :safe_transient,
+                 retry_delay: fn _ -> 5 end,
+                 retry_log_level: false
+               ]
+             )
+
+    assert Agent.get(attempts, & &1) == 2
+    assert File.read!(retry_path) == plaintext
+
+    # 2. Mid-stream TCP close on ranged 206 retry also resets partial file cleanly
+    ranged_retry_path = Path.join(tmp_dir, "retried-ranged-output.bin")
+
+    assert {:ok, ^ranged_retry_path} =
+             Download.download_to_file(
+               %Message.ImageMessage{media_key: media_key, url: "#{server.url}/flaky-ranged"},
+               ranged_retry_path,
+               start_byte: 20,
+               end_byte: 32,
+               req_options: [
+                 retry: :safe_transient,
+                 retry_delay: fn _ -> 5 end,
+                 retry_log_level: false
+               ]
+             )
+
+    assert Agent.get(ranged_attempts, & &1) == 2
+    assert File.read!(ranged_retry_path) == binary_part(plaintext, 20, 12)
+
+    # 3. 302 redirect -> 200 streams cleanly without corrupting decrypt state
+    redirect_path = Path.join(tmp_dir, "redirect-output.bin")
+
+    assert {:ok, ^redirect_path} =
+             Download.download_to_file(
+               %Message.ImageMessage{media_key: media_key, url: "#{server.url}/redirect"},
+               redirect_path,
+               req_options: [retry: false]
+             )
+
+    assert File.read!(redirect_path) == plaintext
+
+    # 4. 302 redirect with body -> 410 empty body does not leak the 302 body
+    assert {:error, {:http_error, 410, ""}} =
+             Download.download(
+               %Message.ImageMessage{
+                 media_key: media_key,
+                 url: "#{server.url}/redirect-empty-gone"
+               },
+               req_options: [retry: false]
              )
   end
 

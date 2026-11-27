@@ -19,7 +19,7 @@ defmodule BaileysEx.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto, :inets, :ssl]
+      extra_applications: [:logger, :crypto, :ssl]
     ]
   end
 
@@ -32,8 +32,8 @@ defmodule BaileysEx.MixProject do
       {:mint_web_socket, "~> 1.0"},
       {:mint, "~> 1.6"},
 
-      # HTTP client (for media upload/download)
-      {:req, "~> 0.7"},
+      # HTTP client (for media upload/download and version discovery; 0.7 stable and 0.8 ready)
+      {:req, "~> 0.7 or ~> 0.8"},
 
       # Telemetry
       {:telemetry, "~> 1.3"},

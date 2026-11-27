@@ -4,6 +4,7 @@ defmodule BaileysEx.Media.UploadTest do
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Store
   alias BaileysEx.Media.Upload
+  alias BaileysEx.TestHelpers.LoopbackHTTPServer
   alias BaileysEx.TestHelpers.TelemetryHelpers
 
   defmodule QueryableTupleAdapter do
@@ -357,5 +358,67 @@ defmodule BaileysEx.Media.UploadTest do
                file_enc_sha256: <<1::256>>,
                request_fun: fn _request -> {:ok, %Req.Response{status: 500, body: "nope"}} end
              )
+  end
+
+  @tag :tmp_dir
+  test "upload/4 streams encrypted file body through real Req.post/1 and decodes JSON response",
+       %{tmp_dir: tmp_dir} do
+    parent = self()
+    payload = :binary.copy(<<0xAB, 0xCD>>, 40_000)
+    enc_path = Path.join(tmp_dir, "stream-upload.enc")
+    File.write!(enc_path, payload)
+
+    {:ok, server} =
+      LoopbackHTTPServer.start(fn req ->
+        send(parent, {:upload_http_request, req.method, req.headers, req.body})
+
+        body =
+          JSON.encode!(%{
+            "url" => "https://mmg.whatsapp.net/mms/image/uploaded-real",
+            "direct_path" => "/mms/image/uploaded-real",
+            "ts" => "1710000123",
+            "fbid" => "42"
+          })
+
+        {200, [{"content-type", "application/json"}], body}
+      end)
+
+    on_exit(server.stop)
+
+    host_query = fn _node, _timeout ->
+      {:ok,
+       %BinaryNode{
+         tag: "iq",
+         attrs: %{"type" => "result"},
+         content: [
+           %BinaryNode{
+             tag: "media_conn",
+             attrs: %{"auth" => "auth-token", "ttl" => "3600"},
+             content: [%BinaryNode{tag: "host", attrs: %{"hostname" => "upload.example.com"}}]
+           }
+         ]
+       }}
+    end
+
+    assert {:ok,
+            %{
+              media_url: "https://mmg.whatsapp.net/mms/image/uploaded-real",
+              direct_path: "/mms/image/uploaded-real",
+              ts: 1_710_000_123,
+              fbid: 42
+            }} =
+             Upload.upload(host_query, enc_path, :image,
+               file_enc_sha256: <<2::256>>,
+               req_options: [retry: false],
+               request_fun: fn req_opts ->
+                 Req.post(Keyword.put(req_opts, :url, "#{server.url}/mms/image/test"))
+               end
+             )
+
+    assert_receive {:upload_http_request, "POST",
+                    %{
+                      "content-type" => "application/octet-stream",
+                      "origin" => "https://web.whatsapp.com"
+                    }, ^payload}
   end
 end

@@ -3,6 +3,7 @@ defmodule BaileysEx.Connection.VersionTest do
 
   alias BaileysEx
   alias BaileysEx.Connection.Version
+  alias BaileysEx.TestHelpers.LoopbackHTTPServer
 
   test "fetch_latest_baileys_version/1 parses the published Defaults version" do
     body = """
@@ -59,6 +60,52 @@ defmodule BaileysEx.Connection.VersionTest do
                fetch_fun: fn _url, _opts ->
                  {:ok, %{status: 200, body: ~s({"client_revision": 555})}}
                end
+             )
+  end
+
+  test "default_fetch uses Req over real HTTP with raw: true and forwards req_options" do
+    parent = self()
+
+    {:ok, server} =
+      LoopbackHTTPServer.start(fn req ->
+        send(parent, {:version_http_request, req.path, req.headers})
+
+        case req.path do
+          "/baileys" ->
+            {200, [{"content-type", "text/plain"}], "const version = [2, 3000, 999888777]"}
+
+          "/sw.js" ->
+            {200, [{"content-type", "application/json"}], ~s({"client_revision": 444555666})}
+
+          "/missing" ->
+            {404, [{"content-type", "text/plain"}], "not found"}
+        end
+      end)
+
+    on_exit(server.stop)
+
+    assert %{version: [2, 3000, 999_888_777], is_latest: true} =
+             Version.fetch_latest_baileys_version(
+               url: "#{server.url}/baileys",
+               req_options: [retry: false]
+             )
+
+    assert_receive {:version_http_request, "/baileys", _headers}
+
+    # Even when server claims application/json, raw: true preserves the binary body for regex parsing
+    assert %{version: [2, 3000, 444_555_666], is_latest: true} =
+             Version.fetch_latest_wa_web_version(
+               url: "#{server.url}/sw.js",
+               req_options: [retry: false]
+             )
+
+    assert_receive {:version_http_request, "/sw.js", %{"sec-fetch-site" => "none"}}
+
+    assert %{version: [1, 2, 3], is_latest: false, error: {:http_error, 404, "not found"}} =
+             Version.fetch_latest_baileys_version(
+               url: "#{server.url}/missing",
+               default_version: [1, 2, 3],
+               req_options: [retry: false]
              )
   end
 end

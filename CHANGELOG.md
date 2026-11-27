@@ -11,8 +11,17 @@ and fixes companion-device protocol bugs.
 ### Changed
 
 - `BaileysEx` now uses `rustler` `~> 0.38` for Erlang/OTP 29 support, along
-  with `req` `~> 0.7`, `mint` `1.11`, `mint_web_socket` `1.0.6`, and
-  `telemetry` `1.4.3`.
+  with `req` `~> 0.7 or ~> 0.8` (locked on stable `0.7.5`, tested against
+  `0.8.0-rc.0`), `mint` `1.11`, `mint_web_socket` `1.0.6`, and `telemetry`
+  `1.4.3`.
+- `BaileysEx.Connection.Version` now fetches version metadata through `Req`
+  with `raw: true` instead of `:httpc`, and `mix.exs` no longer lists `:inets`
+  in `extra_applications`.
+- `BaileysEx.Media.Download` now sets `raw: true`, uses backpressured streaming
+  for both full (`200`) and ranged (`206`) downloads (using Req `0.8`'s
+  `stream` API when available, and `into: fun` on Req `0.7`), resets partial
+  output files before Req retries, and cancels async response streams when
+  custom `request_fun` adapters return `Req.Response.Async`.
 - `mix.exs` no longer depends on `protox`. Protobuf serialization uses the
   pure-Elixir wire codecs in `BaileysEx`.
 - Windows desktop connections now send the `WIN_HYBRID` sub-platform instead of

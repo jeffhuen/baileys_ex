@@ -4,6 +4,7 @@ defmodule BaileysEx.Connection.Version do
   """
 
   alias BaileysEx.Connection.Config
+  alias BaileysEx.Media.HTTP
 
   @baileys_defaults_url "https://raw.githubusercontent.com/WhiskeySockets/Baileys/master/src/Defaults/index.ts"
   @wa_web_service_worker_url "https://web.whatsapp.com/sw.js"
@@ -66,18 +67,26 @@ defmodule BaileysEx.Connection.Version do
     end
   end
 
-  @dialyzer {:nowarn_function, default_fetch: 2}
   defp default_fetch(url, opts) do
+    req_options = Keyword.get(opts, :req_options, [])
+
     headers =
       opts
       |> Keyword.get(:headers, [])
-      |> Enum.map(fn {key, value} -> {to_charlist(key), to_charlist(value)} end)
+      |> Enum.map(fn {key, value} -> {String.downcase(to_string(key)), to_string(value)} end)
+      |> then(&HTTP.merge_headers(req_options[:headers], &1))
 
-    request = {to_charlist(url), headers}
+    request_opts =
+      req_options
+      |> Keyword.drop([:headers, :url, :into, :decode_body, :compressed, :method])
+      |> Keyword.merge(url: url, headers: headers, raw: true)
 
-    case :httpc.request(:get, request, [], body_format: :binary) do
-      {:ok, {{_http_version, status, _reason_phrase}, _response_headers, body}} ->
+    case Req.get(request_opts) do
+      {:ok, %Req.Response{status: status, body: body}} when is_binary(body) ->
         {:ok, %{status: status, body: body}}
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:ok, %{status: status, body: IO.iodata_to_binary(body)}}
 
       {:error, reason} ->
         {:error, reason}

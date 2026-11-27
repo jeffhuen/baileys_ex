@@ -17,6 +17,15 @@
   closes cleanly on inbound `xmlstreamend` frames by
   [@Rodericuss](https://github.com/Rodericuss)
   [(#23)](https://github.com/jeffhuen/baileys_ex/pull/23).
+- Initial app-state sync now starts when history sync moves the connection into
+  `:syncing` without waiting for `my_app_state_key_id`, parking undecryptable
+  collections and resyncing them when the key arrives; also fixed shadowed
+  `Coordinator` sync-completion clauses, bounded omitted-collection retries in
+  `AppState.resync_app_state/4`, preserved mid-sync blocked collections, reset
+  `sync_state` on disconnects with `last_disconnect`, and skipped the 20-second
+  history wait on reconnects with `account_sync_counter > 0` by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#19)](https://github.com/jeffhuen/baileys_ex/pull/19).
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

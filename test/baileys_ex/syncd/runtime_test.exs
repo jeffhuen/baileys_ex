@@ -505,6 +505,19 @@ defmodule BaileysEx.Syncd.RuntimeTest do
       assert Agent.get(calls, & &1) == 2
     end
 
+    test "gives up after bounded attempts when a requested collection is permanently omitted" do
+      store = start_store()
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+      queryable = fn _node ->
+        Agent.update(calls, &(&1 + 1))
+        {:ok, %{tag: "iq", attrs: %{}, content: [%{tag: "sync", attrs: %{}, content: []}]}}
+      end
+
+      assert :ok = AppState.resync_app_state(queryable, store, [:regular_high])
+      assert Agent.get(calls, & &1) == 2
+    end
+
     test "successful resync diagnostics do not log at warning level" do
       store = start_store()
       queryable = fn _node -> {:ok, empty_sync_response()} end

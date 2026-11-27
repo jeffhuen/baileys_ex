@@ -48,6 +48,12 @@
   collisions, target 1:1 companion devices, and fall back to `get_message_fun`
   by [@Rodericuss](https://github.com/Rodericuss)
   [(#22)](https://github.com/jeffhuen/baileys_ex/pull/22).
+- `Signal.SessionCipher` now bounds skipped-key derivation to 2000 cumulative
+  keys on both closed previous chains during ratchet steps and open receiving
+  chains, preventing OOM crashes when a peer sends a large `previous_counter`
+  such as `0xFFFFFFFF` or repeated out-of-order jumps by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#24)](https://github.com/jeffhuen/baileys_ex/pull/24).
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

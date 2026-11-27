@@ -651,7 +651,7 @@ defmodule BaileysEx.Media.DownloadTest do
                req_options: [adapter: BufferedAdapter, retry: false]
              )
 
-    oversized_error = String.duplicate("e", 70_000)
+    oversized_error = String.duplicate("e", 5_000_000)
 
     Process.put(:baileys_ex_buffered_adapter_fun, fn req ->
       {req, Req.Response.new(status: 410, body: oversized_error)}
@@ -667,6 +667,7 @@ defmodule BaileysEx.Media.DownloadTest do
              )
 
     assert byte_size(capped_body) == 65_536
+    assert :binary.referenced_byte_size(capped_body) == 65_536
   end
 
   test "custom request_fun returns error tuple on mid-stream 410 close and cancels bounded async once" do
@@ -725,10 +726,15 @@ defmodule BaileysEx.Media.DownloadTest do
                  media_key: media_key,
                  url: "https://mmg.whatsapp.net/async-capped"
                },
-               request_fun: request_fun
+               req_options: [method: :get],
+               request_fun: fn opts ->
+                 assert opts[:method] == :get
+                 request_fun.(opts)
+               end
              )
 
     assert byte_size(capped_body) == 65_536
+    assert :binary.referenced_byte_size(capped_body) <= 65_536
     assert Agent.get(cancel_counter, & &1) == 1
   end
 

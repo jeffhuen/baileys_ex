@@ -211,7 +211,7 @@ defmodule BaileysEx.Media.Download do
       |> maybe_add_range_header(decrypt_opts)
 
     req_options
-    |> Keyword.drop([:headers, :into, :decode_body, :compressed, :method])
+    |> Keyword.drop([:headers, :into, :decode_body, :compressed])
     |> Keyword.merge(
       url: url,
       headers: headers,
@@ -249,7 +249,12 @@ defmodule BaileysEx.Media.Download do
       {:cont, {req, Req.Response.put_private(resp, :baileys_ex_download, next_acc)}}
     end
 
-    case Req.get(Keyword.put(base_opts, :into, into_fun)) do
+    request_opts =
+      base_opts
+      |> Keyword.drop([:method])
+      |> Keyword.put(:into, into_fun)
+
+    case Req.get(request_opts) do
       {:ok, %Req.Response{status: status} = resp} ->
         final_acc = Req.Response.get_private(resp, :baileys_ex_download, initial_acc)
         finalize_stream_response(status, resp.body, final_acc, sink_fun, reset_fun)
@@ -262,7 +267,7 @@ defmodule BaileysEx.Media.Download do
   # Req 0.8+ replaces `into: fun` with `Req.stream/4`, providing backpressured streaming
   # across both 200 and 206 Partial Content responses without spawning an extra process.
   defp download_with_req_stream(base_opts, decrypt_state, acc, sink_fun, reset_fun) do
-    req = Req.new([method: :get] ++ base_opts)
+    req = Req.new(Keyword.put(base_opts, :method, :get))
     initial_acc = initial_stream_acc(decrypt_state, acc)
 
     stream_fun = fn
@@ -361,7 +366,7 @@ defmodule BaileysEx.Media.Download do
   defp empty_response_body?(_body), do: false
 
   defp truncate_error_body(body) when is_binary(body) and byte_size(body) > @max_error_body_bytes,
-    do: binary_part(body, 0, @max_error_body_bytes)
+    do: :binary.copy(binary_part(body, 0, @max_error_body_bytes))
 
   defp truncate_error_body(body), do: body
 
@@ -388,7 +393,7 @@ defmodule BaileysEx.Media.Download do
         }
 
       true ->
-        snippet = binary_part(data, 0, remaining)
+        snippet = :binary.copy(binary_part(data, 0, remaining))
 
         %{
           stream_acc
@@ -521,7 +526,8 @@ defmodule BaileysEx.Media.Download do
         {:halt, {[chunk | chunks], @max_error_body_bytes}}
 
       true ->
-        {:halt, {[binary_part(chunk, 0, remaining) | chunks], @max_error_body_bytes}}
+        snippet = :binary.copy(binary_part(chunk, 0, remaining))
+        {:halt, {[snippet | chunks], @max_error_body_bytes}}
     end
   end
 

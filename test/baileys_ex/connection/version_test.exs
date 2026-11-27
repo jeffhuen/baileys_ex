@@ -120,6 +120,25 @@ defmodule BaileysEx.Connection.VersionTest do
              )
 
     assert Agent.get(unavailable_attempts, & &1) == 1
+
+    # Charlist top-level headers remain supported, absolute URLs ignore bad base_url,
+    # and relative URLs resolve against %URI{} base_url just like Req.
+    assert %{version: [2, 3000, 999_888_777], is_latest: true} =
+             Version.fetch_latest_baileys_version(
+               url: "#{server.url}/baileys",
+               headers: [{~c"user-agent", ~c"charlist-agent"}],
+               req_options: [base_url: "bad-base", retry: false]
+             )
+
+    assert_receive {:version_http_request, "/baileys", %{"user-agent" => "charlist-agent"}}
+
+    assert %{version: [2, 3000, 999_888_777], is_latest: true} =
+             Version.fetch_latest_baileys_version(
+               url: "/baileys",
+               req_options: [base_url: URI.parse(server.url), retry: false]
+             )
+
+    assert_receive {:version_http_request, "/baileys", _headers}
   end
 
   test "default_fetch returns the fallback version map on malformed or relative URLs" do

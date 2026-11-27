@@ -74,7 +74,10 @@ defmodule BaileysEx.Connection.Version do
       default_headers =
         opts
         |> Keyword.get(:headers, [])
-        |> Enum.map(fn {key, value} -> {key, to_string(value)} end)
+        |> Enum.map(fn
+          {key, value} when is_atom(key) -> {key, to_string(value)}
+          {key, value} -> {to_string(key), to_string(value)}
+        end)
 
       headers = HTTP.merge_headers(req_options[:headers], default_headers)
 
@@ -105,23 +108,35 @@ defmodule BaileysEx.Connection.Version do
   end
 
   defp validate_request_url(url, req_options) when is_binary(url) do
-    uri =
-      case req_options[:base_url] do
-        base_url when is_binary(base_url) -> URI.merge(URI.parse(base_url), URI.parse(url))
-        _ -> URI.parse(url)
-      end
+    case URI.parse(url) do
+      %URI{scheme: nil} ->
+        validate_base_url(Keyword.get(req_options, :base_url, Req.default_options()[:base_url]))
 
-    case uri do
-      %URI{scheme: scheme, host: host}
-      when scheme in ["http", "https"] and is_binary(host) and byte_size(host) > 0 ->
-        :ok
-
-      _ ->
-        {:error, :invalid_url}
+      %URI{} = uri ->
+        validate_http_uri(uri)
     end
   end
 
+  defp validate_request_url(%URI{scheme: nil}, req_options) do
+    validate_base_url(Keyword.get(req_options, :base_url, Req.default_options()[:base_url]))
+  end
+
+  defp validate_request_url(%URI{} = uri, _req_options), do: validate_http_uri(uri)
   defp validate_request_url(_url, _req_options), do: {:error, :invalid_url}
+
+  defp validate_base_url(base_url) when is_binary(base_url) and byte_size(base_url) > 0 do
+    validate_http_uri(URI.parse(base_url))
+  end
+
+  defp validate_base_url(%URI{} = uri), do: validate_http_uri(uri)
+  defp validate_base_url(_base_url), do: {:error, :invalid_url}
+
+  defp validate_http_uri(%URI{scheme: scheme, host: host})
+       when scheme in ["http", "https"] and is_binary(host) and byte_size(host) > 0 do
+    :ok
+  end
+
+  defp validate_http_uri(_uri), do: {:error, :invalid_url}
 
   defp parse_baileys_defaults(body) when is_binary(body) do
     case Regex.run(~r/const version = \[(\d+),\s*(\d+),\s*(\d+)\]/, body, capture: :all_but_first) do

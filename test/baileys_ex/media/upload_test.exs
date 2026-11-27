@@ -438,5 +438,17 @@ defmodule BaileysEx.Media.UploadTest do
     assert override_headers["content-type"] == "application/x-custom"
     assert override_headers["x_raw_key"] == "kept"
     refute Map.has_key?(override_headers, "content_type")
+
+    # Custom request_fun wrapping Req.request/1 preserves explicit req_options: [method: :post]
+    assert {:ok, %{direct_path: "/mms/image/uploaded-real"}} =
+             Upload.upload(host_query, enc_path, :image,
+               file_enc_sha256: <<2::256>>,
+               req_options: [method: :post, retry: false],
+               request_fun: fn req_opts ->
+                 Req.request(Keyword.put(req_opts, :url, "#{server.url}/mms/image/method"))
+               end
+             )
+
+    assert_receive {:upload_http_request, "POST", _headers, ^payload}
   end
 end

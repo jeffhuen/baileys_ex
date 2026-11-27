@@ -102,12 +102,12 @@ Add `baileys_ex` to your `mix.exs` dependencies:
 ```elixir
 def deps do
   [
-    {:baileys_ex, "~> 0.1.0-alpha.12"}
+    {:baileys_ex, "~> 0.1.0"}
   ]
 end
 ```
 
-**Requirements:** Elixir 1.19+, OTP 28, Rust toolchain (for NIF compilation).
+**Requirements:** Elixir 1.19+, OTP 28+, Rust toolchain (for NIF compilation).
 
 ### Choose a persistence backend
 
@@ -249,9 +249,10 @@ alerting, or tracing.
 
 ## Status
 
-BaileysEx is in **alpha**. The API surface is stabilizing but may change before
-1.0. The library tracks Baileys `v7.0.0-rc14` as its upstream reference for wire
-behaviour and feature scope.
+BaileysEx is at **0.1.0** (pre-1.0). The core protocol and public API are
+feature-complete and verified against live WhatsApp traffic, though minor API
+adjustments remain possible before 1.0. The library tracks Baileys `v7.0.0-rc14`
+as its upstream reference for wire behaviour and feature scope.
 
 ## Acknowledgements
 

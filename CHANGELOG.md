@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
+First non-alpha release graduating from the `0.1.0-alpha.*` series. Updates all
+runtime and tooling dependencies (including Erlang/OTP 29 NIF support), removes
+an unused runtime dependency, and closes live production protocol bugs found
+during real-world companion-device usage.
+
+### Changed
+
+- Updated all Elixir and Rust dependencies to their latest versions, including
+  `rustler` `~> 0.38` (adds Erlang/OTP 29 support), `req` `~> 0.7`, `mint`
+  `1.11`, `mint_web_socket` `1.0.6`, and `telemetry` `1.4.3`.
+- Removed the unused `protox` dependency; protobuf serialization continues to
+  use BaileysEx's handwritten pure-Elixir wire codecs.
+- Windows desktop connections now advertise `WIN_HYBRID` instead of the retired
+  `WIN32` web sub-platform, matching upstream Baileys.
+- Expanded CI to test both Elixir 1.19 / OTP 28 and Elixir 1.20 / OTP 29 and to
+  enforce Rust formatting (`cargo fmt --check`) and Clippy lints.
+
 ### Fixed
 
 - Phone-number pairing now sends the `companion_hello` IQ with a message tag
@@ -11,7 +30,7 @@
   dirty-bit cleanup) are now also guaranteed to carry a message `id` by
   [@Rodericuss](https://github.com/Rodericuss)
   [(#18)](https://github.com/jeffhuen/baileys_ex/pull/18).
-- Inbound `call` (#23), `presence`, and `chatstate` nodes are now surfaced as
+- Inbound `call`, `presence`, and `chatstate` nodes are now surfaced as
   `socket_node` events so the coordinator processes and acks them instead of
   dropping them and stalling the offline queue, and `Connection.Socket` now
   closes cleanly on inbound `xmlstreamend` frames by
@@ -54,6 +73,12 @@
   such as `0xFFFFFFFF` or repeated out-of-order jumps by
   [@Rodericuss](https://github.com/Rodericuss)
   [(#24)](https://github.com/jeffhuen/baileys_ex/pull/24).
+- Media downloads now ignore the `a.whatsapp.net` placeholder host on `url` and
+  fall back to `mmg.whatsapp.net` when building direct-path download URLs.
+- Demoted routine send, receive, protocol-message, and USync device diagnostics
+  from `Logger.warning` to lazy `Logger.debug`.
+- Stabilized timing-sensitive tests in `Message.RetryTest` and
+  `Connection.SupervisorTest` under parallel test load.
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

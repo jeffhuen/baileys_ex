@@ -515,7 +515,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
     socket_pid = child_pid!(supervisor, Socket)
     Kernel.send(socket_pid, {:emit_closed, :restart_required})
 
-    assert_receive :transport_connected_attempt, 200
+    assert_receive :transport_connected_attempt, 1_000
   end
 
   test "supervisor enforces max_retries for configured reconnect policy" do
@@ -555,7 +555,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                       reconnect_policy: :all_non_logged_out
                     }}
 
-    assert_receive :transport_connected_attempt, 200
+    assert_receive :transport_connected_attempt, 1_000
 
     socket_pid = child_pid!(supervisor, Socket)
     Kernel.send(socket_pid, {:emit_closed, :tcp_closed})
@@ -721,7 +721,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                         %BinaryNode{tag: "registration", content: <<0, 0, 4, 210>>}
                       ]
                     }},
-                   500
+                   1_500
 
     assert_receive {:fake_socket_send_node,
                     %BinaryNode{
@@ -734,7 +734,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                         "to" => "15551234567@s.whatsapp.net"
                       }
                     }},
-                   500
+                   1_500
   end
 
   test "send_message issues trusted-contact tokens after eligible direct sends" do

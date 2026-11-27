@@ -2640,6 +2640,52 @@ defmodule BaileysEx.Connection.SupervisorTest do
     end)
   end
 
+  test "account_sync dirty-bit clean IQ carries a non-empty id attribute" do
+    name = {:release_dirty_id_test, System.unique_integer([:positive])}
+    parent = self()
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: parent,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    store_pid = child_pid!(supervisor, Store)
+    :ok = Store.put(store_pid, :last_account_sync_timestamp, 1_710_000_000)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :dirty_update, %{
+               type: "account_sync",
+               timestamp: 1_710_000_100
+             })
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "iq",
+                      attrs: %{
+                        "id" => id,
+                        "to" => "s.whatsapp.net",
+                        "type" => "set",
+                        "xmlns" => "urn:xmpp:whatsapp:dirty"
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "clean",
+                          attrs: %{"type" => "account_sync", "timestamp" => "1710000000"}
+                        }
+                      ]
+                    }},
+                   1_000
+
+    assert is_binary(id) and id != ""
+  end
+
   defp child_pid!(supervisor, child_id) do
     supervisor
     |> Supervisor.which_children()

@@ -1332,6 +1332,8 @@ defmodule BaileysEx.Connection.Socket do
   defp send_node_internal(data, %BinaryNode{} = node) do
     require Logger
 
+    node = ensure_outgoing_iq_id(data, node)
+
     Logger.debug(
       "[Wire] SEND tag=#{node.tag} id=#{node.attrs["id"]} xmlns=#{node.attrs["xmlns"]} " <>
         "type=#{node.attrs["type"]} to=#{node.attrs["to"]}"
@@ -1341,6 +1343,22 @@ defmodule BaileysEx.Connection.Socket do
     |> BinaryNodeUtil.encode()
     |> then(&send_transport_binary(data, &1))
   end
+
+  defp ensure_outgoing_iq_id(
+         data,
+         %BinaryNode{tag: "iq", attrs: %{"type" => type} = attrs} = node
+       )
+       when type in ["get", "set"] do
+    case Map.get(attrs, "id") do
+      id when is_binary(id) and id != "" ->
+        node
+
+      _ ->
+        %{node | attrs: Map.put(attrs, "id", generate_message_tag(data))}
+    end
+  end
+
+  defp ensure_outgoing_iq_id(_data, node), do: node
 
   defp register_pending_query(%__MODULE__{} = data, query_id, {reply_pid, reply_ref}, timeout)
        when is_binary(query_id) and is_pid(reply_pid) and is_reference(reply_ref) do

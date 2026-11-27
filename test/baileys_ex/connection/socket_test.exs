@@ -1935,6 +1935,36 @@ defmodule BaileysEx.Connection.SocketTest do
     assert server_transport.read_counter >= 0
   end
 
+  test "send_node/2 automatically tags outgoing get/set iq stanzas that omit an id" do
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    {:ok, pid, server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        message_tag_fun: fn -> "auto-iq-tag" end
+      )
+
+    untagged_iq = %BinaryNode{
+      tag: "iq",
+      attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "urn:xmpp:whatsapp:dirty"},
+      content: [%BinaryNode{tag: "clean", attrs: %{"type" => "account_sync"}, content: nil}]
+    }
+
+    assert :ok = Socket.send_node(pid, untagged_iq)
+    assert_receive {:transport_sent, iq_frame}
+    {_server_transport, decoded_iq} = decode_client_transport_frame(server_transport, iq_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{
+               "id" => "auto-iq-tag",
+               "to" => "s.whatsapp.net",
+               "type" => "set",
+               "xmlns" => "urn:xmpp:whatsapp:dirty"
+             }
+           } = decoded_iq
+  end
+
   defp start_socket(opts) do
     {:ok, task_supervisor} = Task.Supervisor.start_link()
 

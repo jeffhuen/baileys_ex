@@ -6,7 +6,11 @@
 
 - Phone-number pairing now sends the `companion_hello` IQ with a message tag
   `id`, matching Baileys `requestPairingCode`. Without it WhatsApp did not
-  register the code, and the phone rejected it as a wrong code.
+  register the code, and the phone rejected it as a wrong code. Outgoing
+  `get`/`set` IQs sent through `Connection.Socket` (including `account_sync`
+  dirty-bit cleanup) are now also guaranteed to carry a message `id` by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#18)](https://github.com/jeffhuen/baileys_ex/pull/18).
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

@@ -10,10 +10,13 @@ defmodule BaileysEx.Connection.SupervisorTest do
   alias BaileysEx.Connection.Socket
   alias BaileysEx.Connection.Store
   alias BaileysEx.Connection.Supervisor
+  alias BaileysEx.Crypto
   alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Retry
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Signal.Adapter.Signal, as: SignalAdapter
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store, as: SignalStore
@@ -3129,6 +3132,114 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_eventually(fn -> Store.get(store_ref, :creds, %{})[:account_sync_counter] == 1 end)
 
     unsubscribe.()
+  end
+
+  test "1:1 companion retry receipt with key bundle injects session and resends targeted enc node" do
+    name = {:release_retry_bundle_test, System.unique_integer([:positive])}
+    parent = self()
+
+    {:ok, alice_store} = SignalStore.new()
+    alice_identity = Crypto.generate_key_pair(:x25519, private_key: <<701::256>>)
+    alice_spk = Crypto.generate_key_pair(:x25519, private_key: <<702::256>>)
+
+    alice_adapter_state =
+      SignalAdapter.new(
+        store: alice_store,
+        identity_key_pair: alice_identity,
+        registration_id: 7001,
+        signed_pre_key: %{key_id: 1, key_pair: alice_spk}
+      )
+
+    signal_repository =
+      Repository.new(
+        adapter: SignalAdapter,
+        adapter_state: alice_adapter_state,
+        store: alice_store
+      )
+
+    bob_identity = Crypto.generate_key_pair(:x25519, private_key: <<703::256>>)
+    bob_spk = Crypto.generate_key_pair(:x25519, private_key: <<704::256>>)
+    {:ok, bob_spk_pub} = Curve.generate_signal_pub_key(bob_spk.public)
+    {:ok, bob_sig} = Curve.sign(bob_identity.private, bob_spk_pub)
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config: Config.new(fire_init_queries: false, mark_online_on_connect: false),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               signal_repository: signal_repository,
+               test_pid: parent,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+
+    runtime_store = supervisor |> child_pid!(Store) |> Store.wrap()
+
+    assert :ok =
+             Retry.add_recent_message(
+               runtime_store,
+               "15551234567:2@s.whatsapp.net",
+               "retry-bundle-1",
+               Builder.build(%{text: "resent with injected bundle"})
+             )
+
+    receipt = %BinaryNode{
+      tag: "receipt",
+      attrs: %{
+        "id" => "retry-bundle-1",
+        "from" => "15551234567:2@s.whatsapp.net",
+        "type" => "retry"
+      },
+      content: [
+        %BinaryNode{tag: "retry", attrs: %{"count" => "2"}, content: nil},
+        %BinaryNode{
+          tag: "registration",
+          attrs: %{},
+          content: {:binary, <<8002::unsigned-big-32>>}
+        },
+        %BinaryNode{
+          tag: "keys",
+          attrs: %{},
+          content: [
+            %BinaryNode{tag: "type", attrs: %{}, content: {:binary, <<5>>}},
+            %BinaryNode{tag: "identity", attrs: %{}, content: {:binary, bob_identity.public}},
+            %BinaryNode{
+              tag: "skey",
+              attrs: %{},
+              content: [
+                %BinaryNode{tag: "id", attrs: %{}, content: {:binary, <<11::unsigned-big-24>>}},
+                %BinaryNode{tag: "value", attrs: %{}, content: {:binary, bob_spk.public}},
+                %BinaryNode{tag: "signature", attrs: %{}, content: {:binary, bob_sig}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+
+    assert :ok =
+             supervisor
+             |> child_pid!(EventEmitter)
+             |> EventEmitter.emit(:socket_node, %{node: receipt})
+
+    assert_receive {:fake_socket_send_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{
+                        "id" => "retry-bundle-1",
+                        "to" => "15551234567:2@s.whatsapp.net",
+                        "device_fanout" => "false"
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "enc",
+                          attrs: %{"type" => "pkmsg", "v" => "2", "count" => "2"}
+                        }
+                      ]
+                    }},
+                   1_000
   end
 
   defp child_pid!(supervisor, child_id) do

@@ -40,6 +40,14 @@
   reaction and pin-in-chat `enc` nodes, matching Baileys `messages-send.ts` by
   [@Rodericuss](https://github.com/Rodericuss)
   [(#21)](https://github.com/jeffhuen/baileys_ex/pull/21).
+- E2E session parsing, normalization, and retry-receipt `<keys>` bundle
+  extraction now accept pre-key bundles without a one-time pre-key (`key` node
+  omitted), matching Baileys `parseAndInjectE2ESessions` and
+  `extractE2ESessionFromRetryReceipt`; incoming retry receipts also now inject
+  retry key bundles, reset stale sessions on registration-ID or base-key
+  collisions, target 1:1 companion devices, and fall back to `get_message_fun`
+  by [@Rodericuss](https://github.com/Rodericuss)
+  [(#22)](https://github.com/jeffhuen/baileys_ex/pull/22).
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

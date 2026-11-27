@@ -810,7 +810,7 @@ defmodule BaileysEx.Connection.Coordinator do
 
     case Receiver.process_node(node, receiver_context(state, repository)) do
       {:ok, _message, %{signal_repository: %Repository{} = updated_repository}} ->
-        Logger.warning("[Coordinator] message #{msg_id} processed OK")
+        Logger.debug(fn -> "[Coordinator] message #{msg_id} processed OK" end)
         %{state | signal_repository: updated_repository}
 
       {:error, reason} ->
@@ -1726,15 +1726,14 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp maybe_handle_retry_receipt(
          %State{signal_repository: %Repository{} = repository} = state,
-         %BinaryNode{attrs: %{"type" => "retry"}} = node
+         %BinaryNode{attrs: %{"type" => "retry"} = attrs} = node
        ) do
     case Retry.handle_retry_receipt(state.store_ref, node,
            max_retry_count: state.config.max_msg_retry_count
          ) do
       {:ok, entries} ->
-        Enum.reduce(entries, state, fn %{id: id, message: message}, acc ->
-          resend_retry_message(acc, repository_for_retry(acc, repository), node, id, message)
-        end)
+        entries = maybe_fallback_get_messages(state, attrs, node, entries)
+        resend_retry_entries(state, repository, node, entries)
 
       {:error, _reason} ->
         state
@@ -1742,6 +1741,205 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp maybe_handle_retry_receipt(%State{} = state, %BinaryNode{}), do: state
+
+  defp resend_retry_entries(%State{} = state, _repository, _node, []), do: state
+
+  defp resend_retry_entries(%State{} = state, %Repository{} = repository, node, entries) do
+    {state, prepared_repo} = prepare_retry_resend_session(state, repository, node)
+
+    Enum.reduce(entries, %{state | signal_repository: prepared_repo}, fn
+      %{id: id, message: message}, acc ->
+        resend_retry_message(acc, acc.signal_repository, node, id, message)
+    end)
+  end
+
+  defp maybe_fallback_get_messages(
+         %State{get_message_fun: get_message_fun},
+         attrs,
+         node,
+         entries
+       )
+       when is_function(get_message_fun, 1) do
+    found_ids = MapSet.new(entries, & &1.id)
+    remote_jid = attrs["from"] || attrs["recipient"] || attrs["to"]
+
+    fallback_entries =
+      attrs
+      |> retry_receipt_ids(node)
+      |> Enum.reject(&MapSet.member?(found_ids, &1))
+      |> Enum.flat_map(&fetch_fallback_retry_message(get_message_fun, remote_jid, &1))
+
+    entries ++ fallback_entries
+  end
+
+  defp maybe_fallback_get_messages(_state, _attrs, _node, entries), do: entries
+
+  defp fetch_fallback_retry_message(get_message_fun, remote_jid, id) do
+    case get_message_fun.(%{remote_jid: remote_jid, id: id, from_me: true}) do
+      %BaileysEx.Protocol.Proto.Message{} = message -> [%{id: id, message: message}]
+      {:ok, %BaileysEx.Protocol.Proto.Message{} = message} -> [%{id: id, message: message}]
+      _ -> []
+    end
+  end
+
+  defp retry_receipt_ids(attrs, node) do
+    list_ids =
+      node
+      |> BinaryNodeUtil.child("list")
+      |> BinaryNodeUtil.children("item")
+      |> Enum.map(& &1.attrs["id"])
+      |> Enum.reject(&is_nil/1)
+
+    [attrs["id"] | list_ids] |> Enum.reject(&is_nil/1)
+  end
+
+  defp prepare_retry_resend_session(
+         %State{} = state,
+         %Repository{} = repository,
+         %BinaryNode{attrs: attrs} = node
+       ) do
+    remote_jid = attrs["from"] || attrs["recipient"] || attrs["to"]
+    participant_jid = attrs["participant"] || remote_jid
+    retry_count = retry_node_count(node)
+    msg_id = attrs["id"]
+
+    {repository, injected_from_bundle?} =
+      maybe_inject_retry_bundle(repository, participant_jid, node)
+
+    repository =
+      if injected_from_bundle? do
+        repository
+      else
+        maybe_reset_mismatched_registration(repository, participant_jid, node)
+      end
+
+    repository =
+      maybe_handle_retry_base_key_collision(
+        state.store_ref,
+        repository,
+        participant_jid,
+        msg_id,
+        retry_count
+      )
+
+    if is_binary(remote_jid) and BaileysEx.Protocol.JID.group?(remote_jid) and
+         state.signal_store != nil do
+      _ = SignalStore.set(state.signal_store, %{:"sender-key-memory" => %{remote_jid => nil}})
+    end
+
+    {state, repository}
+  end
+
+  defp maybe_inject_retry_bundle(repository, participant_jid, node)
+       when is_binary(participant_jid) do
+    with {:ok, bundle} <- Session.extract_e2e_session_from_retry_receipt(node),
+         {:ok, next_repo} <-
+           Repository.inject_e2e_session(repository, %{jid: participant_jid, session: bundle}) do
+      {next_repo, true}
+    else
+      _ -> {repository, false}
+    end
+  end
+
+  defp maybe_inject_retry_bundle(repository, _participant_jid, _node), do: {repository, false}
+
+  defp maybe_reset_mismatched_registration(repository, participant_jid, node)
+       when is_binary(participant_jid) do
+    with {:ok, received_reg_id} <- extract_registration_id(node),
+         {:ok, %{registration_id: stored_reg_id}}
+         when stored_reg_id != 0 and stored_reg_id != received_reg_id <-
+           Repository.session_info(repository, participant_jid),
+         {:ok, next_repo} <- Repository.delete_session(repository, [participant_jid]) do
+      next_repo
+    else
+      _ -> repository
+    end
+  end
+
+  defp maybe_reset_mismatched_registration(repository, _participant_jid, _node), do: repository
+
+  defp extract_registration_id(node) do
+    case BinaryNodeUtil.child(node, "registration") do
+      %BinaryNode{content: {:binary, bytes}} when byte_size(bytes) == 4 ->
+        {:ok, :binary.decode_unsigned(bytes)}
+
+      %BinaryNode{content: bytes} when is_binary(bytes) and byte_size(bytes) == 4 ->
+        {:ok, :binary.decode_unsigned(bytes)}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp maybe_handle_retry_base_key_collision(
+         store_ref,
+         repository,
+         participant_jid,
+         msg_id,
+         retry_count
+       )
+       when is_binary(participant_jid) and is_binary(msg_id) and retry_count >= 2 do
+    with {:ok, session_id} <- Repository.jid_to_signal_protocol_address(participant_jid),
+         {:ok, %{base_key: base_key}} when is_binary(base_key) <-
+           Repository.session_info(repository, participant_jid) do
+      handle_base_key_collision_count(
+        store_ref,
+        repository,
+        participant_jid,
+        session_id,
+        msg_id,
+        base_key,
+        retry_count
+      )
+    else
+      _ -> repository
+    end
+  end
+
+  defp maybe_handle_retry_base_key_collision(
+         _store_ref,
+         repository,
+         _participant_jid,
+         _msg_id,
+         _retry_count
+       ),
+       do: repository
+
+  defp handle_base_key_collision_count(
+         store_ref,
+         repository,
+         _participant_jid,
+         session_id,
+         msg_id,
+         base_key,
+         2
+       ) do
+    :ok = Retry.save_base_key(store_ref, session_id, msg_id, base_key)
+    repository
+  end
+
+  defp handle_base_key_collision_count(
+         store_ref,
+         repository,
+         participant_jid,
+         session_id,
+         msg_id,
+         base_key,
+         _retry_count
+       ) do
+    repository =
+      if Retry.has_same_base_key?(store_ref, session_id, msg_id, base_key) do
+        case Repository.delete_session(repository, [participant_jid]) do
+          {:ok, next_repo} -> next_repo
+          {:error, _reason} -> repository
+        end
+      else
+        repository
+      end
+
+    :ok = Retry.delete_base_key(store_ref, session_id, msg_id)
+    repository
+  end
 
   defp resend_retry_message(
          %State{} = state,
@@ -1752,13 +1950,15 @@ defmodule BaileysEx.Connection.Coordinator do
        ) do
     with {:ok, jid} <- normalize_retry_jid(attrs["from"] || attrs["recipient"] || attrs["to"]),
          participant <- retry_participant(node),
+         resend_opts =
+           [message_id_fun: fn -> message_id end]
+           |> maybe_put_retry_target_opts(participant),
          {:ok, _result, %{signal_repository: %Repository{} = updated_repository}} <-
            Sender.send_proto(
              sender_context(%{state | signal_repository: repository}, repository),
              jid,
              message,
-             message_id_fun: fn -> message_id end,
-             participant: participant
+             resend_opts
            ) do
       %{state | signal_repository: updated_repository}
     else
@@ -1766,23 +1966,30 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp repository_for_retry(%State{signal_repository: %Repository{} = repository}, _fallback),
-    do: repository
+  defp maybe_put_retry_target_opts(opts, nil),
+    do: Keyword.put(opts, :use_user_devices_cache, false)
 
-  defp repository_for_retry(%State{}, %Repository{} = repository), do: repository
+  defp maybe_put_retry_target_opts(opts, participant),
+    do: Keyword.put(opts, :participant, participant)
 
-  defp retry_participant(%BinaryNode{attrs: %{"participant" => participant}} = node)
-       when is_binary(participant) do
-    count =
-      case BinaryNodeUtil.child(node, "retry") do
-        %BinaryNode{attrs: %{"count" => retry_count}} -> parse_retry_count(retry_count)
-        _ -> 1
-      end
+  defp retry_participant(%BinaryNode{attrs: attrs} = node) do
+    participant_jid = attrs["participant"] || attrs["from"]
 
-    %{jid: participant, count: count}
+    case is_binary(participant_jid) && BaileysEx.Protocol.JID.parse(participant_jid) do
+      %BaileysEx.JID{device: device} when is_integer(device) and device > 0 ->
+        %{jid: participant_jid, count: retry_node_count(node)}
+
+      _ ->
+        nil
+    end
   end
 
-  defp retry_participant(_node), do: nil
+  defp retry_node_count(%BinaryNode{} = node) do
+    case BinaryNodeUtil.child(node, "retry") do
+      %BinaryNode{attrs: %{"count" => retry_count}} -> parse_retry_count(retry_count)
+      _ -> 1
+    end
+  end
 
   defp parse_retry_count(count) when is_binary(count) do
     case Integer.parse(count) do

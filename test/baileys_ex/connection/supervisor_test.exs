@@ -4363,15 +4363,29 @@ defmodule BaileysEx.Connection.SupervisorTest do
     send(blocked_socket_pid, {:release_blocked, blocked_gate})
     assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
 
-    # 3. Reconnect must NOT skip initial sync because account_sync_counter remained 0
+    # 3. Reconnect WITHOUT history replay must immediately resume :critical_block instead of waiting
+    #    for the no-history watchdog to falsely increment account_sync_counter
     assert :ok =
              EventEmitter.emit(emitter_pid, :connection_update, %{
                received_pending_notifications: true
              })
 
-    refute_receive {:processed_events,
-                    %{connection_update: %{initial_sync_reason: :reconnection_existing_sync}}},
-                   80
+    assert_receive {:blocked_recovery_started, resume_socket_pid}, 1_000
+    # Park :critical_block again on generation 1 and release -> still incomplete, counter stays 0
+    send(coordinator_pid, {:app_state_collection_blocked, 1, :critical_block})
+    send(resume_socket_pid, {:release_blocked, blocked_gate})
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        sync_state: :online,
+                        initial_sync_complete: true,
+                        initial_sync_reason: :initial_sync_complete
+                      }
+                    }},
+                   1_000
+
+    assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
 
     # 4. server_sync notification launches a tracked task that is also cancelled on close
     notification = %BinaryNode{
@@ -4396,6 +4410,205 @@ defmodule BaileysEx.Connection.SupervisorTest do
     assert_receive {:DOWN, ^server_mon, :process, ^server_task_pid, _reason}, 1_000
     send(server_socket_pid, {:release_server, server_gate})
     assert Process.alive?(coordinator_pid)
+
+    # 5. Next reconnect WITHOUT history replay resumes :critical_block and advances counter on completion
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_receive {:blocked_recovery_started, final_resume_socket_pid}, 1_000
+    send(final_resume_socket_pid, {:release_blocked, blocked_gate})
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        sync_state: :online,
+                        initial_sync_complete: true,
+                        initial_sync_reason: :initial_sync_complete
+                      }
+                    }},
+                   1_000
+
+    assert_eventually(fn -> Store.get(store_ref, :creds, %{})[:account_sync_counter] == 1 end)
+
+    unsubscribe.()
+  end
+
+  test "abnormal Coordinator restart terminates parked blocked-recovery and server_sync workers under :rest_for_one" do
+    name = {:release_coordinator_restart_tasks_test, System.unique_integer([:positive])}
+    parent = self()
+    gate = make_ref()
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}} = node, _timeout ->
+        collections =
+          node
+          |> BinaryNodeUtil.child("sync")
+          |> BinaryNodeUtil.children("collection")
+          |> Enum.map(& &1.attrs["name"])
+
+        reply =
+          {:ok,
+           %BinaryNode{
+             tag: "iq",
+             attrs: %{"type" => "result"},
+             content: [
+               %BinaryNode{
+                 tag: "sync",
+                 attrs: %{},
+                 content:
+                   Enum.map(collections, fn col ->
+                     %BinaryNode{
+                       tag: "collection",
+                       attrs: %{"name" => col, "version" => "0", "has_more_patches" => "false"},
+                       content: []
+                     }
+                   end)
+               }
+             ]
+           }}
+
+        cond do
+          collections == ["critical_block"] ->
+            send(parent, {:parked_blocked_query, self()})
+
+            receive do
+              {:release_blocked, ^gate} -> reply
+            after
+              2_000 -> {:error, :timeout}
+            end
+
+          collections == ["regular_high"] ->
+            send(parent, {:parked_server_query, self()})
+
+            receive do
+              {:release_server, ^gate} -> reply
+            after
+              2_000 -> {:error, :timeout}
+            end
+
+          true ->
+            send(parent, {:parked_initial_query, self()})
+
+            receive do
+              {:release_initial, ^gate} -> reply
+            after
+              2_000 -> {:error, :timeout}
+            end
+        end
+
+      _node, _timeout ->
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: []}}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   fire_init_queries: false,
+                   mark_online_on_connect: false,
+                   reconnect_policy: :disabled
+                 ),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               test_pid: parent,
+               query_handler: query_handler,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    coordinator_pid = child_pid!(supervisor, Coordinator)
+    task_supervisor = child_pid!(supervisor, Task.Supervisor)
+    store_ref = Store.wrap(child_pid!(supervisor, Store))
+    unsubscribe = EventEmitter.process(emitter_pid, &send(parent, {:processed_events, &1}))
+
+    # Reach :online with :critical_block parked so pending work persists across Coordinator restart
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_eventually(fn -> EventEmitter.buffering?(emitter_pid) end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :messaging_history_set, %{
+               chats: [],
+               contacts: [],
+               messages: [],
+               sync_type: :INITIAL_BOOTSTRAP
+             })
+
+    assert_receive {:parked_initial_query, init_socket_pid}, 1_000
+    send(coordinator_pid, {:app_state_collection_blocked, 0, :critical_block})
+    send(init_socket_pid, {:release_initial, gate})
+
+    assert_receive {:processed_events,
+                    %{connection_update: %{sync_state: :online, initial_sync_complete: true}}},
+                   1_000
+
+    # 1. Park a blocked-recovery task under the surviving Task.Supervisor, then kill ONLY Coordinator
+    assert :ok = EventEmitter.emit(emitter_pid, :creds_update, %{my_app_state_key_id: "key-1"})
+    assert_receive {:parked_blocked_query, blocked_socket_pid}, 1_000
+    assert [blocked_task_pid] = Task.Supervisor.children(task_supervisor)
+    blocked_mon = Process.monitor(blocked_task_pid)
+
+    Process.exit(coordinator_pid, :kill)
+    assert_receive {:DOWN, ^blocked_mon, :process, ^blocked_task_pid, _reason}, 1_000
+    send(blocked_socket_pid, {:release_blocked, gate})
+    assert_eventually(fn -> Task.Supervisor.children(task_supervisor) == [] end)
+
+    # Wait for :rest_for_one to restart Coordinator; Store retained pending :critical_block
+    assert_eventually(fn ->
+      case child_pid!(supervisor, Coordinator) do
+        new_pid when is_pid(new_pid) and new_pid != coordinator_pid -> true
+        _ -> false
+      end
+    end)
+
+    restarted_coordinator = child_pid!(supervisor, Coordinator)
+    assert Store.get(store_ref, :creds, %{})[:account_sync_counter] in [nil, 0]
+
+    # 2. Park a server_sync task on the restarted Coordinator, then kill ONLY Coordinator again
+    server_notification = %BinaryNode{
+      tag: "notification",
+      attrs: %{"type" => "server_sync", "from" => "s.whatsapp.net"},
+      content: [%BinaryNode{tag: "collection", attrs: %{"name" => "regular_high"}, content: nil}]
+    }
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :socket_node, %{
+               node: server_notification,
+               state: :connected
+             })
+
+    assert_receive {:parked_server_query, server_socket_pid}, 1_000
+    assert [server_task_pid] = Task.Supervisor.children(task_supervisor)
+    server_mon = Process.monitor(server_task_pid)
+
+    Process.exit(restarted_coordinator, :kill)
+    assert_receive {:DOWN, ^server_mon, :process, ^server_task_pid, _reason}, 1_000
+    send(server_socket_pid, {:release_server, gate})
+    assert_eventually(fn -> Task.Supervisor.children(task_supervisor) == [] end)
+
+    assert_eventually(fn ->
+      case child_pid!(supervisor, Coordinator) do
+        third_pid when is_pid(third_pid) and third_pid != restarted_coordinator -> true
+        _ -> false
+      end
+    end)
+
+    # 3. Restarted Coordinator reconnects without history replay and resumes :critical_block cleanly
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    assert_receive {:parked_blocked_query, resumed_socket_pid}, 1_000
+    send(resumed_socket_pid, {:release_blocked, gate})
+    assert_eventually(fn -> Store.get(store_ref, :creds, %{})[:account_sync_counter] == 1 end)
 
     unsubscribe.()
   end

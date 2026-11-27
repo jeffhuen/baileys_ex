@@ -295,27 +295,40 @@ defmodule BaileysEx.Connection.EventBuffer do
   defp truthy_string?(_value), do: false
 
   defp merge_history_messages(buffer, history_cache, messages) do
-    {merged, next_cache} =
-      Enum.reduce(
-        messages,
-        {buffer.history_sets.messages, history_cache},
-        &merge_history_message(&2, &1)
-      )
-
-    {put_in(buffer.history_sets.messages, merged), next_cache}
+    Enum.reduce(messages, {buffer, history_cache}, &merge_history_message(&2, &1))
   end
 
-  defp merge_history_message({acc, cache}, message) do
+  defp merge_history_message({buffer, cache}, message) do
     key = message_key_id(message)
     cache_key = if is_nil(key), do: nil, else: {:msg, key}
 
-    if not keyed_has_key?(acc, key) and
-         (is_nil(cache_key) or not MapSet.member?(cache, cache_key)) do
-      {keyed_put(acc, key, message, fn old, _new -> old end), maybe_put_cache(cache, cache_key)}
-    else
-      {acc, cache}
+    cond do
+      tagged_message_upserts_has_key?(buffer, key) ->
+        updated_upserts =
+          keyed_put(buffer.message_upserts.items, key, message, fn existing, history_msg ->
+            maybe_fill_missing_timestamp(existing, history_msg)
+          end)
+
+        {put_in(buffer.message_upserts.items, updated_upserts), maybe_put_cache(cache, cache_key)}
+
+      not keyed_has_key?(buffer.history_sets.messages, key) and
+          (is_nil(cache_key) or not MapSet.member?(cache, cache_key)) ->
+        updated_history =
+          keyed_put(buffer.history_sets.messages, key, message, fn old, _new -> old end)
+
+        {put_in(buffer.history_sets.messages, updated_history), maybe_put_cache(cache, cache_key)}
+
+      true ->
+        {buffer, cache}
     end
   end
+
+  defp maybe_fill_missing_timestamp(%{message_timestamp: ts} = existing, _history_msg)
+       when not is_nil(ts),
+       do: existing
+
+  defp maybe_fill_missing_timestamp(existing, history_msg),
+    do: maybe_preserve_timestamp(existing, history_msg)
 
   defp maybe_put_cache(cache, nil), do: cache
   defp maybe_put_cache(cache, key), do: MapSet.put(cache, key)
@@ -627,15 +640,35 @@ defmodule BaileysEx.Connection.EventBuffer do
 
     buffer = %{buffer | message_updates: message_updates}
 
-    if history_has_message?(buffer, key) and not has_request_id?(meta) do
-      put_in(
-        buffer.history_sets.messages,
-        keyed_put(buffer.history_sets.messages, key, message, fn _old, new -> new end)
-      )
-    else
-      put_message_upsert(buffer, type, meta, key, message)
+    cond do
+      history_has_message?(buffer, key) and has_request_id?(meta) ->
+        buffer
+        |> delete_history_message(key)
+        |> put_message_upsert(type, meta, key, message)
+
+      history_has_message?(buffer, key) ->
+        put_in(
+          buffer.history_sets.messages,
+          keyed_put(buffer.history_sets.messages, key, message, fn _old, new -> new end)
+        )
+
+      true ->
+        put_message_upsert(buffer, type, meta, key, message)
     end
   end
+
+  defp delete_history_message(%EventBuffer{history_sets: %{messages: messages}} = buffer, key) do
+    put_in(buffer.history_sets.messages, keyed_delete(messages, key))
+  end
+
+  defp tagged_message_upserts_has_key?(
+         %EventBuffer{message_upserts: %{meta: meta, items: items}},
+         key
+       ) do
+    has_request_id?(meta) and keyed_has_key?(items, key)
+  end
+
+  defp tagged_message_upserts_has_key?(_buffer, _key), do: false
 
   defp has_request_id?(meta), do: not is_nil(Map.get(meta, :request_id))
 

@@ -1237,19 +1237,24 @@ defmodule BaileysEx.Connection.EventEmitterTest do
     assert fourth.contacts == [%{id: "c1@s.whatsapp.net", notify: "Alice Push"}]
   end
 
-  test "buffered PDO messages_upsert with request_id is not absorbed into buffered messaging_history_set" do
+  test "buffered PDO upsert stays canonical across history overlap, revoke/edit, boundary flush, and reverse order" do
     test_pid = self()
     {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000)
     _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
-    msg_key = %{remote_jid: "c1@s.whatsapp.net", id: "pdo-m1", from_me: false}
+    pdo_key = %{remote_jid: "c1@s.whatsapp.net", id: "pdo-m1", from_me: false}
+    other_hist_key = %{remote_jid: "c1@s.whatsapp.net", id: "hist-m2", from_me: false}
 
+    # 1. History -> PDO restore -> revoke before flush: single canonical copy in messages_upsert gets the revoke
     :ok = EventEmitter.buffer(emitter)
 
     :ok =
       EventEmitter.emit(emitter, :messaging_history_set, %{
         chats: [%{id: "c1@s.whatsapp.net"}],
         contacts: [],
-        messages: [%{key: msg_key, message_timestamp: 1_710_000_100}],
+        messages: [
+          %{key: pdo_key, message_timestamp: 1_710_000_100},
+          %{key: other_hist_key, message_timestamp: 1_710_000_101}
+        ],
         sync_type: :RECENT
       })
 
@@ -1257,26 +1262,138 @@ defmodule BaileysEx.Connection.EventEmitterTest do
       EventEmitter.emit(emitter, :messages_upsert, %{
         type: :notify,
         request_id: "pdo-req-42",
-        messages: [%{key: msg_key, message: %{conversation: "restored from phone"}}]
+        messages: [%{key: pdo_key, message: %{conversation: "restored from phone"}}]
       })
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_update, [
+        %{key: pdo_key, update: %{message: nil, message_stub_type: :REVOKE}}
+      ])
 
     assert EventEmitter.flush(emitter)
     assert_receive {:processed_events, events}, 1_000
 
     assert %{
-             messaging_history_set: %{messages: [%{key: ^msg_key}]},
+             messaging_history_set: %{messages: [%{key: ^other_hist_key}]},
              messages_upsert: %{
                type: :notify,
                request_id: "pdo-req-42",
                messages: [
                  %{
-                   key: ^msg_key,
-                   message: %{conversation: "restored from phone"},
+                   key: ^pdo_key,
+                   message: nil,
+                   message_stub_type: :REVOKE,
                    message_timestamp: 1_710_000_100
                  }
                ]
              }
            } = events
+
+    refute Map.has_key?(events, :messages_update)
+
+    # 2. History -> PDO restore -> boundary flush (new upsert with nil request_id) -> revoke emits standalone update
+    pdo_key_2 = %{remote_jid: "c1@s.whatsapp.net", id: "pdo-m2", from_me: false}
+    other_key_3 = %{remote_jid: "c1@s.whatsapp.net", id: "live-m3", from_me: false}
+
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "c1@s.whatsapp.net"}],
+        contacts: [],
+        messages: [%{key: pdo_key_2, message_timestamp: 1_710_000_200}],
+        sync_type: :RECENT
+      })
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        request_id: "pdo-req-99",
+        messages: [%{key: pdo_key_2, message: %{conversation: "restored before boundary"}}]
+      })
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        messages: [%{key: other_key_3, message: %{conversation: "live"}}]
+      })
+
+    assert_receive {:processed_events,
+                    %{
+                      messages_upsert: %{
+                        type: :notify,
+                        request_id: "pdo-req-99",
+                        messages: [
+                          %{
+                            key: ^pdo_key_2,
+                            message: %{conversation: "restored before boundary"},
+                            message_timestamp: 1_710_000_200
+                          }
+                        ]
+                      }
+                    }},
+                   1_000
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_update, [
+        %{key: pdo_key_2, update: %{message: nil, message_stub_type: :REVOKE}}
+      ])
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, boundary_events}, 1_000
+
+    assert %{
+             messaging_history_set: %{messages: []},
+             messages_upsert: %{type: :notify, messages: [%{key: ^other_key_3}]},
+             messages_update: [
+               %{key: ^pdo_key_2, update: %{message: nil, message_stub_type: :REVOKE}}
+             ]
+           } = boundary_events
+
+    # 3. Reverse order: PDO restore -> History -> edit folds edit into tagged upsert with no duplicate in history
+    pdo_key_3 = %{remote_jid: "c1@s.whatsapp.net", id: "pdo-m3", from_me: false}
+
+    :ok = EventEmitter.buffer(emitter)
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_upsert, %{
+        type: :notify,
+        request_id: "pdo-req-77",
+        messages: [%{key: pdo_key_3, message: %{conversation: "restored first"}}]
+      })
+
+    :ok =
+      EventEmitter.emit(emitter, :messaging_history_set, %{
+        chats: [%{id: "c1@s.whatsapp.net"}],
+        contacts: [],
+        messages: [%{key: pdo_key_3, message_timestamp: 1_710_000_300}],
+        sync_type: :RECENT
+      })
+
+    :ok =
+      EventEmitter.emit(emitter, :messages_update, [
+        %{key: pdo_key_3, update: %{message: %{conversation: "edited"}}}
+      ])
+
+    assert EventEmitter.flush(emitter)
+    assert_receive {:processed_events, reverse_events}, 1_000
+
+    assert %{
+             messaging_history_set: %{messages: []},
+             messages_upsert: %{
+               type: :notify,
+               request_id: "pdo-req-77",
+               messages: [
+                 %{
+                   key: ^pdo_key_3,
+                   message: %{conversation: "edited"},
+                   message_timestamp: 1_710_000_300
+                 }
+               ]
+             }
+           } = reverse_events
+
+    refute Map.has_key?(reverse_events, :messages_update)
   end
 
   defp child_pid!(supervisor, child_id) do

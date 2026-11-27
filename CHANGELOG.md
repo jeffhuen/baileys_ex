@@ -5,8 +5,8 @@
 ## [0.1.0] - 2026-11-27
 
 Version `0.1.0` is the first stable release after the `0.1.0-alpha.*` series.
-It updates dependencies for Erlang/OTP 29, removes the unused `protox`
-dependency, and fixes companion-device protocol bugs.
+It updates dependencies for Erlang/OTP 29, removes the unused dependency,
+and fixes companion-device protocol bugs.
 
 ### Changed
 

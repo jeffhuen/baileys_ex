@@ -350,11 +350,73 @@ defmodule BaileysEx.Message.SenderTest do
           %BinaryNode{tag: "to", content: [%BinaryNode{tag: "enc"} = enc]} <- tos,
           do: enc
 
-    assert length(enc_nodes) == 2
-    assert Enum.all?(enc_nodes, &(&1.attrs["mediatype"] == "image"))
+    assert [
+             %BinaryNode{attrs: %{"mediatype" => "image"}},
+             %BinaryNode{attrs: %{"mediatype" => "image"}}
+           ] = enc_nodes
+  end
+
+  test "send/4 attaches mediatype to group skmsg and sender-key participant enc nodes" do
+    parent = self()
+    group_jid = %JID{user: "120363001234567890", server: "g.us"}
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    repo =
+      repo
+      |> inject_session!("15551234567:0@s.whatsapp.net", session)
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end,
+      device_lookup_fun: fn ctx, _jids, _opts ->
+        {:ok, ctx, ["15551234567:0@s.whatsapp.net"]}
+      end
+    }
+
+    doc_message = %Message{
+      document_message: %Message.DocumentMessage{
+        url: "https://mmg.whatsapp.net/mms/document/abc",
+        direct_path: "/mms/document/abc",
+        mimetype: "application/pdf",
+        file_name: "report.pdf"
+      }
+    }
+
+    assert {:ok, _, _} =
+             Sender.send_proto(context, group_jid, doc_message,
+               group_participants: ["15551234567@s.whatsapp.net"],
+               message_id_fun: fn _me_id -> "3EB0GROUPMEDIA" end
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{"id" => "3EB0GROUPMEDIA", "type" => "media"},
+                      content: content
+                    }}
+
+    assert %BinaryNode{
+             tag: "enc",
+             attrs: %{"type" => "skmsg", "v" => "2", "mediatype" => "document"}
+           } = Enum.find(content, &(&1.tag == "enc"))
+
+    participant_encs =
+      for %BinaryNode{tag: "participants", content: tos} <- content,
+          %BinaryNode{tag: "to", content: [%BinaryNode{tag: "enc"} = enc]} <- tos,
+          do: enc
+
+    assert [%BinaryNode{attrs: %{"mediatype" => "document"}}] = participant_encs
   end
 
   test "media_type/1 mirrors Baileys getMediaType" do
+    assert Sender.media_type(%Message{image_message: %Message.ImageMessage{}}) == "image"
     assert Sender.media_type(%Message{document_message: %Message.DocumentMessage{}}) == "document"
     assert Sender.media_type(%Message{audio_message: %Message.AudioMessage{ptt: true}}) == "ptt"
 
@@ -363,6 +425,21 @@ defmodule BaileysEx.Message.SenderTest do
 
     assert Sender.media_type(%Message{video_message: %Message.VideoMessage{gif_playback: true}}) ==
              "gif"
+
+    assert Sender.media_type(%Message{video_message: %Message.VideoMessage{gif_playback: false}}) ==
+             "video"
+
+    assert Sender.media_type(%Message{sticker_message: %Message.StickerMessage{}}) == "sticker"
+    assert Sender.media_type(%Message{contact_message: %Message.ContactMessage{}}) == "vcard"
+
+    assert Sender.media_type(%Message{contacts_array_message: %Message.ContactsArrayMessage{}}) ==
+             "contact_array"
+
+    assert Sender.media_type(%Message{live_location_message: %Message.LiveLocationMessage{}}) ==
+             "livelocation"
+
+    assert Sender.media_type(%Message{group_invite_message: %Message.GroupInviteMessage{}}) ==
+             "url"
 
     assert Sender.media_type(%Message{conversation: "hi"}) == ""
   end
@@ -1328,6 +1405,121 @@ defmodule BaileysEx.Message.SenderTest do
                  message_id_fun: fn _me_id -> "3EB0NOPTCPNT" end
                )
     end
+  end
+
+  test "send_proto/4 normalizes wrapped messages for stanza type, sets decrypt-fail on reactions/pins, and preserves mediatype on retry resends" do
+    jid = %JID{user: "15551234567", server: "s.whatsapp.net"}
+    parent = self()
+
+    {repo, store} = MessageSignalHelpers.new_repo()
+    session = MessageSignalHelpers.session_fixture()
+
+    repo =
+      repo
+      |> inject_session!("15551234567:0@s.whatsapp.net", session)
+      |> inject_session!("15551234567:2@s.whatsapp.net", session)
+
+    assert :ok =
+             Store.set(store, %{
+               :"device-list" => %{"15551234567" => ["0"], "15550001111" => ["1"]}
+             })
+
+    context = %{
+      signal_repository: repo,
+      signal_store: store,
+      me_id: "15550001111:1@s.whatsapp.net",
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    ephemeral_text = %Message{
+      ephemeral_message: %Message.FutureProofMessage{
+        message: %Message{
+          extended_text_message: %Message.ExtendedTextMessage{text: "vanishing"}
+        }
+      }
+    }
+
+    assert {:ok, _sent, context} =
+             Sender.send_proto(context, jid, ephemeral_text,
+               message_id_fun: fn _me_id -> "3EB0EPHEMTEXT" end
+             )
+
+    assert_receive {:relay_node, %BinaryNode{attrs: %{"id" => "3EB0EPHEMTEXT", "type" => "text"}}}
+
+    view_once_image = %Message{
+      view_once_message: %Message.FutureProofMessage{
+        message: %Message{
+          image_message: %Message.ImageMessage{url: "https://mmg.whatsapp.net/img"}
+        }
+      }
+    }
+
+    assert {:ok, _sent, context} =
+             Sender.send_proto(context, jid, view_once_image,
+               message_id_fun: fn _me_id -> "3EB0VIEWONCE" end
+             )
+
+    assert_receive {:relay_node, %BinaryNode{attrs: %{"id" => "3EB0VIEWONCE", "type" => "media"}}}
+
+    reaction = %Message{
+      reaction_message: %Message.ReactionMessage{text: "👍"}
+    }
+
+    assert {:ok, _sent, context} =
+             Sender.send_proto(context, jid, reaction,
+               message_id_fun: fn _me_id -> "3EB0REACTFAIL" end
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      attrs: %{"id" => "3EB0REACTFAIL", "type" => "reaction"},
+                      content: reaction_content
+                    }}
+
+    assert [%BinaryNode{tag: "enc", attrs: %{"decrypt-fail" => "hide"}}] =
+             for(
+               %BinaryNode{tag: "participants", content: tos} <- reaction_content,
+               %BinaryNode{tag: "to", content: [enc]} <- tos,
+               do: enc
+             )
+
+    doc_message = %Message{
+      document_message: %Message.DocumentMessage{
+        url: "https://mmg.whatsapp.net/mms/document/abc",
+        direct_path: "/mms/document/abc",
+        mimetype: "application/pdf",
+        file_name: "report.pdf"
+      }
+    }
+
+    assert {:ok, _sent, _context} =
+             Sender.send_proto(context, jid, doc_message,
+               message_id_fun: fn _me_id -> "3EB0RETRYDOC" end,
+               participant: %{jid: "15551234567:2@s.whatsapp.net", count: 2}
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      attrs: %{
+                        "id" => "3EB0RETRYDOC",
+                        "to" => "15551234567:2@s.whatsapp.net",
+                        "type" => "media",
+                        "device_fanout" => "false"
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "enc",
+                          attrs: %{
+                            "v" => "2",
+                            "count" => "2",
+                            "mediatype" => "document"
+                          }
+                        }
+                      ]
+                    }}
   end
 
   defp inject_session!(repo, jid, session) do

@@ -734,7 +734,7 @@ defmodule BaileysEx.Feature.AppState do
           maybe_remove_collection(updated_state, name, collection.has_more_patches)
         else
           :error ->
-            acc
+            handle_missing_collection(acc, name)
 
           {:error, reason} ->
             handle_collection_failure(acc, context.state_store, name, reason)
@@ -850,6 +850,23 @@ defmodule BaileysEx.Feature.AppState do
 
   defp maybe_remove_collection(loop_state, name, false) do
     %{loop_state | remaining: List.delete(loop_state.remaining, name)}
+  end
+
+  defp handle_missing_collection(loop_state, name) do
+    attempts = Map.get(loop_state.attempts_map, name, 0) + 1
+
+    remaining =
+      if attempts >= @max_sync_attempts do
+        List.delete(loop_state.remaining, name)
+      else
+        loop_state.remaining
+      end
+
+    %{
+      loop_state
+      | attempts_map: Map.put(loop_state.attempts_map, name, attempts),
+        remaining: remaining
+    }
   end
 
   defp handle_collection_failure(loop_state, _state_store, name, reason) do

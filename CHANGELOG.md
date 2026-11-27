@@ -34,6 +34,12 @@
   matching Baileys `event-buffer.ts` by
   [@Rodericuss](https://github.com/Rodericuss)
   [(#20)](https://github.com/jeffhuen/baileys_ex/pull/20).
+- Direct, group, and retry-resend media sends now include the `mediatype`
+  attribute on `enc` nodes, normalize wrapped messages (`ephemeral`,
+  `viewOnce`) for stanza type classification, and set `decrypt-fail="hide"` on
+  reaction and pin-in-chat `enc` nodes, matching Baileys `messages-send.ts` by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#21)](https://github.com/jeffhuen/baileys_ex/pull/21).
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

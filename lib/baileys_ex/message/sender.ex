@@ -10,6 +10,7 @@ defmodule BaileysEx.Message.Sender do
   alias BaileysEx.JID
   alias BaileysEx.Media.MessageBuilder, as: MediaMessageBuilder
   alias BaileysEx.Message.Builder
+  alias BaileysEx.Message.Parser
   alias BaileysEx.Message.Reporting
   alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Wire
@@ -278,10 +279,11 @@ defmodule BaileysEx.Message.Sender do
     with {:ok, context} <- maybe_assert_sessions(context, recipient_devices ++ own_devices),
          dsm = wrap_device_sent_message(message, recipient_jid),
          recipient_message = if(same_user?(recipient_jid, me_id), do: dsm, else: message),
+         enc_attrs = extra_enc_attrs(message),
          {:ok, repo, me_nodes, me_include_identity?} <-
-           create_participant_nodes(context.signal_repository, own_devices, dsm),
+           create_participant_nodes(context.signal_repository, own_devices, dsm, enc_attrs),
          {:ok, repo, other_nodes, other_include_identity?} <-
-           create_participant_nodes(repo, recipient_devices, recipient_message) do
+           create_participant_nodes(repo, recipient_devices, recipient_message, enc_attrs) do
       children =
         []
         |> maybe_append_participants(me_nodes ++ other_nodes)
@@ -326,13 +328,16 @@ defmodule BaileysEx.Message.Sender do
         }
       }
 
+      enc_attrs = extra_enc_attrs(message)
+
       with {:ok, context} <-
              maybe_assert_sessions(%{context | signal_repository: repo}, new_devices),
            {:ok, repo, participant_nodes, include_device_identity?} <-
              create_participant_nodes(
                context.signal_repository,
                new_devices,
-               sender_key_message
+               sender_key_message,
+               enc_attrs
              ) do
         :ok =
           Store.set(store, %{
@@ -348,7 +353,7 @@ defmodule BaileysEx.Message.Sender do
           [
             %BinaryNode{
               tag: "enc",
-              attrs: %{"type" => "skmsg", "v" => "2"},
+              attrs: Map.merge(%{"type" => "skmsg", "v" => "2"}, enc_attrs),
               content: {:binary, ciphertext}
             }
           ]
@@ -367,7 +372,7 @@ defmodule BaileysEx.Message.Sender do
          %Repository{} = repo,
          device_jids,
          %Message{} = message,
-         enc_attrs \\ %{}
+         enc_attrs
        ) do
     bytes = Wire.encode(message)
 
@@ -442,12 +447,12 @@ defmodule BaileysEx.Message.Sender do
   defp log_relay_node(%BinaryNode{} = node) do
     require Logger
 
-    children_summary = summarize_node_children(node.content)
+    Logger.debug(fn ->
+      children_summary = summarize_node_children(node.content)
 
-    Logger.warning(
       "[Sender] relay_node: tag=#{node.tag} attrs=#{inspect(node.attrs)} " <>
         "children=#{inspect(children_summary)}"
-    )
+    end)
 
     :ok
   end
@@ -761,11 +766,15 @@ defmodule BaileysEx.Message.Sender do
       [
         %BinaryNode{
           tag: "enc",
-          attrs: %{
-            "v" => "2",
-            "type" => Atom.to_string(type),
-            "count" => Integer.to_string(count)
-          },
+          attrs:
+            Map.merge(
+              %{
+                "v" => "2",
+                "type" => Atom.to_string(type),
+                "count" => Integer.to_string(count)
+              },
+              extra_enc_attrs(opts[:message])
+            ),
           content: {:binary, ciphertext}
         }
       ]
@@ -825,13 +834,93 @@ defmodule BaileysEx.Message.Sender do
 
   defp send_result_metadata(_result), do: %{}
 
-  defp stanza_type(%Message{reaction_message: %Message.ReactionMessage{}}), do: "reaction"
-  defp stanza_type(%Message{protocol_message: %Message.ProtocolMessage{}}), do: "protocol"
-  defp stanza_type(%Message{event_message: %Message.EventMessage{}}), do: "event"
-  defp stanza_type(%Message{poll_creation_message: %Message.PollCreationMessage{}}), do: "poll"
-  defp stanza_type(%Message{poll_creation_message_v2: %Message.PollCreationMessage{}}), do: "poll"
-  defp stanza_type(%Message{poll_creation_message_v3: %Message.PollCreationMessage{}}), do: "poll"
-  defp stanza_type(%Message{extended_text_message: %Message.ExtendedTextMessage{}}), do: "text"
-  defp stanza_type(%Message{conversation: text}) when is_binary(text), do: "text"
-  defp stanza_type(_message), do: "media"
+  # Ports `getMediaType` from Baileys' messages-send.ts: media messages carry a `mediatype`
+  # attribute on every `enc` node, which recipient clients rely on to display them.
+  @media_types [
+    image_message: "image",
+    video_message: "video",
+    audio_message: "audio",
+    contact_message: "vcard",
+    document_message: "document",
+    contacts_array_message: "contact_array",
+    live_location_message: "livelocation",
+    sticker_message: "sticker",
+    list_message: "list",
+    list_response_message: "list_response",
+    buttons_response_message: "buttons_response",
+    order_message: "order",
+    product_message: "product",
+    interactive_response_message: "native_flow_response",
+    group_invite_message: "url"
+  ]
+
+  @doc false
+  @spec media_type(proto_message()) :: String.t()
+  def media_type(%Message{} = message) do
+    Enum.find_value(@media_types, "", fn {field, type} ->
+      case Map.get(message, field) do
+        nil -> nil
+        %{gif_playback: true} when field == :video_message -> "gif"
+        %{ptt: true} when field == :audio_message -> "ptt"
+        _ -> type
+      end
+    end)
+  end
+
+  defp extra_enc_attrs(%Message{} = message) do
+    normalized = Parser.normalize_content(message)
+
+    %{}
+    |> maybe_put_attr("mediatype", non_empty_string(media_type(message)))
+    |> maybe_put_attr("decrypt-fail", decrypt_fail_attr(normalized))
+  end
+
+  defp extra_enc_attrs(_message), do: %{}
+
+  defp non_empty_string(""), do: nil
+  defp non_empty_string(value) when is_binary(value), do: value
+
+  defp decrypt_fail_attr(%Message{pin_in_chat_message: %Message.PinInChatMessage{}}), do: "hide"
+  defp decrypt_fail_attr(%Message{reaction_message: %Message.ReactionMessage{}}), do: "hide"
+  defp decrypt_fail_attr(_message), do: nil
+
+  defp stanza_type(%Message{} = message) do
+    message
+    |> Parser.normalize_content()
+    |> stanza_type_for_content()
+  end
+
+  defp stanza_type(_message), do: "text"
+
+  defp stanza_type_for_content(%Message{reaction_message: %Message.ReactionMessage{}}),
+    do: "reaction"
+
+  defp stanza_type_for_content(%Message{enc_reaction_message: %Message.EncReactionMessage{}}),
+    do: "reaction"
+
+  defp stanza_type_for_content(%Message{protocol_message: %Message.ProtocolMessage{}}),
+    do: "protocol"
+
+  defp stanza_type_for_content(%Message{event_message: %Message.EventMessage{}}),
+    do: "event"
+
+  defp stanza_type_for_content(%Message{poll_creation_message: %Message.PollCreationMessage{}}),
+    do: "poll"
+
+  defp stanza_type_for_content(%Message{
+         poll_creation_message_v2: %Message.PollCreationMessage{}
+       }),
+       do: "poll"
+
+  defp stanza_type_for_content(%Message{
+         poll_creation_message_v3: %Message.PollCreationMessage{}
+       }),
+       do: "poll"
+
+  defp stanza_type_for_content(%Message{poll_update_message: %Message.PollUpdateMessage{}}),
+    do: "poll"
+
+  defp stanza_type_for_content(%Message{} = normalized) do
+    if media_type(normalized) != "", do: "media", else: "text"
+  end
 end

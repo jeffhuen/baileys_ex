@@ -668,6 +668,28 @@ defmodule BaileysEx.Media.DownloadTest do
 
     assert byte_size(capped_body) == 65_536
     assert :binary.referenced_byte_size(capped_body) == 65_536
+
+    # Pre-sliced exact-cap and under-cap bodies must also detach from oversized backing binaries
+    for slice_size <- [65_536, 1_024] do
+      sliced = binary_part(oversized_error, 0, slice_size)
+      assert :binary.referenced_byte_size(sliced) == 5_000_000
+
+      Process.put(:baileys_ex_buffered_adapter_fun, fn req ->
+        {req, Req.Response.new(status: 410, body: sliced)}
+      end)
+
+      assert {:error, {:http_error, 410, detached_body}} =
+               Download.download(
+                 %Message.ImageMessage{
+                   media_key: media_key,
+                   url: "https://mmg.whatsapp.net/buffered-sliced"
+                 },
+                 req_options: [adapter: BufferedAdapter, retry: false]
+               )
+
+      assert byte_size(detached_body) == slice_size
+      assert :binary.referenced_byte_size(detached_body) == slice_size
+    end
   end
 
   test "custom request_fun returns error tuple on mid-stream 410 close and cancels bounded async once" do

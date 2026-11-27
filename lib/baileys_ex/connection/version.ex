@@ -70,7 +70,7 @@ defmodule BaileysEx.Connection.Version do
   defp default_fetch(url, opts) do
     req_options = Keyword.get(opts, :req_options, [])
 
-    with :ok <- validate_request_url(url, req_options) do
+    with {:ok, normalized_url, resolved_req_options} <- resolve_request_url(url, req_options) do
       default_headers =
         opts
         |> Keyword.get(:headers, [])
@@ -79,14 +79,14 @@ defmodule BaileysEx.Connection.Version do
           {key, value} -> {to_string(key), to_string(value)}
         end)
 
-      headers = HTTP.merge_headers(req_options[:headers], default_headers)
+      headers = HTTP.merge_headers(resolved_req_options[:headers], default_headers)
 
       request_opts =
-        req_options
+        resolved_req_options
         |> Keyword.drop([:headers, :url, :into, :decode_body, :compressed, :method])
         |> Keyword.merge(
           method: :get,
-          url: url,
+          url: normalized_url,
           headers: headers,
           raw: true,
           compressed: false,
@@ -107,22 +107,50 @@ defmodule BaileysEx.Connection.Version do
     end
   end
 
-  defp validate_request_url(url, req_options) when is_binary(url) do
-    case URI.parse(url) do
-      %URI{scheme: nil} ->
-        validate_base_url(Keyword.get(req_options, :base_url, Req.default_options()[:base_url]))
-
-      %URI{} = uri ->
-        validate_http_uri(uri)
+  defp resolve_request_url(url, req_options) do
+    with {:ok, normalized_url} <- normalize_url(url) do
+      resolve_parsed_url(URI.parse(normalized_url), normalized_url, req_options)
     end
   end
 
-  defp validate_request_url(%URI{scheme: nil}, req_options) do
-    validate_base_url(Keyword.get(req_options, :base_url, Req.default_options()[:base_url]))
+  defp resolve_parsed_url(%URI{scheme: nil}, normalized_url, req_options) do
+    resolve_base_url(req_options, normalized_url)
   end
 
-  defp validate_request_url(%URI{} = uri, _req_options), do: validate_http_uri(uri)
-  defp validate_request_url(_url, _req_options), do: {:error, :invalid_url}
+  defp resolve_parsed_url(%URI{} = uri, normalized_url, req_options) do
+    with :ok <- validate_http_uri(uri), do: {:ok, normalized_url, req_options}
+  end
+
+  defp normalize_url(url) when is_binary(url), do: {:ok, url}
+  defp normalize_url(%URI{} = uri), do: {:ok, URI.to_string(uri)}
+
+  defp normalize_url(url) when is_list(url) do
+    {:ok, IO.chardata_to_string(url)}
+  rescue
+    UnicodeConversionError -> {:error, :invalid_url}
+    ArgumentError -> {:error, :invalid_url}
+  end
+
+  defp normalize_url(_url), do: {:error, :invalid_url}
+
+  defp resolve_base_url(req_options, normalized_url) do
+    raw_base = Keyword.get(req_options, :base_url, Req.default_options()[:base_url])
+
+    with {:ok, resolved_base} <- evaluate_base_url(raw_base),
+         :ok <- validate_base_url(resolved_base) do
+      {:ok, normalized_url, Keyword.put(req_options, :base_url, resolved_base)}
+    end
+  end
+
+  defp evaluate_base_url(base) when is_binary(base) or is_struct(base, URI), do: {:ok, base}
+  defp evaluate_base_url(fun) when is_function(fun, 0), do: {:ok, fun.()}
+
+  defp evaluate_base_url({mod, fun, args})
+       when is_atom(mod) and is_atom(fun) and is_list(args) do
+    {:ok, apply(mod, fun, args)}
+  end
+
+  defp evaluate_base_url(_other), do: {:error, :invalid_url}
 
   defp validate_base_url(base_url) when is_binary(base_url) and byte_size(base_url) > 0 do
     validate_http_uri(URI.parse(base_url))

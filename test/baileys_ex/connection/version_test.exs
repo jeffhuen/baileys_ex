@@ -139,6 +139,40 @@ defmodule BaileysEx.Connection.VersionTest do
              )
 
     assert_receive {:version_http_request, "/baileys", _headers}
+
+    # Charlist absolute URLs and callable (0-arity fun and MFA) base_url values work too
+    assert %{version: [2, 3000, 999_888_777], is_latest: true} =
+             Version.fetch_latest_baileys_version(
+               url: String.to_charlist("#{server.url}/baileys"),
+               req_options: [retry: false]
+             )
+
+    assert_receive {:version_http_request, "/baileys", _headers}
+
+    {:ok, base_url_calls} = Agent.start_link(fn -> 0 end)
+
+    assert %{version: [2, 3000, 999_888_777], is_latest: true} =
+             Version.fetch_latest_baileys_version(
+               url: "/baileys",
+               req_options: [
+                 base_url: fn ->
+                   Agent.update(base_url_calls, &(&1 + 1))
+                   server.url
+                 end,
+                 retry: false
+               ]
+             )
+
+    assert Agent.get(base_url_calls, & &1) == 1
+    assert_receive {:version_http_request, "/baileys", _headers}
+
+    assert %{version: [2, 3000, 999_888_777], is_latest: true} =
+             Version.fetch_latest_baileys_version(
+               url: "/baileys",
+               req_options: [base_url: {Function, :identity, [server.url]}, retry: false]
+             )
+
+    assert_receive {:version_http_request, "/baileys", _headers}
   end
 
   test "default_fetch returns the fallback version map on malformed or relative URLs" do

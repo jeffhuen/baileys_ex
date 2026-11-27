@@ -368,7 +368,17 @@ defmodule BaileysEx.Media.Download do
   defp truncate_error_body(body) when is_binary(body) and byte_size(body) > @max_error_body_bytes,
     do: :binary.copy(binary_part(body, 0, @max_error_body_bytes))
 
-  defp truncate_error_body(body), do: body
+  defp truncate_error_body(body), do: detach_binary(body)
+
+  defp detach_binary(binary) when is_binary(binary) do
+    if :binary.referenced_byte_size(binary) > byte_size(binary) do
+      :binary.copy(binary)
+    else
+      binary
+    end
+  end
+
+  defp detach_binary(other), do: other
 
   defp call_req_stream(req_module, req, initial_acc, stream_fun) do
     req_module.stream(req, initial_acc, stream_fun, [])
@@ -388,7 +398,7 @@ defmodule BaileysEx.Media.Download do
       byte_size(data) <= remaining ->
         %{
           stream_acc
-          | error_chunks: [data | stream_acc.error_chunks],
+          | error_chunks: [detach_binary(data) | stream_acc.error_chunks],
             error_bytes: stream_acc.error_bytes + byte_size(data)
         }
 
@@ -520,10 +530,10 @@ defmodule BaileysEx.Media.Download do
         {:halt, {chunks, @max_error_body_bytes}}
 
       byte_size(chunk) < remaining ->
-        {:cont, {[chunk | chunks], size + byte_size(chunk)}}
+        {:cont, {[detach_binary(chunk) | chunks], size + byte_size(chunk)}}
 
       byte_size(chunk) == remaining ->
-        {:halt, {[chunk | chunks], @max_error_body_bytes}}
+        {:halt, {[detach_binary(chunk) | chunks], @max_error_body_bytes}}
 
       true ->
         snippet = :binary.copy(binary_part(chunk, 0, remaining))

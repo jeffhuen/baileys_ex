@@ -88,7 +88,7 @@ defmodule BaileysEx.Connection.Coordinator do
       :resync_app_state_fun,
       :reconnect_timer,
       :initial_sync_timer,
-      :app_state_sync_ref,
+      :app_state_sync,
       :send_task,
       :send_from,
       :send_operation,
@@ -364,17 +364,13 @@ defmodule BaileysEx.Connection.Coordinator do
     {:noreply, finish_send(state)}
   end
 
-  def handle_info({:EXIT, _pid, _reason}, %State{} = state), do: {:noreply, state}
-
-  def handle_info({task_ref, _result}, %State{} = state) when is_reference(task_ref),
-    do: {:noreply, state}
-
   def handle_info(:reconnect_socket, %State{} = state) do
     {:noreply, connect_socket(%{state | reconnect_timer: nil})}
   end
 
   def handle_info(:initial_sync_timeout, %State{sync_state: :awaiting_initial_sync} = state) do
     Logger.debug("[SyncDiag] initial sync timeout fired, forcing :online")
+    increment_account_sync_counter(state)
 
     {:noreply,
      state
@@ -386,14 +382,13 @@ defmodule BaileysEx.Connection.Coordinator do
     {:noreply, %{state | initial_sync_timer: nil}}
   end
 
+  def handle_info(:complete_initial_sync, %State{app_state_sync: %{ref: _}} = state) do
+    {:noreply, state}
+  end
+
   def handle_info(:complete_initial_sync, %State{sync_state: :syncing} = state) do
     Logger.debug("[SyncDiag] completing initial sync, transitioning to :online")
     {:noreply, complete_initial_sync_online(state, :initial_sync_complete)}
-  end
-
-  def handle_info(:complete_initial_sync, %State{app_state_sync_ref: ref} = state)
-      when not is_nil(ref) do
-    {:noreply, state}
   end
 
   def handle_info(:complete_initial_sync, %State{} = state) do
@@ -443,17 +438,17 @@ defmodule BaileysEx.Connection.Coordinator do
 
   def handle_info(
         {ref, result},
-        %State{app_state_sync_ref: ref} = state
+        %State{app_state_sync: %{ref: ref, resync_blocked?: resync_blocked?}} = state
       ) do
     Process.demonitor(ref, [:flush])
-    {:noreply, complete_app_state_sync(state, result)}
+    {:noreply, complete_app_state_sync(state, result, resync_blocked?)}
   end
 
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
-        %State{app_state_sync_ref: ref} = state
+        %State{app_state_sync: %{ref: ref, resync_blocked?: resync_blocked?}} = state
       ) do
-    {:noreply, complete_app_state_sync(state, {:error, {:task_exit, reason}})}
+    {:noreply, complete_app_state_sync(state, {:error, {:task_exit, reason}}, resync_blocked?)}
   end
 
   def handle_info({:app_state_collection_blocked, name}, %State{} = state)
@@ -461,6 +456,11 @@ defmodule BaileysEx.Connection.Coordinator do
     blocked = Map.put(blocked_app_state_collections(state), name, true)
     {:noreply, %{state | blocked_app_state_collections: blocked}}
   end
+
+  def handle_info({:EXIT, _pid, _reason}, %State{} = state), do: {:noreply, state}
+
+  def handle_info({task_ref, _result}, %State{} = state) when is_reference(task_ref),
+    do: {:noreply, state}
 
   @impl true
   def terminate(_reason, %State{unsubscribe: unsubscribe}) when is_function(unsubscribe, 0) do
@@ -470,24 +470,29 @@ defmodule BaileysEx.Connection.Coordinator do
 
   def terminate(_reason, _state), do: :ok
 
-  defp complete_app_state_sync(%State{} = state, result) do
-    state = %{state | app_state_sync_ref: nil}
+  defp complete_app_state_sync(%State{} = state, result, resync_blocked?) do
+    blocked = blocked_app_state_collections(state)
+    state = %{state | app_state_sync: nil}
 
-    case result do
-      :ok ->
-        Logger.debug(
-          "[AppStateDiag] initial app state sync complete " <>
-            "store_name=#{inspect(AuthState.me_name(%{me: current_me(state)}))}"
-        )
+    if resync_blocked? and map_size(blocked) > 0 do
+      launch_initial_app_state_sync(state, Map.keys(blocked))
+    else
+      case result do
+        :ok ->
+          Logger.debug(
+            "[AppStateDiag] initial app state sync complete " <>
+              "store_name=#{inspect(AuthState.me_name(%{me: current_me(state)}))}"
+          )
 
-        increment_account_sync_counter(state)
+          increment_account_sync_counter(state)
 
-      {:error, reason} ->
-        Logger.warning("initial app state sync failed: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("initial app state sync failed: #{inspect(reason)}")
+      end
+
+      _ = Process.send_after(self(), :complete_initial_sync, 25)
+      state
     end
-
-    _ = Process.send_after(self(), :complete_initial_sync, 25)
-    state
   end
 
   defp enqueue_send(%State{} = state, from, operation) do
@@ -949,14 +954,26 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp handle_connection_update(
          %State{} = state,
-         %{connection_update: %{connection: :close, last_disconnect: last_disconnect}}
+         %{connection_update: %{connection: :close} = update}
        ) do
-    reason = disconnect_reason(last_disconnect)
+    state =
+      state
+      |> cancel_initial_sync_timer()
+      |> Map.put(:sync_state, :connecting)
+      |> Map.put(:app_state_sync, nil)
 
-    if should_schedule_reconnect?(state.config, reason, state.reconnect_attempts + 1) do
-      schedule_reconnect(state, reason)
-    else
-      cancel_reconnect(state)
+    case Map.fetch(update, :last_disconnect) do
+      {:ok, last_disconnect} ->
+        reason = disconnect_reason(last_disconnect)
+
+        if should_schedule_reconnect?(state.config, reason, state.reconnect_attempts + 1) do
+          schedule_reconnect(state, reason)
+        else
+          cancel_reconnect(state)
+        end
+
+      :error ->
+        state
     end
   end
 
@@ -966,33 +983,37 @@ defmodule BaileysEx.Connection.Coordinator do
        ) do
     :ok = EventEmitter.buffer(state.event_emitter)
     will_sync_history = should_sync_history_message?(state.config, %{sync_type: :RECENT})
+    account_sync_counter = current_account_sync_counter(state)
 
     Logger.debug(
       "[SyncDiag] received_pending_notifications=true sync_state=:connecting " <>
-        "will_sync_history=#{inspect(will_sync_history)}"
+        "will_sync_history=#{inspect(will_sync_history)} " <>
+        "account_sync_counter=#{inspect(account_sync_counter)}"
     )
 
-    if will_sync_history do
-      timer =
-        Process.send_after(self(), :initial_sync_timeout, state.config.initial_sync_timeout_ms)
+    cond do
+      not will_sync_history ->
+        state
+        |> cancel_initial_sync_timer()
+        |> Map.put(:initial_sync_timer, nil)
+        |> complete_initial_sync_online(:history_sync_disabled)
 
-      %{
-        cancel_initial_sync_timer(state)
-        | initial_sync_timer: timer,
-          sync_state: :awaiting_initial_sync
-      }
-    else
-      state
-      |> cancel_initial_sync_timer()
-      |> Map.put(:initial_sync_timer, nil)
-      |> complete_initial_sync_online(:history_sync_disabled)
+      account_sync_counter > 0 ->
+        state
+        |> cancel_initial_sync_timer()
+        |> Map.put(:initial_sync_timer, nil)
+        |> complete_initial_sync_online(:reconnection_existing_sync)
+
+      true ->
+        timer =
+          Process.send_after(self(), :initial_sync_timeout, state.config.initial_sync_timeout_ms)
+
+        %{
+          cancel_initial_sync_timer(state)
+          | initial_sync_timer: timer,
+            sync_state: :awaiting_initial_sync
+        }
     end
-  end
-
-  defp handle_connection_update(%State{} = state, %{connection_update: %{connection: :close}}) do
-    state
-    |> cancel_initial_sync_timer()
-    |> Map.put(:sync_state, :connecting)
   end
 
   defp handle_connection_update(%State{} = state, _events), do: state
@@ -1430,7 +1451,12 @@ defmodule BaileysEx.Connection.Coordinator do
 
     node = %BinaryNode{
       tag: "iq",
-      attrs: %{"to" => @s_whatsapp_net, "type" => "set", "xmlns" => "urn:xmpp:whatsapp:dirty"},
+      attrs: %{
+        "id" => Integer.to_string(System.unique_integer([:positive, :monotonic])),
+        "to" => @s_whatsapp_net,
+        "type" => "set",
+        "xmlns" => "urn:xmpp:whatsapp:dirty"
+      },
       content: [%BinaryNode{tag: "clean", attrs: attrs, content: nil}]
     }
 
@@ -2411,14 +2437,14 @@ defmodule BaileysEx.Connection.Coordinator do
   end
 
   defp maybe_start_initial_app_state_sync(
-         %State{sync_state: :syncing, app_state_sync_ref: nil} = state,
+         %State{sync_state: :syncing, app_state_sync: nil} = state,
          %{messaging_history_set: _history}
        ) do
     maybe_launch_initial_app_state_sync(state)
   end
 
   defp maybe_start_initial_app_state_sync(
-         %State{sync_state: :syncing, app_state_sync_ref: nil} = state,
+         %State{sync_state: :syncing, app_state_sync: nil} = state,
          %{creds_update: %{my_app_state_key_id: key_id}}
        )
        when is_binary(key_id) and key_id != "" do
@@ -2434,14 +2460,17 @@ defmodule BaileysEx.Connection.Coordinator do
        when is_binary(key_id) and key_id != "" do
     blocked = blocked_app_state_collections(state)
 
-    cond do
-      map_size(blocked) == 0 ->
+    case {state.sync_state, state.app_state_sync} do
+      {:syncing, %{ref: ref}} ->
+        %{state | app_state_sync: %{ref: ref, resync_blocked?: true}}
+
+      _ when map_size(blocked) == 0 ->
         state
 
-      state.sync_state == :syncing ->
+      {:syncing, nil} ->
         %{state | blocked_app_state_collections: %{}}
 
-      true ->
+      _ ->
         launch_blocked_app_state_sync(
           %{state | blocked_app_state_collections: %{}},
           blocked
@@ -2500,16 +2529,15 @@ defmodule BaileysEx.Connection.Coordinator do
 
   # Baileys runs doAppStateSync as soon as history moves the socket into Syncing,
   # even before the app state key arrives: collections that cannot be decrypted
-  # yet are parked as blocked and resynced when `my_app_state_key_id` shows up.
+  # yet are parked as blocked and resynced when `my_app_state_key_id` arrives.
   defp maybe_launch_initial_app_state_sync(%State{} = state),
     do: launch_initial_app_state_sync(state)
 
-  defp launch_initial_app_state_sync(%State{} = state) do
+  defp launch_initial_app_state_sync(%State{} = state, collections \\ SyncdCodec.patch_names()) do
     case fetch_socket_pid(state) do
       {:ok, socket_pid} ->
         coordinator_pid = self()
         me = current_me(state)
-        collections = SyncdCodec.patch_names()
 
         task =
           Task.Supervisor.async(state.task_supervisor, fn ->
@@ -2528,7 +2556,11 @@ defmodule BaileysEx.Connection.Coordinator do
             normalize_sync_result(result)
           end)
 
-        %{state | app_state_sync_ref: task.ref}
+        %{
+          state
+          | app_state_sync: %{ref: task.ref, resync_blocked?: false},
+            blocked_app_state_collections: %{}
+        }
 
       :error ->
         _ = Process.send_after(self(), :complete_initial_sync, 25)
@@ -2567,11 +2599,15 @@ defmodule BaileysEx.Connection.Coordinator do
 
   defp blocked_app_state_collections(%State{}), do: %{}
 
+  defp current_account_sync_counter(%State{} = state) do
+    case state.store_ref |> Store.get(:creds, %{}) |> Map.get(:account_sync_counter, 0) do
+      counter when is_integer(counter) -> counter
+      _ -> 0
+    end
+  end
+
   defp increment_account_sync_counter(%State{} = state) do
-    current_counter =
-      state.store_ref
-      |> Store.get(:creds, %{})
-      |> Map.get(:account_sync_counter, 0)
+    current_counter = current_account_sync_counter(state)
 
     :ok =
       EventEmitter.emit(state.event_emitter, :creds_update, %{

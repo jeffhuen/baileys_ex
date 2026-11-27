@@ -642,6 +642,8 @@ defmodule BaileysEx.Connection.SocketTest do
     assert %BinaryNode{tag: "offline_batch", attrs: %{"count" => "100"}} =
              BinaryNodeUtil.child(offline_batch_node, "offline_batch")
 
+    refute Socket.received_pending_notifications?(pid)
+
     offline_node =
       %BinaryNode{
         tag: "ib",
@@ -654,6 +656,11 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert_receive {:processed_events,
                     %{connection_update: %{received_pending_notifications: true}}}
+
+    assert Socket.received_pending_notifications?(pid)
+
+    assert :ok = Socket.disconnect(pid)
+    refute Socket.received_pending_notifications?(pid)
   end
 
   test "edge routing updates emit creds updates with the new routing info" do

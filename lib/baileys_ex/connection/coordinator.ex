@@ -1850,7 +1850,7 @@ defmodule BaileysEx.Connection.Coordinator do
             state
 
           {:error, {:invalid_state, :connected}} ->
-            resume_attached_connected_socket(state)
+            resume_attached_connected_socket(state, socket_pid)
 
           {:error, {:invalid_state, _state_name}} ->
             state
@@ -1861,14 +1861,15 @@ defmodule BaileysEx.Connection.Coordinator do
     end
   end
 
-  defp resume_attached_connected_socket(%State{} = state) do
+  defp resume_attached_connected_socket(%State{} = state, socket_pid) do
     state
-    |> resume_initial_sync_on_attached_socket()
+    |> resume_initial_sync_on_attached_socket(socket_pid)
     |> resume_pending_server_syncs()
   end
 
-  defp resume_initial_sync_on_attached_socket(%State{} = state) do
-    if Store.get(state.store_ref, :offline_notifications_received, false) == true do
+  defp resume_initial_sync_on_attached_socket(%State{} = state, socket_pid) do
+    if socket_offline_notifications_received?(state, socket_pid) do
+      :ok = Store.put(state.store, :offline_notifications_received, true)
       will_sync_history = should_sync_history_message?(state.config, %{sync_type: :RECENT})
       account_sync_counter = current_account_sync_counter(state)
 
@@ -1893,6 +1894,22 @@ defmodule BaileysEx.Connection.Coordinator do
     else
       state
     end
+  end
+
+  defp socket_offline_notifications_received?(%State{} = state, socket_pid) do
+    if function_exported?(state.socket_module, :received_pending_notifications?, 1) do
+      case state.socket_module.received_pending_notifications?(socket_pid) do
+        received? when is_boolean(received?) ->
+          received?
+
+        _ ->
+          Store.get(state.store_ref, :offline_notifications_received, false) == true
+      end
+    else
+      Store.get(state.store_ref, :offline_notifications_received, false) == true
+    end
+  catch
+    :exit, _reason -> false
   end
 
   defp resume_pending_server_syncs(%State{} = state) do

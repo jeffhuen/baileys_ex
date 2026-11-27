@@ -90,6 +90,9 @@ defmodule BaileysEx.Connection.SupervisorTest do
 
     def connect(server), do: GenServer.call(server, :connect)
 
+    def received_pending_notifications?(server),
+      do: GenServer.call(server, :received_pending_notifications?)
+
     def send_presence_update(server, type),
       do: GenServer.call(server, {:send_presence_update, type})
 
@@ -112,6 +115,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
        %{
          test_pid: Keyword.fetch!(opts, :test_pid),
          connect_handler: Keyword.get(opts, :connect_handler, fn -> :ok end),
+         offline_received_handler: Keyword.get(opts, :offline_received_handler, fn -> nil end),
          query_handler:
            Keyword.get(opts, :query_handler, fn _node, _timeout -> {:error, :unhandled} end),
          send_node_handler: Keyword.get(opts, :send_node_handler, fn _node -> :ok end)
@@ -122,6 +126,10 @@ defmodule BaileysEx.Connection.SupervisorTest do
     def handle_call(:connect, _from, state) do
       Kernel.send(state.test_pid, :fake_socket_connect)
       {:reply, state.connect_handler.(), state}
+    end
+
+    def handle_call(:received_pending_notifications?, _from, state) do
+      {:reply, state.offline_received_handler.(), state}
     end
 
     def handle_call({:send_presence_update, type}, _from, state) do
@@ -4643,6 +4651,114 @@ defmodule BaileysEx.Connection.SupervisorTest do
                    1_000
 
     unsubscribe.()
+  end
+
+  test "replacement Coordinator recovers pending work when old Coordinator dies before handling offline-complete" do
+    name = {:release_offline_handoff_crash_test, System.unique_integer([:positive])}
+    parent = self()
+    {:ok, connect_calls} = Agent.start_link(fn -> 0 end)
+    {:ok, offline_flag} = Agent.start_link(fn -> false end)
+
+    connect_handler = fn ->
+      case Agent.get_and_update(connect_calls, fn n -> {n + 1, n + 1} end) do
+        1 -> :ok
+        _ -> {:error, {:invalid_state, :connected}}
+      end
+    end
+
+    query_handler = fn
+      %BinaryNode{attrs: %{"xmlns" => "w:sync:app:state"}} = node, _timeout ->
+        collections =
+          node
+          |> BinaryNodeUtil.child("sync")
+          |> BinaryNodeUtil.children("collection")
+          |> Enum.map(& &1.attrs["name"])
+
+        send(parent, {:recovered_after_handoff_query, collections})
+
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [
+             %BinaryNode{
+               tag: "sync",
+               attrs: %{},
+               content:
+                 Enum.map(collections, fn col ->
+                   %BinaryNode{
+                     tag: "collection",
+                     attrs: %{"name" => col, "version" => "0", "has_more_patches" => "false"},
+                     content: []
+                   }
+                 end)
+             }
+           ]
+         }}
+
+      _node, _timeout ->
+        {:ok, %BinaryNode{tag: "iq", attrs: %{"type" => "result"}, content: []}}
+    end
+
+    assert {:ok, supervisor} =
+             Supervisor.start_link(
+               name: name,
+               config:
+                 Config.new(
+                   fire_init_queries: false,
+                   mark_online_on_connect: false,
+                   reconnect_policy: :disabled
+                 ),
+               auth_state: %{creds: %{me: %{id: "15550001111@s.whatsapp.net"}}},
+               socket_module: FakeSocket,
+               connect_handler: connect_handler,
+               offline_received_handler: fn -> Agent.get(offline_flag, & &1) end,
+               test_pid: parent,
+               query_handler: query_handler,
+               transport: {NoopTransport, %{}}
+             )
+
+    assert_receive :fake_socket_connect
+    emitter_pid = child_pid!(supervisor, EventEmitter)
+    store_pid = child_pid!(supervisor, Store)
+    store_ref = Store.wrap(store_pid)
+    coordinator_pid = child_pid!(supervisor, Coordinator)
+
+    # Seed retained pending initial work from an earlier session while Store's offline marker is absent
+    assert :ok =
+             Store.put(
+               store_pid,
+               :pending_initial_app_state_collections,
+               MapSet.new([:critical_block])
+             )
+
+    assert Store.get(store_ref, :offline_notifications_received) == nil
+
+    # First verify: if Coordinator dies BEFORE socket marks offline-complete, replacement stays :connecting
+    Process.exit(coordinator_pid, :kill)
+    assert_receive :fake_socket_connect, 1_000
+    refute_receive {:recovered_after_handoff_query, _}, 80
+
+    second_coordinator = child_pid!(supervisor, Coordinator)
+    refute second_coordinator == coordinator_pid
+
+    # Now suspend second Coordinator so offline-complete sits unhandled in its mailbox when it dies
+    :ok = :sys.suspend(second_coordinator)
+    Agent.update(offline_flag, fn _ -> true end)
+
+    assert :ok =
+             EventEmitter.emit(emitter_pid, :connection_update, %{
+               received_pending_notifications: true
+             })
+
+    # Confirm second Coordinator never handled the event or updated Store before dying
+    assert Store.get(store_ref, :offline_notifications_received) == nil
+    Process.exit(second_coordinator, :kill)
+
+    # Replacement Coordinator queries the surviving socket's authoritative offline state and resumes :critical_block
+    assert_receive :fake_socket_connect, 1_000
+    assert_receive {:recovered_after_handoff_query, ["critical_block"]}, 1_000
+    assert_eventually(fn -> Store.get(store_ref, :creds, %{})[:account_sync_counter] == 1 end)
   end
 
   test "online blocked-collection recovery advances account_sync_counter once the parked collection completes" do

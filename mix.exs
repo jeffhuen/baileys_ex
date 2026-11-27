@@ -25,18 +25,15 @@ defmodule BaileysEx.MixProject do
 
   defp deps do
     [
-      # Rust NIFs (0.37+ has auto NIF discovery, #[derive(Resource)])
-      {:rustler, "~> 0.37"},
+      # Rust NIFs (0.38+ adds OTP 29 support, auto NIF discovery, #[rustler::resource_impl])
+      {:rustler, "~> 0.38"},
 
       # WebSocket
       {:mint_web_socket, "~> 1.0"},
       {:mint, "~> 1.6"},
 
       # HTTP client (for media upload/download)
-      {:req, "~> 0.5"},
-
-      # Protocol Buffers
-      {:protox, "~> 2.0"},
+      {:req, "~> 0.7"},
 
       # Telemetry
       {:telemetry, "~> 1.3"},

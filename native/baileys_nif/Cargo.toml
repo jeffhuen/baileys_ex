@@ -8,7 +8,7 @@ name = "baileys_nif"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustler = "0.37"
+rustler = "0.38"
 # Noise protocol (no Elixir/Erlang equivalent)
 snow = "0.9"
 # XEdDSA: Montgomery↔Edwards key conversion for Signal signing

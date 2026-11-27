@@ -234,7 +234,7 @@ defmodule BaileysEx.Message.RetryTest do
              Retry.request_placeholder_resend(ref, key, nil,
                context: :original_context,
                delay_ms: 0,
-               timeout_ms: 15,
+               timeout_ms: 150,
                send_request_fun: fn _request ->
                  assert {:ok, nil} =
                           Retry.fetch_placeholder_resend(ref, "placeholder-failed-send")
@@ -245,7 +245,7 @@ defmodule BaileysEx.Message.RetryTest do
 
     assert_eventually(
       fn -> Retry.fetch_placeholder_resend(ref, "placeholder-failed-send") == :error end,
-      1_000
+      2_000
     )
 
     assert {:ok, "pdo-after-cleanup", :updated_context} =

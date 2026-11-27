@@ -124,6 +124,109 @@ defmodule BaileysEx.Message.HistorySyncTest do
     assert data.contacts == [%{id: "15551234567@s.whatsapp.net", notify: "Updated Name"}]
   end
 
+  test "process_notification/3 decodes protobuf past_participants and EventEmitter consolidates two encoded chunks for one group" do
+    alias BaileysEx.Connection.EventEmitter
+    alias BaileysEx.Protocol.Proto.HistorySync, as: HistorySyncProto
+    alias BaileysEx.Protocol.Proto.PastParticipant
+    alias BaileysEx.Protocol.Proto.PastParticipants
+
+    chunk_one_bytes =
+      HistorySyncProto.encode(%HistorySyncProto{
+        sync_type: :NON_BLOCKING_DATA,
+        progress: 50,
+        past_participants: [
+          %PastParticipants{
+            group_jid: "120363001234567890@g.us",
+            past_participants: [
+              %PastParticipant{
+                user_jid: "15551112222@s.whatsapp.net",
+                leave_reason: :LEFT,
+                leave_ts: 1_710_000_100
+              }
+            ]
+          }
+        ]
+      })
+
+    chunk_two_bytes =
+      HistorySyncProto.encode(%HistorySyncProto{
+        sync_type: :NON_BLOCKING_DATA,
+        progress: 100,
+        past_participants: [
+          %PastParticipants{
+            group_jid: "120363001234567890@g.us",
+            past_participants: [
+              %PastParticipant{
+                user_jid: "15551112222@s.whatsapp.net",
+                leave_reason: :LEFT,
+                leave_ts: 1_710_000_100
+              },
+              %PastParticipant{
+                user_jid: "15553334444@s.whatsapp.net",
+                leave_reason: :REMOVED,
+                leave_ts: 1_710_000_200
+              }
+            ]
+          }
+        ]
+      })
+
+    notif_one =
+      %Message.HistorySyncNotification{sync_type: :NON_BLOCKING_DATA, progress: 50}
+      |> Map.put(:initial_hist_bootstrap_inline_payload, chunk_one_bytes)
+
+    notif_two =
+      %Message.HistorySyncNotification{sync_type: :NON_BLOCKING_DATA, progress: 100}
+      |> Map.put(:initial_hist_bootstrap_inline_payload, chunk_two_bytes)
+
+    ctx = %{inflate_fun: fn bytes -> {:ok, bytes} end}
+
+    assert {:ok, data_one} = HistorySync.process_notification(notif_one, %{}, ctx)
+    assert {:ok, data_two} = HistorySync.process_notification(notif_two, %{}, ctx)
+
+    assert data_one.past_participants == [
+             %{
+               group_jid: "120363001234567890@g.us",
+               past_participants: [
+                 %{
+                   user_jid: "15551112222@s.whatsapp.net",
+                   leave_reason: :LEFT,
+                   leave_ts: 1_710_000_100
+                 }
+               ]
+             }
+           ]
+
+    test_pid = self()
+    {:ok, emitter} = EventEmitter.start_link(buffer_timeout_ms: 5_000)
+    _unsubscribe = EventEmitter.process(emitter, &send(test_pid, {:processed_events, &1}))
+
+    :ok = EventEmitter.buffer(emitter)
+    :ok = EventEmitter.emit(emitter, :messaging_history_set, data_one)
+    :ok = EventEmitter.emit(emitter, :messaging_history_set, data_two)
+    assert EventEmitter.flush(emitter)
+
+    assert_receive {:processed_events, %{messaging_history_set: consolidated}}, 1_000
+
+    assert consolidated.past_participants == [
+             %{
+               group_jid: "120363001234567890@g.us",
+               past_participants: [
+                 %{
+                   user_jid: "15551112222@s.whatsapp.net",
+                   leave_reason: :LEFT,
+                   leave_ts: 1_710_000_100
+                 },
+                 %{
+                   user_jid: "15553334444@s.whatsapp.net",
+                   leave_reason: :REMOVED,
+                   leave_ts: 1_710_000_200
+                 }
+               ]
+             }
+           ]
+  end
+
   defp encode_history_sync(opts) do
     sync_type =
       opts[:sync_type]

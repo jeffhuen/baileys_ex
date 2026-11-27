@@ -9,7 +9,18 @@ on:
 
 jobs:
   checks:
+    name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.19"
+            otp: "28"
+            primary: false
+          - elixir: "1.20"
+            otp: "29"
+            primary: true
 
     steps:
       - name: Checkout
@@ -18,59 +29,74 @@ jobs:
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.19.0"
-          otp-version: "28.1"
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache dependencies
         uses: actions/cache@v5
         with:
           path: deps
-          key: ${{ runner.os }}-deps-${{ hashFiles('mix.lock') }}
-          restore-keys: ${{ runner.os }}-deps-
+          key: ${{ runner.os }}-elixir-${{ matrix.elixir }}-otp-${{ matrix.otp }}-deps-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-elixir-${{ matrix.elixir }}-otp-${{ matrix.otp }}-deps-
 
       - name: Cache Rust build artifacts
         uses: actions/cache@v5
         with:
           path: native/**/target
-          key: ${{ runner.os }}-rust-${{ hashFiles('native/**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-
+          key: ${{ runner.os }}-otp-${{ matrix.otp }}-rust-${{ hashFiles('native/**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-otp-${{ matrix.otp }}-rust-
 
       - name: Cache Dialyzer PLTs
+        if: matrix.primary
         uses: actions/cache@v5
         with:
           path: priv/plts
-          key: ${{ runner.os }}-plts-${{ hashFiles('mix.lock') }}
-          restore-keys: ${{ runner.os }}-plts-
+          key: ${{ runner.os }}-elixir-${{ matrix.elixir }}-otp-${{ matrix.otp }}-plts-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-elixir-${{ matrix.elixir }}-otp-${{ matrix.otp }}-plts-
 
       - name: Install dependencies
         run: mix deps.get
 
       - name: Check formatting
+        if: matrix.primary
         run: mix format --check-formatted
+
+      - name: Check Rust formatting and lints
+        if: matrix.primary
+        working-directory: native/baileys_nif
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
 
       - name: Compile
         run: mix compile --warnings-as-errors
 
       - name: Run Credo
+        if: matrix.primary
         run: mix credo --all
 
       - name: Run tests
         run: mix test --exclude parity
 
       - name: Build docs
+        if: matrix.primary
         env:
           MIX_ENV: dev
         run: mix docs
 
       - name: Run Dialyzer
+        if: matrix.primary
         env:
           MIX_ENV: dev
         run: mix dialyzer
 
       - name: Build Hex package
+        if: matrix.primary
         env:
           MIX_ENV: dev
         run: mix hex.build

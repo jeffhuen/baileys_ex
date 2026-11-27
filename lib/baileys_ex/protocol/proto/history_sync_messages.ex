@@ -143,11 +143,79 @@ defmodule BaileysEx.Protocol.Proto.Conversation do
   end
 end
 
+defmodule BaileysEx.Protocol.Proto.PastParticipant do
+  @moduledoc false
+
+  alias BaileysEx.Protocol.Proto.MessageSupport
+
+  @leave_reason_values %{
+    LEFT: 0,
+    REMOVED: 1
+  }
+
+  defstruct user_jid: nil, leave_reason: nil, leave_ts: nil
+
+  @type t :: %__MODULE__{
+          user_jid: String.t() | nil,
+          leave_reason: atom() | integer() | nil,
+          leave_ts: non_neg_integer() | nil
+        }
+
+  @spec encode(t()) :: binary()
+  def encode(%__MODULE__{} = past_participant) do
+    MessageSupport.encode_fields(past_participant,
+      user_jid: {:string, 1},
+      leave_reason: {:enum, 2, @leave_reason_values},
+      leave_ts: {:uint, 3}
+    )
+  end
+
+  @spec decode(binary()) :: {:ok, t()} | {:error, term()}
+  def decode(binary) do
+    MessageSupport.decode_fields(binary, %__MODULE__{},
+      user_jid: {:string, 1},
+      leave_reason: {:enum, 2, @leave_reason_values},
+      leave_ts: {:uint, 3}
+    )
+  end
+end
+
+defmodule BaileysEx.Protocol.Proto.PastParticipants do
+  @moduledoc false
+
+  alias BaileysEx.Protocol.Proto.MessageSupport
+  alias BaileysEx.Protocol.Proto.PastParticipant
+
+  defstruct group_jid: nil, past_participants: []
+
+  @type t :: %__MODULE__{
+          group_jid: String.t() | nil,
+          past_participants: [PastParticipant.t()]
+        }
+
+  @spec encode(t()) :: binary()
+  def encode(%__MODULE__{} = past_participants) do
+    MessageSupport.encode_fields(past_participants,
+      group_jid: {:string, 1},
+      past_participants: {:repeated_message, 2, PastParticipant}
+    )
+  end
+
+  @spec decode(binary()) :: {:ok, t()} | {:error, term()}
+  def decode(binary) do
+    MessageSupport.decode_fields(binary, %__MODULE__{},
+      group_jid: {:string, 1},
+      past_participants: {:repeated_message, 2, PastParticipant}
+    )
+  end
+end
+
 defmodule BaileysEx.Protocol.Proto.HistorySync do
   @moduledoc false
 
   alias BaileysEx.Protocol.Proto.Conversation
   alias BaileysEx.Protocol.Proto.MessageSupport
+  alias BaileysEx.Protocol.Proto.PastParticipants
   alias BaileysEx.Protocol.Proto.PhoneNumberToLIDMapping
   alias BaileysEx.Protocol.Proto.Pushname
 
@@ -165,6 +233,7 @@ defmodule BaileysEx.Protocol.Proto.HistorySync do
             conversations: [],
             progress: nil,
             pushnames: [],
+            past_participants: [],
             phone_number_to_lid_mappings: []
 
   @type t :: %__MODULE__{
@@ -172,6 +241,7 @@ defmodule BaileysEx.Protocol.Proto.HistorySync do
           conversations: [Conversation.t()],
           progress: non_neg_integer() | nil,
           pushnames: [Pushname.t()],
+          past_participants: [PastParticipants.t()],
           phone_number_to_lid_mappings: [PhoneNumberToLIDMapping.t()]
         }
 
@@ -182,6 +252,7 @@ defmodule BaileysEx.Protocol.Proto.HistorySync do
       conversations: {:repeated_message, 2, Conversation},
       progress: {:uint, 6},
       pushnames: {:repeated_message, 7, Pushname},
+      past_participants: {:repeated_message, 12, PastParticipants},
       phone_number_to_lid_mappings: {:repeated_message, 15, PhoneNumberToLIDMapping}
     )
   end
@@ -193,6 +264,7 @@ defmodule BaileysEx.Protocol.Proto.HistorySync do
       conversations: {:repeated_message, 2, Conversation},
       progress: {:uint, 6},
       pushnames: {:repeated_message, 7, Pushname},
+      past_participants: {:repeated_message, 12, PastParticipants},
       phone_number_to_lid_mappings: {:repeated_message, 15, PhoneNumberToLIDMapping}
     )
   end

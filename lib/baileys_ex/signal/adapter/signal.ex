@@ -131,8 +131,7 @@ defmodule BaileysEx.Signal.Adapter.Signal do
   defp build_pkmsg_opts(state, ciphertext) do
     opts = [
       identity_key_pair: state.identity_key_pair,
-      signed_pre_key_pair: state.signed_pre_key.key_pair,
-      registration_id: state.registration_id
+      signed_pre_key_pair: state.signed_pre_key.key_pair
     ]
 
     case load_pre_key(state.store, ciphertext) do

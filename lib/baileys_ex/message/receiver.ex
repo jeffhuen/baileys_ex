@@ -36,6 +36,19 @@ defmodule BaileysEx.Message.Receiver do
                                             &{&1, true}
                                           )
 
+  @typedoc """
+  Accepted return contract for `get_message_fun/1` across retry fallback and
+  poll/event normalization: a proto message struct, `%{message: struct()}`,
+  `{:ok, struct() | %{message: struct()}}`, or `nil` / `:error` / `{:error, term()}`.
+  """
+  @type get_message_result ::
+          struct()
+          | %{message: struct()}
+          | {:ok, struct() | %{message: struct()}}
+          | nil
+          | :error
+          | {:error, term()}
+
   @type context :: %{
           required(:signal_repository) => Repository.t(),
           required(:event_emitter) => GenServer.server(),
@@ -53,7 +66,7 @@ defmodule BaileysEx.Message.Receiver do
           optional(:send_placeholder_request_fun) => (struct() ->
                                                         {:ok, String.t() | nil, context()}
                                                         | {:error, term()}),
-          optional(:get_message_fun) => (map() -> map() | nil),
+          optional(:get_message_fun) => (map() -> get_message_result()),
           optional(atom()) => term()
         }
   @type bad_ack_context :: %{
@@ -114,6 +127,7 @@ defmodule BaileysEx.Message.Receiver do
     case Wire.decode(plaintext) do
       {:ok, proto_message} ->
         :ok = maybe_cancel_phone_request(context, node.attrs["id"])
+        proto_message = unwrap_device_sent_message(proto_message)
 
         case process_decoded_message(node, envelope, decrypted_repo, proto_message, context) do
           {:ok, _message, _context} = success ->
@@ -130,6 +144,19 @@ defmodule BaileysEx.Message.Receiver do
         handle_failed_decryption(node, envelope, updated_context, reason, error, opts)
     end
   end
+
+  defp unwrap_device_sent_message(%Message{
+         device_sent_message: %Message.DeviceSentMessage{message: %Message{} = inner},
+         message_context_info: outer_context_info
+       }) do
+    if is_nil(inner.message_context_info) and not is_nil(outer_context_info) do
+      %Message{inner | message_context_info: outer_context_info}
+    else
+      inner
+    end
+  end
+
+  defp unwrap_device_sent_message(%Message{} = message), do: message
 
   defp process_decoded_message(node, envelope, decrypted_repo, proto_message, context) do
     with {:ok, signal_repository} <-
@@ -722,7 +749,7 @@ defmodule BaileysEx.Message.Receiver do
        ) do
     case Map.get(message, :protocol_message) do
       %Message.ProtocolMessage{type: proto_type} = protocol_message ->
-        Logger.warning("[Receiver] protocol_message type=#{inspect(proto_type)}")
+        Logger.debug(fn -> "[Receiver] protocol_message type=#{inspect(proto_type)}" end)
 
         if self_only_protocol_message?(proto_type) and not key.from_me do
           Logger.warning(

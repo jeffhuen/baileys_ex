@@ -64,6 +64,7 @@ defmodule BaileysEx.Connection.Socket do
           transport_options: term(),
           transport_state: term() | nil,
           transport_connected?: boolean(),
+          received_pending_notifications?: boolean(),
           buffer: binary(),
           retry_count: non_neg_integer(),
           epoch: non_neg_integer(),
@@ -101,6 +102,7 @@ defmodule BaileysEx.Connection.Socket do
     :last_date_recv_at,
     noise_opts: [],
     transport_connected?: false,
+    received_pending_notifications?: false,
     buffer: <<>>,
     qr_refs: [],
     next_qr_timeout_ms: 20_000,
@@ -279,6 +281,14 @@ defmodule BaileysEx.Connection.Socket do
   def snapshot(server), do: :gen_statem.call(server, :snapshot)
 
   @doc """
+  Returns whether the current socket transport has received the `<ib><offline/></ib>`
+  completion marker.
+  """
+  @spec received_pending_notifications?(GenServer.server()) :: boolean()
+  def received_pending_notifications?(server),
+    do: :gen_statem.call(server, :received_pending_notifications?)
+
+  @doc """
   Bypass the protocol and send a raw binary payload.
   """
   @spec send_payload(GenServer.server(), binary()) :: :ok | {:error, :not_connected | term()}
@@ -419,11 +429,20 @@ defmodule BaileysEx.Connection.Socket do
     {:keep_state, data, [{:reply, from, snapshot(current_state, data)}]}
   end
 
+  defp handle_call(_current_state, from, :received_pending_notifications?, data) do
+    {:keep_state, data, [{:reply, from, data.received_pending_notifications?}]}
+  end
+
   defp handle_call(:disconnected, from, :connect, data) do
     emit_event(data, :connection_update, %{connection: :connecting})
 
-    {:next_state, :connecting, %{data | last_error: nil, transport_connected?: false},
-     [{:reply, from, :ok}, {:next_event, :internal, :establish_transport}]}
+    {:next_state, :connecting,
+     %{
+       data
+       | last_error: nil,
+         transport_connected?: false,
+         received_pending_notifications?: false
+     }, [{:reply, from, :ok}, {:next_event, :internal, :establish_transport}]}
   end
 
   defp handle_call(current_state, from, :connect, data) do
@@ -829,6 +848,7 @@ defmodule BaileysEx.Connection.Socket do
         end
 
       BinaryNodeUtil.child(node, "offline") ->
+        data = %{data | received_pending_notifications?: true}
         emit_event(data, :connection_update, %{received_pending_notifications: true})
         {:ok, current_state, data}
 
@@ -921,6 +941,7 @@ defmodule BaileysEx.Connection.Socket do
         data
         | transport_state: nil,
           transport_connected?: false,
+          received_pending_notifications?: false,
           noise: nil,
           pending_lid: nil,
           retry_count: data.retry_count + if(increment_retry?, do: 1, else: 0),

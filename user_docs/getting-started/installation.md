@@ -5,7 +5,7 @@ You will finish this page with BaileysEx compiled in your project and ready for 
 ## Before you begin
 
 - Elixir 1.19 or newer
-- OTP 28
+- OTP 28 or newer
 - A Rust toolchain available on your machine
 - A WhatsApp account you can pair with a companion client
 
@@ -18,13 +18,12 @@ Add BaileysEx to your `mix.exs` dependencies.
 ```elixir
 defp deps do
   [
-    {:baileys_ex, "~> 0.1.0-alpha.12"}
+    {:baileys_ex, "~> 0.1.0"}
   ]
 end
 ```
 
 BaileysEx builds native code during compilation, so you need Rust on the machine that runs `mix compile`.
-Because the current public release is an alpha prerelease, the prerelease version must be requested explicitly.
 
 ### 2. Fetch and compile the project
 

@@ -7,11 +7,13 @@ defmodule BaileysEx.Message.Retry do
   alias BaileysEx.Connection.Store
   alias BaileysEx.Message.PeerData
   alias BaileysEx.Protocol.BinaryNode, as: BinaryNodeUtil
+  alias BaileysEx.Protocol.JID, as: JIDUtil
   alias BaileysEx.Protocol.Proto.Message
 
   @recent_cache_key :message_retry_recent_cache
   @recent_order_key :message_retry_recent_order
   @retry_counter_key :message_retry_counters
+  @outbound_retry_counter_key :message_retry_outbound_counters
   @session_history_key :message_retry_session_recreate_history
   @phone_requests_key :message_retry_phone_requests
   @placeholder_cache_key :message_retry_placeholder_resends
@@ -22,6 +24,7 @@ defmodule BaileysEx.Message.Retry do
   @base_key_cache_size 1024
   @base_key_cache_ttl_ms 900_000
   @retry_counter_ttl_ms 900_000
+  @outbound_retry_counter_max_size 1024
   @session_recreate_cooldown_ms 3_600_000
   @session_history_ttl_ms 7_200_000
   @phone_request_delay_ms 3_000
@@ -288,6 +291,7 @@ defmodule BaileysEx.Message.Retry do
       [
         @recent_cache_key,
         @retry_counter_key,
+        @outbound_retry_counter_key,
         @session_history_key,
         @phone_requests_key,
         @base_keys_key
@@ -404,24 +408,70 @@ defmodule BaileysEx.Message.Retry do
   end
 
   defp do_handle_retry_receipt(store_ref, attrs, node, opts) do
-    ids = [attrs["id"] | parse_list_ids(node)]
-    remote_jid = attrs["from"] || attrs["recipient"] || attrs["to"]
-    resend_fun = opts[:resend_fun]
+    ids = [attrs["id"] | parse_list_ids(node)] |> Enum.reject(&is_nil/1) |> Enum.uniq()
+    remote_jid = resolve_retry_remote_jid(attrs, opts)
+    participant_jid = resolve_retry_participant_jid(attrs, remote_jid, opts)
+    eligible_ids = filter_eligible_retry_ids(store_ref, ids, participant_jid, opts)
 
-    entries =
-      ids
-      |> Enum.map(&lookup_recent_entry(store_ref, remote_jid, &1))
-      |> Enum.reject(&is_nil/1)
+    if ids != [] and eligible_ids == [] do
+      {:error, :max_retries_exceeded}
+    else
+      entries =
+        eligible_ids
+        |> Enum.map(&lookup_recent_entry(store_ref, remote_jid, &1))
+        |> Enum.reject(&is_nil/1)
 
-    maybe_resend_messages(entries, resend_fun, remote_jid, ids)
-
-    {:ok, entries}
+      record_outbound_retry_attempts(store_ref, entries, participant_jid, opts)
+      maybe_resend_messages(entries, opts[:resend_fun], remote_jid, eligible_ids)
+      {:ok, entries}
+    end
   end
 
-  defp lookup_recent_entry(store_ref, remote_jid, id) do
+  defp resolve_retry_remote_jid(attrs, opts) do
+    Keyword.get(opts, :conversation_jid) || attrs["from"] || attrs["recipient"] || attrs["to"]
+  end
+
+  defp resolve_retry_participant_jid(attrs, remote_jid, opts) do
+    Keyword.get(opts, :participant_jid) || attrs["participant"] || attrs["from"] || remote_jid
+  end
+
+  defp filter_eligible_retry_ids(store_ref, ids, participant_jid, opts)
+       when is_binary(participant_jid) do
+    Enum.filter(ids, &will_send_message_again?(store_ref, &1, participant_jid, opts))
+  end
+
+  defp filter_eligible_retry_ids(_store_ref, ids, _participant_jid, _opts), do: ids
+
+  defp record_outbound_retry_attempts(store_ref, entries, participant_jid, opts)
+       when is_binary(participant_jid) do
+    if Keyword.get(opts, :record_attempt, true) do
+      Enum.each(entries, fn %{id: id} ->
+        increment_outbound_retry_count(store_ref, id, participant_jid, opts)
+      end)
+    end
+  end
+
+  defp record_outbound_retry_attempts(_store_ref, _entries, _participant_jid, _opts), do: :ok
+
+  defp lookup_recent_entry(store_ref, remote_jid, id) when is_binary(remote_jid) do
     case get_recent_message(store_ref, remote_jid, id) do
       %{message: message} = entry -> %{id: id, message: message, entry: entry}
-      nil -> nil
+      nil -> lookup_normalized_recent_entry(store_ref, remote_jid, id)
+    end
+  end
+
+  defp lookup_recent_entry(_store_ref, _remote_jid, _id), do: nil
+
+  defp lookup_normalized_recent_entry(store_ref, remote_jid, id) do
+    normalized = JIDUtil.normalized_user(remote_jid)
+
+    if normalized != "" and normalized != remote_jid do
+      case get_recent_message(store_ref, normalized, id) do
+        %{message: message} = entry -> %{id: id, message: message, entry: entry}
+        nil -> nil
+      end
+    else
+      nil
     end
   end
 
@@ -592,6 +642,68 @@ defmodule BaileysEx.Message.Retry do
       when is_binary(message_id) and is_integer(max_retry_count) and max_retry_count > 0 and
              is_list(opts) do
     get_retry_count(store_ref, message_id, opts) >= max_retry_count
+  end
+
+  @doc """
+  Returns true when local outbound retry attempts for `{message_id, participant_jid}`
+  are below the configured `max_retry_count`.
+  """
+  @spec will_send_message_again?(Store.Ref.t(), String.t(), String.t(), keyword()) :: boolean()
+  def will_send_message_again?(%Store.Ref{} = store_ref, message_id, participant_jid, opts \\ [])
+      when is_binary(message_id) and is_binary(participant_jid) and is_list(opts) do
+    max_retry_count = Keyword.get(opts, :max_retry_count, @max_retry_count)
+    get_outbound_retry_count(store_ref, message_id, participant_jid, opts) < max_retry_count
+  end
+
+  @doc """
+  Returns the recorded local outbound retry attempt count for `{message_id, participant_jid}`.
+  """
+  @spec get_outbound_retry_count(Store.Ref.t(), String.t(), String.t(), keyword()) ::
+          non_neg_integer()
+  def get_outbound_retry_count(%Store.Ref{} = store_ref, message_id, participant_jid, opts \\ [])
+      when is_binary(message_id) and is_binary(participant_jid) and is_list(opts) do
+    now_ms = now_ms(opts)
+    ttl_ms = retry_counter_ttl_ms(opts)
+    key = {message_id, participant_jid}
+
+    counters =
+      Store.get(store_ref, @outbound_retry_counter_key, %{})
+      |> prune_retry_counters(now_ms, ttl_ms)
+
+    :ok = Store.put(store_ref, @outbound_retry_counter_key, counters)
+    retry_counter_value(Map.get(counters, key))
+  end
+
+  @doc """
+  Increments and persists the local outbound retry attempt counter for `{message_id, participant_jid}`.
+  """
+  @spec increment_outbound_retry_count(Store.Ref.t(), String.t(), String.t(), keyword()) ::
+          pos_integer()
+  def increment_outbound_retry_count(
+        %Store.Ref{} = store_ref,
+        message_id,
+        participant_jid,
+        opts \\ []
+      )
+      when is_binary(message_id) and is_binary(participant_jid) and is_list(opts) do
+    now_ms = now_ms(opts)
+    ttl_ms = retry_counter_ttl_ms(opts)
+    max_size = Keyword.get(opts, :max_size, @outbound_retry_counter_max_size)
+    key = {message_id, participant_jid}
+
+    counters =
+      Store.get(store_ref, @outbound_retry_counter_key, %{})
+      |> prune_retry_counters(now_ms, ttl_ms)
+
+    count = retry_counter_value(Map.get(counters, key)) + 1
+
+    updated =
+      counters
+      |> Map.put(key, %{count: count, timestamp: now_ms})
+      |> enforce_base_key_cache_limit(max_size)
+
+    :ok = Store.put(store_ref, @outbound_retry_counter_key, updated)
+    count
   end
 
   defp put_session_recreate_time(%Store.Ref{} = store_ref, history, jid, timestamp) do

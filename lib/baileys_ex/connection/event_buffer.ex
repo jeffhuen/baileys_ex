@@ -12,11 +12,11 @@ defmodule BaileysEx.Connection.EventBuffer do
           chat_deletes: keyed(),
           contact_upserts: keyed(),
           contact_updates: keyed(),
-          message_upserts: %{type: term(), items: keyed()} | nil,
+          message_upserts: %{type: term(), meta: map(), items: keyed()} | nil,
           message_updates: keyed(),
           message_deletes: keyed(),
-          message_reactions: [term()],
-          message_receipts: [term()],
+          message_reactions: keyed(),
+          message_receipts: keyed(),
           group_updates: keyed()
         }
 
@@ -29,8 +29,8 @@ defmodule BaileysEx.Connection.EventBuffer do
             message_upserts: nil,
             message_updates: {[], %{}},
             message_deletes: {[], %{}},
-            message_reactions: [],
-            message_receipts: [],
+            message_reactions: {[], %{}},
+            message_receipts: {[], %{}},
             group_updates: {[], %{}}
 
   @list_events [
@@ -55,79 +55,115 @@ defmodule BaileysEx.Connection.EventBuffer do
   def mergeable?(event, data) when event in @list_events, do: is_list(data)
   def mergeable?(_event, _data), do: false
 
-  @spec messages_upsert_type_mismatch?(t(), term()) :: boolean()
-  def messages_upsert_type_mismatch?(
-        %EventBuffer{message_upserts: %{type: buffered_type, items: items}},
-        type
+  @spec messages_upsert_flush_needed?(t(), map()) :: boolean()
+  def messages_upsert_flush_needed?(
+        %EventBuffer{message_upserts: %{type: buffered_type, meta: buffered_meta, items: items}},
+        %{type: type} = data
       ) do
-    buffered_type != type and keyed_non_empty?(items)
+    incoming_request_id = Map.get(data, :request_id)
+    buffered_request_id = Map.get(buffered_meta, :request_id)
+
+    (buffered_type != type or buffered_request_id != incoming_request_id) and
+      keyed_non_empty?(items)
   end
 
-  def messages_upsert_type_mismatch?(%EventBuffer{}, _type), do: false
+  def messages_upsert_flush_needed?(%EventBuffer{}, _data), do: false
 
-  @spec append(t(), map(), atom(), term()) :: t()
-  def append(%EventBuffer{} = buffer, seed, :messaging_history_set, data) when is_map(data) do
-    buffer
-    |> ensure_history_sets()
-    |> merge_history_chats(List.wrap(data[:chats]), seed)
-    |> merge_history_contacts(List.wrap(data[:contacts]))
-    |> merge_history_messages(List.wrap(data[:messages]))
-    |> merge_history_past_participants(List.wrap(data[:past_participants]))
-    |> merge_history_lid_pn_mappings(List.wrap(data[:lid_pn_mappings]))
-    |> merge_history_fields(data)
+  @spec pop_message_upserts(t()) :: {map() | nil, t()}
+  def pop_message_upserts(%EventBuffer{message_upserts: nil} = buffer), do: {nil, buffer}
+
+  def pop_message_upserts(%EventBuffer{message_upserts: upserts} = buffer) do
+    {build_message_upserts_payload(upserts), %{buffer | message_upserts: nil}}
   end
 
-  def append(%EventBuffer{} = buffer, seed, :chats_upsert, chats) when is_list(chats) do
-    Enum.reduce(chats, buffer, &append_chat_upsert(&2, seed, &1))
+  @spec append(t(), MapSet.t(), map(), atom(), term()) :: {t(), MapSet.t()}
+  def append(%EventBuffer{} = buffer, history_cache, seed, :messaging_history_set, data)
+      when is_map(data) do
+    buffer = ensure_history_sets(buffer)
+
+    {buffer, history_cache} =
+      merge_history_chats(buffer, history_cache, List.wrap(data[:chats]), seed)
+
+    {buffer, history_cache} =
+      merge_history_contacts(buffer, history_cache, List.wrap(data[:contacts]))
+
+    {buffer, history_cache} =
+      merge_history_messages(buffer, history_cache, List.wrap(data[:messages]))
+
+    buffer =
+      buffer
+      |> merge_history_past_participants(List.wrap(data[:past_participants]))
+      |> merge_history_lid_pn_mappings(List.wrap(data[:lid_pn_mappings]))
+      |> merge_history_fields(data)
+
+    {buffer, history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, seed, :chats_update, updates) when is_list(updates) do
-    Enum.reduce(updates, buffer, &append_chat_update(&2, seed, &1))
+  def append(%EventBuffer{} = buffer, history_cache, seed, :chats_upsert, chats)
+      when is_list(chats) do
+    {Enum.reduce(chats, buffer, &append_chat_upsert(&2, seed, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :chats_delete, ids) when is_list(ids) do
-    Enum.reduce(ids, buffer, &append_chat_delete(&2, &1))
+  def append(%EventBuffer{} = buffer, history_cache, seed, :chats_update, updates)
+      when is_list(updates) do
+    {Enum.reduce(updates, buffer, &append_chat_update(&2, seed, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :contacts_upsert, contacts) when is_list(contacts) do
-    Enum.reduce(contacts, buffer, &append_contact_upsert(&2, &1))
+  def append(%EventBuffer{} = buffer, history_cache, _seed, :chats_delete, ids)
+      when is_list(ids) do
+    {Enum.reduce(ids, buffer, &append_chat_delete(&2, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :contacts_update, updates) when is_list(updates) do
-    Enum.reduce(updates, buffer, &append_contact_update(&2, &1))
+  def append(%EventBuffer{} = buffer, history_cache, _seed, :contacts_upsert, contacts)
+      when is_list(contacts) do
+    {Enum.reduce(contacts, buffer, &append_contact_upsert(&2, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :messages_upsert, %{type: type, messages: messages})
+  def append(%EventBuffer{} = buffer, history_cache, _seed, :contacts_update, updates)
+      when is_list(updates) do
+    {Enum.reduce(updates, buffer, &append_contact_update(&2, &1)), history_cache}
+  end
+
+  def append(
+        %EventBuffer{} = buffer,
+        history_cache,
+        _seed,
+        :messages_upsert,
+        %{type: type, messages: messages} = data
+      )
       when is_list(messages) do
-    Enum.reduce(messages, buffer, &append_message_upsert(&2, type, &1))
+    meta = Map.drop(data, [:type, :messages])
+    {Enum.reduce(messages, buffer, &append_message_upsert(&2, type, meta, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :messages_update, updates) when is_list(updates) do
-    Enum.reduce(updates, buffer, &append_message_update(&2, &1))
+  def append(%EventBuffer{} = buffer, history_cache, _seed, :messages_update, updates)
+      when is_list(updates) do
+    {Enum.reduce(updates, buffer, &append_message_update(&2, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :messages_delete, %{keys: keys})
+  def append(%EventBuffer{} = buffer, history_cache, _seed, :messages_delete, %{keys: keys})
       when is_list(keys) do
-    Enum.reduce(keys, buffer, &append_message_delete(&2, &1))
+    {Enum.reduce(keys, buffer, &append_message_delete(&2, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :messages_reaction, reactions)
+  def append(%EventBuffer{} = buffer, history_cache, _seed, :messages_reaction, reactions)
       when is_list(reactions) do
-    %{buffer | message_reactions: Enum.reverse(reactions, buffer.message_reactions)}
+    {Enum.reduce(reactions, buffer, &append_message_reaction(&2, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :message_receipt_update, receipts)
+  def append(%EventBuffer{} = buffer, history_cache, _seed, :message_receipt_update, receipts)
       when is_list(receipts) do
-    %{buffer | message_receipts: Enum.reverse(receipts, buffer.message_receipts)}
+    {Enum.reduce(receipts, buffer, &append_message_receipt(&2, &1)), history_cache}
   end
 
-  def append(%EventBuffer{} = buffer, _seed, :groups_update, updates) when is_list(updates) do
+  def append(%EventBuffer{} = buffer, history_cache, _seed, :groups_update, updates)
+      when is_list(updates) do
     group_updates =
       Enum.reduce(updates, buffer.group_updates, fn update, acc ->
         keyed_put(acc, item_id(update), update, &merge_fields/2)
       end)
 
-    %{buffer | group_updates: group_updates}
+    {%{buffer | group_updates: group_updates}, history_cache}
   end
 
   @spec flush(t(), map()) :: {map(), t()}
@@ -148,8 +184,8 @@ defmodule BaileysEx.Connection.EventBuffer do
       |> maybe_put_message_upserts(buffer.message_upserts)
       |> maybe_put_keyed(:messages_update, buffer.message_updates)
       |> maybe_put_message_deletes(buffer.message_deletes)
-      |> maybe_put_non_empty(:messages_reaction, Enum.reverse(buffer.message_reactions))
-      |> maybe_put_non_empty(:message_receipt_update, Enum.reverse(buffer.message_receipts))
+      |> maybe_put_non_empty(:messages_reaction, flatten_reactions(buffer.message_reactions))
+      |> maybe_put_non_empty(:message_receipt_update, flatten_receipts(buffer.message_receipts))
       |> maybe_put_keyed(:groups_update, buffer.group_updates)
 
     remaining_buffer = %EventBuffer{chat_updates: pending_chat_updates}
@@ -174,18 +210,16 @@ defmodule BaileysEx.Connection.EventBuffer do
 
   defp ensure_history_sets(%EventBuffer{} = buffer), do: buffer
 
-  defp merge_history_chats(buffer, chats, seed) do
-    Enum.reduce(chats, buffer, &merge_history_chat(&2, &1, seed))
+  defp merge_history_chats(buffer, history_cache, chats, seed) do
+    Enum.reduce(chats, {buffer, history_cache}, &merge_history_chat(&2, &1, seed))
   end
 
-  defp merge_history_chat(acc, chat, seed) do
+  defp merge_history_chat({acc, cache}, chat, seed) do
     id = item_id(chat)
 
     case keyed_get(acc.history_sets.chats, id) do
       nil ->
-        acc
-        |> put_history_chat(id, chat)
-        |> absorb_pending_chat_update(seed, :history, id)
+        insert_uncached_history_chat(acc, cache, id, chat, seed)
 
       existing ->
         updated =
@@ -195,7 +229,22 @@ defmodule BaileysEx.Connection.EventBuffer do
             Map.get(chat, :end_of_history_transfer_type)
           )
 
-        put_history_chat(acc, id, updated)
+        {put_history_chat(acc, id, updated), cache}
+    end
+  end
+
+  defp insert_uncached_history_chat(acc, cache, id, chat, seed) do
+    cache_key = if is_nil(id), do: nil, else: {:chat, id}
+
+    if is_nil(cache_key) or not MapSet.member?(cache, cache_key) do
+      next_acc =
+        acc
+        |> put_history_chat(id, chat)
+        |> absorb_pending_chat_update(seed, :history, id)
+
+      {next_acc, maybe_put_cache(cache, cache_key)}
+    else
+      {acc, cache}
     end
   end
 
@@ -206,23 +255,83 @@ defmodule BaileysEx.Connection.EventBuffer do
     )
   end
 
-  defp merge_history_contacts(buffer, contacts) do
-    merged =
-      Enum.reduce(contacts, buffer.history_sets.contacts, fn contact, acc ->
-        keyed_put(acc, item_id(contact), contact, &merge_fields/2)
+  defp merge_history_contacts(buffer, history_cache, contacts) do
+    {merged, next_cache} =
+      Enum.reduce(contacts, {buffer.history_sets.contacts, history_cache}, fn contact,
+                                                                              {acc, cache} ->
+        id = item_id(contact)
+
+        if keyed_has_key?(acc, id) do
+          {keyed_put(acc, id, contact, &merge_fields/2), cache}
+        else
+          merge_uncached_history_contact(acc, cache, id, contact)
+        end
       end)
 
-    put_in(buffer.history_sets.contacts, merged)
+    {put_in(buffer.history_sets.contacts, merged), next_cache}
   end
 
-  defp merge_history_messages(buffer, messages) do
-    merged =
-      Enum.reduce(messages, buffer.history_sets.messages, fn message, acc ->
-        keyed_put(acc, message_key_id(message), message, fn old, _new -> old end)
-      end)
+  defp merge_uncached_history_contact(acc, cache, id, contact) do
+    cache_key = if is_nil(id), do: nil, else: {:contact, id}
 
-    put_in(buffer.history_sets.messages, merged)
+    if is_nil(cache_key) or not MapSet.member?(cache, cache_key) or contact_has_name?(contact) do
+      next_acc = keyed_put(acc, id, contact, &merge_fields/2)
+      next_cache = if cache_key, do: MapSet.put(cache, cache_key), else: cache
+      {next_acc, next_cache}
+    else
+      {acc, cache}
+    end
   end
+
+  defp contact_has_name?(contact) when is_map(contact) do
+    truthy_string?(Map.get(contact, :notify)) or
+      truthy_string?(Map.get(contact, :name)) or
+      truthy_string?(Map.get(contact, :verified_name))
+  end
+
+  defp contact_has_name?(_contact), do: false
+
+  defp truthy_string?(value) when is_binary(value) and value != "", do: true
+  defp truthy_string?(_value), do: false
+
+  defp merge_history_messages(buffer, history_cache, messages) do
+    Enum.reduce(messages, {buffer, history_cache}, &merge_history_message(&2, &1))
+  end
+
+  defp merge_history_message({buffer, cache}, message) do
+    key = message_key_id(message)
+    cache_key = if is_nil(key), do: nil, else: {:msg, key}
+
+    cond do
+      tagged_message_upserts_has_key?(buffer, key) ->
+        updated_upserts =
+          keyed_put(buffer.message_upserts.items, key, message, fn existing, history_msg ->
+            maybe_fill_missing_timestamp(existing, history_msg)
+          end)
+
+        {put_in(buffer.message_upserts.items, updated_upserts), maybe_put_cache(cache, cache_key)}
+
+      not keyed_has_key?(buffer.history_sets.messages, key) and
+          (is_nil(cache_key) or not MapSet.member?(cache, cache_key)) ->
+        updated_history =
+          keyed_put(buffer.history_sets.messages, key, message, fn old, _new -> old end)
+
+        {put_in(buffer.history_sets.messages, updated_history), maybe_put_cache(cache, cache_key)}
+
+      true ->
+        {buffer, cache}
+    end
+  end
+
+  defp maybe_fill_missing_timestamp(%{message_timestamp: ts} = existing, _history_msg)
+       when not is_nil(ts),
+       do: existing
+
+  defp maybe_fill_missing_timestamp(existing, history_msg),
+    do: maybe_preserve_timestamp(existing, history_msg)
+
+  defp maybe_put_cache(cache, nil), do: cache
+  defp maybe_put_cache(cache, key), do: MapSet.put(cache, key)
 
   defp merge_history_past_participants(buffer, entries) do
     merged =
@@ -515,7 +624,7 @@ defmodule BaileysEx.Connection.EventBuffer do
 
   # -- Message consolidation --
 
-  defp append_message_upsert(buffer, type, message) do
+  defp append_message_upsert(buffer, type, meta, message) do
     key = message_key_id(message)
     existing = find_existing_message(buffer, key)
     message = maybe_preserve_timestamp(message, existing)
@@ -531,29 +640,55 @@ defmodule BaileysEx.Connection.EventBuffer do
 
     buffer = %{buffer | message_updates: message_updates}
 
-    if history_has_message?(buffer, key) do
-      put_in(
-        buffer.history_sets.messages,
-        keyed_put(buffer.history_sets.messages, key, message, fn _old, new -> new end)
-      )
-    else
-      put_message_upsert(buffer, type, key, message)
+    cond do
+      history_has_message?(buffer, key) and has_request_id?(meta) ->
+        buffer
+        |> delete_history_message(key)
+        |> put_message_upsert(type, meta, key, message)
+
+      history_has_message?(buffer, key) ->
+        put_in(
+          buffer.history_sets.messages,
+          keyed_put(buffer.history_sets.messages, key, message, fn _old, new -> new end)
+        )
+
+      true ->
+        put_message_upsert(buffer, type, meta, key, message)
     end
   end
 
-  defp put_message_upsert(%EventBuffer{message_upserts: nil} = buffer, type, key, message) do
+  defp delete_history_message(%EventBuffer{history_sets: %{messages: messages}} = buffer, key) do
+    put_in(buffer.history_sets.messages, keyed_delete(messages, key))
+  end
+
+  defp tagged_message_upserts_has_key?(
+         %EventBuffer{message_upserts: %{meta: meta, items: items}},
+         key
+       ) do
+    has_request_id?(meta) and keyed_has_key?(items, key)
+  end
+
+  defp tagged_message_upserts_has_key?(_buffer, _key), do: false
+
+  defp has_request_id?(meta), do: not is_nil(Map.get(meta, :request_id))
+
+  defp put_message_upsert(%EventBuffer{message_upserts: nil} = buffer, type, meta, key, message) do
     %{
       buffer
       | message_upserts: %{
           type: type,
+          meta: meta,
           items: keyed_put(keyed_new(), key, message, fn _old, new -> new end)
         }
     }
   end
 
   defp put_message_upsert(
-         %EventBuffer{message_upserts: %{type: existing_type, items: items}} = buffer,
+         %EventBuffer{
+           message_upserts: %{type: existing_type, meta: existing_meta, items: items}
+         } = buffer,
          type,
+         meta,
          key,
          message
        ) do
@@ -563,6 +698,7 @@ defmodule BaileysEx.Connection.EventBuffer do
       buffer
       | message_upserts: %{
           type: merged_type,
+          meta: Map.merge(existing_meta, meta),
           items: keyed_put(items, key, message, fn _old, new -> new end)
         }
     }
@@ -614,6 +750,103 @@ defmodule BaileysEx.Connection.EventBuffer do
         message_upserts: message_upserts,
         message_updates: keyed_delete(buffer.message_updates, k)
     }
+  end
+
+  defp append_message_reaction(buffer, %{key: key, reaction: reaction}) when is_map(reaction) do
+    k = key_id(key)
+
+    if message_upserts_has_key?(buffer, k) do
+      put_in(
+        buffer.message_upserts.items,
+        keyed_put(buffer.message_upserts.items, k, reaction, &update_message_with_reaction/2)
+      )
+    else
+      updated =
+        keyed_put(
+          buffer.message_reactions,
+          k,
+          update_message_with_reaction(%{key: key, reactions: []}, reaction),
+          fn existing, _incoming -> update_message_with_reaction(existing, reaction) end
+        )
+
+      %{buffer | message_reactions: updated}
+    end
+  end
+
+  defp append_message_reaction(buffer, _other), do: buffer
+
+  defp append_message_receipt(buffer, %{key: key, receipt: receipt}) when is_map(receipt) do
+    k = key_id(key)
+
+    if message_upserts_has_key?(buffer, k) do
+      put_in(
+        buffer.message_upserts.items,
+        keyed_put(buffer.message_upserts.items, k, receipt, &update_message_with_receipt/2)
+      )
+    else
+      updated =
+        keyed_put(
+          buffer.message_receipts,
+          k,
+          update_message_with_receipt(%{key: key, user_receipt: []}, receipt),
+          fn existing, _incoming -> update_message_with_receipt(existing, receipt) end
+        )
+
+      %{buffer | message_receipts: updated}
+    end
+  end
+
+  defp append_message_receipt(buffer, _other), do: buffer
+
+  defp update_message_with_reaction(target, reaction) when is_map(target) and is_map(reaction) do
+    author = reaction_author(Map.get(reaction, :key))
+    normalized = Map.update(reaction, :text, "", &(&1 || ""))
+
+    existing =
+      target
+      |> Map.get(:reactions, [])
+      |> List.wrap()
+      |> Enum.reject(&(reaction_author(Map.get(&1, :key)) == author))
+
+    Map.put(target, :reactions, existing ++ [normalized])
+  end
+
+  defp reaction_author(%{} = key) do
+    if Map.get(key, :from_me) == true do
+      "me"
+    else
+      Map.get(key, :participant_alt) ||
+        Map.get(key, :remote_jid_alt) ||
+        Map.get(key, :participant) ||
+        Map.get(key, :remote_jid) || ""
+    end
+  end
+
+  defp reaction_author(_key), do: ""
+
+  defp update_message_with_receipt(target, receipt) when is_map(target) and is_map(receipt) do
+    user_jid = Map.get(receipt, :user_jid)
+    existing = target |> Map.get(:user_receipt, []) |> List.wrap()
+
+    updated =
+      case Enum.find_index(existing, &(Map.get(&1, :user_jid) == user_jid)) do
+        nil -> existing ++ [receipt]
+        idx -> List.update_at(existing, idx, &Map.merge(&1, receipt))
+      end
+
+    Map.put(target, :user_receipt, updated)
+  end
+
+  defp flatten_reactions(keyed) do
+    Enum.flat_map(keyed_values(keyed), fn %{key: key, reactions: reactions} ->
+      Enum.map(reactions, &%{key: key, reaction: &1})
+    end)
+  end
+
+  defp flatten_receipts(keyed) do
+    Enum.flat_map(keyed_values(keyed), fn %{key: key, user_receipt: receipts} ->
+      Enum.map(receipts, &%{key: key, receipt: &1})
+    end)
   end
 
   # -- Helpers --
@@ -673,7 +906,7 @@ defmodule BaileysEx.Connection.EventBuffer do
   defp concat_chats(a, b) when is_map(a) and is_map(b) do
     {a, b} = normalize_cleared_unread_count(a, b)
     b = merge_unread_count(a, b)
-    merge_fields(a, b)
+    Map.merge(a, b)
   end
 
   defp concat_chats(_a, b), do: b
@@ -759,10 +992,22 @@ defmodule BaileysEx.Connection.EventBuffer do
 
   defp maybe_put_message_upserts(events, nil), do: events
 
-  defp maybe_put_message_upserts(events, %{type: type, items: items}) do
+  defp maybe_put_message_upserts(events, upserts) do
+    case build_message_upserts_payload(upserts) do
+      nil -> events
+      payload -> Map.put(events, :messages_upsert, payload)
+    end
+  end
+
+  defp build_message_upserts_payload(%{type: type, meta: meta, items: items}) do
     case keyed_values(items) do
-      [] -> events
-      messages -> Map.put(events, :messages_upsert, %{messages: messages, type: type})
+      [] ->
+        nil
+
+      messages ->
+        meta
+        |> Map.put(:messages, messages)
+        |> Map.put(:type, type)
     end
   end
 

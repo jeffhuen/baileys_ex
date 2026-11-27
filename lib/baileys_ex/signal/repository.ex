@@ -10,6 +10,8 @@ defmodule BaileysEx.Signal.Repository do
   alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.Group.SenderKeyName
+  alias BaileysEx.Signal.Group.SenderKeyRecord
+  alias BaileysEx.Signal.Group.SessionBuilder, as: GroupSessionBuilder
   alias BaileysEx.Signal.Identity
   alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.SessionRecord
@@ -136,11 +138,22 @@ defmodule BaileysEx.Signal.Repository do
     end
   end
 
+  @doc "Resolves `jid` to its canonical Signal Protocol address string, honoring stored PN-to-LID mappings."
+  @spec resolve_session_address(t(), String.t()) ::
+          {:ok, String.t()} | {:error, :invalid_signal_address}
+  def resolve_session_address(%__MODULE__{} = repository, jid) when is_binary(jid) do
+    with {:ok, address} <- resolve_identity_address(repository, jid) do
+      {:ok, Address.to_string(address)}
+    end
+  end
+
+  def resolve_session_address(%__MODULE__{}, _jid), do: {:error, :invalid_signal_address}
+
   @doc "Safely decodes and writes an externally sourced E2E session state payload into the engine."
   @spec inject_e2e_session(t(), %{jid: String.t(), session: e2e_session()}) ::
           {:ok, t()} | {:error, adapter_error()}
   def inject_e2e_session(%__MODULE__{} = repository, %{jid: jid, session: session}) do
-    with {:ok, address} <- Address.from_jid(jid),
+    with {:ok, address} <- resolve_identity_address(repository, jid),
          {:ok, session} <- normalize_session(session),
          {:ok, adapter_state} <-
            repository.adapter.inject_e2e_session(repository.adapter_state, address, session) do
@@ -162,7 +175,7 @@ defmodule BaileysEx.Signal.Repository do
 
   @doc "Returns registration and base-key metadata for the open Signal session of `jid`, or `nil`."
   @spec session_info(t(), String.t()) ::
-          {:ok, %{registration_id: non_neg_integer(), base_key: binary()} | nil}
+          {:ok, %{registration_id: non_neg_integer() | nil, base_key: binary()} | nil}
           | {:error, adapter_error()}
   def session_info(%__MODULE__{} = repository, jid) when is_binary(jid) do
     with {:ok, address} <- resolve_identity_address(repository, jid) do
@@ -181,8 +194,15 @@ defmodule BaileysEx.Signal.Repository do
     end
   end
 
-  defp extract_open_session_info({base_key, %{registration_id: registration_id}}) do
-    %{registration_id: registration_id, base_key: base_key}
+  defp extract_open_session_info({base_key, %{registration_id: registration_id} = session}) do
+    remote_registration_id =
+      cond do
+        Map.get(session, :remote_registration_id?) == true -> registration_id
+        get_in(session, [:index_info, :base_key_type]) == :sending -> registration_id
+        true -> nil
+      end
+
+    %{registration_id: remote_registration_id, base_key: base_key}
   end
 
   defp extract_open_session_info(_other), do: nil
@@ -229,7 +249,7 @@ defmodule BaileysEx.Signal.Repository do
   @doc "Wipes persistent E2E tracks for corresponding device list JIDs."
   @spec delete_session(t(), [String.t()]) :: {:ok, t()} | {:error, adapter_error()}
   def delete_session(%__MODULE__{} = repository, jids) when is_list(jids) do
-    with {:ok, addresses} <- normalize_addresses(jids),
+    with {:ok, addresses} <- resolve_identity_addresses(repository, jids),
          {:ok, adapter_state} <-
            repository.adapter.delete_sessions(repository.adapter_state, addresses) do
       {:ok, %{repository | adapter_state: adapter_state}}
@@ -368,6 +388,70 @@ defmodule BaileysEx.Signal.Repository do
 
   def decrypt_group_message(%__MODULE__{}, _opts), do: {:error, :invalid_signal_address}
 
+  @doc "Returns true when a persisted sender key exists for `{group, me_id}`."
+  @spec has_sender_key?(t(), %{group: String.t(), me_id: String.t()}) :: boolean()
+  def has_sender_key?(%__MODULE__{} = repository, %{group: group, me_id: me_id})
+      when is_binary(group) and is_binary(me_id) do
+    case sender_key_name(group, me_id) do
+      {:ok, sender_key_name} ->
+        sk_key = SenderKeyName.serialize(sender_key_name)
+        sender_key_present?(Store.get(repository.store, :"sender-key", [sk_key]), sk_key)
+
+      _ ->
+        false
+    end
+  end
+
+  def has_sender_key?(%__MODULE__{}, _opts), do: false
+
+  defp sender_key_present?(entries, sk_key) do
+    case Map.get(entries, sk_key) do
+      %SenderKeyRecord{} = record -> not SenderKeyRecord.empty?(record)
+      key when not is_nil(key) -> true
+      _ -> false
+    end
+  end
+
+  @doc "Returns the serialized sender-key distribution message for `{group, me_id}`."
+  @spec get_sender_key_distribution_message(t(), %{group: String.t(), me_id: String.t()}) ::
+          {:ok, t(), binary()} | {:error, adapter_error()}
+  def get_sender_key_distribution_message(%__MODULE__{} = repository, %{
+        group: group,
+        me_id: me_id
+      })
+      when is_binary(group) and is_binary(me_id) do
+    with {:ok, sender_key_name} <- sender_key_name(group, me_id),
+         sk_key = SenderKeyName.serialize(sender_key_name),
+         {:ok, distribution_message} <-
+           Store.transaction(repository.store, "sender-key:#{sk_key}", fn tx_store ->
+             load_or_create_skdm(tx_store, sk_key)
+           end) do
+      {:ok, repository, distribution_message}
+    end
+  end
+
+  def get_sender_key_distribution_message(%__MODULE__{}, _opts),
+    do: {:error, :invalid_signal_address}
+
+  defp load_or_create_skdm(tx_store, sk_key) do
+    record =
+      case Store.get(tx_store, :"sender-key", [sk_key]) do
+        %{^sk_key => %SenderKeyRecord{} = existing} -> existing
+        _ -> SenderKeyRecord.new()
+      end
+
+    with {:ok, updated_record, distribution_message} <- GroupSessionBuilder.create(record) do
+      maybe_save_sender_key_record(tx_store, sk_key, record, updated_record)
+      {:ok, distribution_message}
+    end
+  end
+
+  defp maybe_save_sender_key_record(_tx_store, _sk_key, record, record), do: :ok
+
+  defp maybe_save_sender_key_record(tx_store, sk_key, _record, updated_record) do
+    Store.set(tx_store, %{:"sender-key" => %{sk_key => updated_record}})
+  end
+
   @doc "Pass-through to LID maps linking canonical WA protocol endpoints."
   @spec store_lid_pn_mappings(t(), [LIDMappingStore.mapping()]) ::
           {:ok, t()} | {:error, LIDMappingStore.error()}
@@ -420,11 +504,11 @@ defmodule BaileysEx.Signal.Repository do
     {:ok, repository, %{migrated: 0, skipped: 0, total: 0}}
   end
 
-  @spec normalize_addresses([String.t()]) ::
+  @spec resolve_identity_addresses(t(), [String.t()]) ::
           {:ok, [Address.t()]} | {:error, :invalid_signal_address}
-  defp normalize_addresses(jids) do
+  defp resolve_identity_addresses(%__MODULE__{} = repository, jids) do
     Enum.reduce_while(jids, {:ok, []}, fn jid, {:ok, addresses} ->
-      case Address.from_jid(jid) do
+      case resolve_identity_address(repository, jid) do
         {:ok, address} -> {:cont, {:ok, [address | addresses]}}
         {:error, :invalid_signal_address} -> {:halt, {:error, :invalid_signal_address}}
       end

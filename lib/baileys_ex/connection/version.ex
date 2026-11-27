@@ -4,6 +4,7 @@ defmodule BaileysEx.Connection.Version do
   """
 
   alias BaileysEx.Connection.Config
+  alias BaileysEx.Media.HTTP
 
   @baileys_defaults_url "https://raw.githubusercontent.com/WhiskeySockets/Baileys/master/src/Defaults/index.ts"
   @wa_web_service_worker_url "https://web.whatsapp.com/sw.js"
@@ -66,23 +67,104 @@ defmodule BaileysEx.Connection.Version do
     end
   end
 
-  @dialyzer {:nowarn_function, default_fetch: 2}
   defp default_fetch(url, opts) do
-    headers =
-      opts
-      |> Keyword.get(:headers, [])
-      |> Enum.map(fn {key, value} -> {to_charlist(key), to_charlist(value)} end)
+    req_options = Keyword.get(opts, :req_options, [])
 
-    request = {to_charlist(url), headers}
+    with {:ok, normalized_url, resolved_req_options} <- resolve_request_url(url, req_options) do
+      default_headers =
+        opts
+        |> Keyword.get(:headers, [])
+        |> Enum.map(fn
+          {key, value} when is_atom(key) -> {key, to_string(value)}
+          {key, value} -> {to_string(key), to_string(value)}
+        end)
 
-    case :httpc.request(:get, request, [], body_format: :binary) do
-      {:ok, {{_http_version, status, _reason_phrase}, _response_headers, body}} ->
-        {:ok, %{status: status, body: body}}
+      headers = HTTP.merge_headers(resolved_req_options[:headers], default_headers)
 
-      {:error, reason} ->
-        {:error, reason}
+      request_opts =
+        resolved_req_options
+        |> Keyword.drop([:headers, :url, :into, :decode_body, :compressed, :method])
+        |> Keyword.merge(
+          method: :get,
+          url: normalized_url,
+          headers: headers,
+          raw: true,
+          compressed: false,
+          decode_body: false,
+          into: nil
+        )
+
+      case Req.get(request_opts) do
+        {:ok, %Req.Response{status: status, body: body}} when is_binary(body) ->
+          {:ok, %{status: status, body: body}}
+
+        {:ok, %Req.Response{status: status, body: body}} ->
+          {:ok, %{status: status, body: IO.iodata_to_binary(body)}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
+
+  defp resolve_request_url(url, req_options) do
+    with {:ok, normalized_url} <- normalize_url(url) do
+      resolve_parsed_url(URI.parse(normalized_url), normalized_url, req_options)
+    end
+  end
+
+  defp resolve_parsed_url(%URI{scheme: nil}, normalized_url, req_options) do
+    resolve_base_url(req_options, normalized_url)
+  end
+
+  defp resolve_parsed_url(%URI{} = uri, normalized_url, req_options) do
+    with :ok <- validate_http_uri(uri), do: {:ok, normalized_url, req_options}
+  end
+
+  defp normalize_url(url) when is_binary(url), do: {:ok, url}
+  defp normalize_url(%URI{} = uri), do: {:ok, URI.to_string(uri)}
+
+  defp normalize_url(url) when is_list(url) do
+    {:ok, IO.chardata_to_string(url)}
+  rescue
+    UnicodeConversionError -> {:error, :invalid_url}
+    ArgumentError -> {:error, :invalid_url}
+  end
+
+  defp normalize_url(_url), do: {:error, :invalid_url}
+
+  defp resolve_base_url(req_options, normalized_url) do
+    raw_base = Keyword.get(req_options, :base_url, Req.default_options()[:base_url])
+
+    with {:ok, resolved_base} <- evaluate_base_url(raw_base),
+         :ok <- validate_base_url(resolved_base) do
+      {:ok, normalized_url, Keyword.put(req_options, :base_url, resolved_base)}
+    end
+  end
+
+  defp evaluate_base_url(base) when is_binary(base) or is_struct(base, URI), do: {:ok, base}
+  defp evaluate_base_url(fun) when is_function(fun, 0), do: {:ok, fun.()}
+
+  defp evaluate_base_url({mod, fun, args})
+       when is_atom(mod) and is_atom(fun) and is_list(args) do
+    {:ok, apply(mod, fun, args)}
+  end
+
+  defp evaluate_base_url(_other), do: {:error, :invalid_url}
+
+  defp validate_base_url(base_url) when is_binary(base_url) and byte_size(base_url) > 0 do
+    validate_http_uri(URI.parse(base_url))
+  end
+
+  defp validate_base_url(%URI{} = uri), do: validate_http_uri(uri)
+  defp validate_base_url(_base_url), do: {:error, :invalid_url}
+
+  defp validate_http_uri(%URI{scheme: scheme, host: host})
+       when scheme in ["http", "https"] and is_binary(host) and byte_size(host) > 0 do
+    :ok
+  end
+
+  defp validate_http_uri(_uri), do: {:error, :invalid_url}
 
   defp parse_baileys_defaults(body) when is_binary(body) do
     case Regex.run(~r/const version = \[(\d+),\s*(\d+),\s*(\d+)\]/, body, capture: :all_but_first) do

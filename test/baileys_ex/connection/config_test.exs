@@ -97,6 +97,20 @@ defmodule BaileysEx.Connection.ConfigTest do
     assert Config.platform_type("Something Else") == :UNKNOWN
   end
 
+  test "web_sub_platform/1 maps Desktop OS platforms to DARWIN and WIN_HYBRID" do
+    assert Config.web_sub_platform(
+             Config.new(sync_full_history: true, browser: {"Mac OS", "Desktop", "14.4.1"})
+           ) == 3
+
+    assert Config.web_sub_platform(
+             Config.new(sync_full_history: true, browser: {"Windows", "Desktop", "10.0.22631"})
+           ) == 5
+
+    assert Config.web_sub_platform(
+             Config.new(sync_full_history: false, browser: {"Windows", "Desktop", "10.0.22631"})
+           ) == 0
+  end
+
   test "Android browser detection matches rc14's case-insensitive substring behavior" do
     assert Config.android_browser?({"Baileys", "Android", ""})
     assert Config.android_browser?({"Custom", "Experimental ANDROID Phone", "1"})

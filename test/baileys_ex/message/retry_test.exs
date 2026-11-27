@@ -135,24 +135,24 @@ defmodule BaileysEx.Message.RetryTest do
 
     assert :ok =
              Retry.schedule_phone_request(ref, "msg-1", fn -> send(parent, :first) end,
-               delay_ms: 5
+               delay_ms: 80
              )
 
     assert :ok =
              Retry.schedule_phone_request(ref, "msg-1", fn -> send(parent, :second) end,
-               delay_ms: 5
+               delay_ms: 20
              )
 
-    refute_receive :first, 20
-    assert_receive :second, 50
+    assert_receive :second, 500
+    refute_receive :first, 100
 
     assert :ok =
              Retry.schedule_phone_request(ref, "msg-2", fn -> send(parent, :cancelled) end,
-               delay_ms: 5
+               delay_ms: 80
              )
 
     assert :ok = Retry.cancel_phone_request(ref, "msg-2")
-    refute_receive :cancelled, 20
+    refute_receive :cancelled, 100
   end
 
   test "request_placeholder_resend/4 deduplicates, resolves early, and delegates to PDO transport" do
@@ -166,7 +166,7 @@ defmodule BaileysEx.Message.RetryTest do
              Retry.request_placeholder_resend(ref, key, %{message_timestamp: 123},
                context: :original_context,
                delay_ms: 0,
-               timeout_ms: 20,
+               timeout_ms: 5_000,
                send_request_fun: fn pdo_message ->
                  send(parent, {:pdo, pdo_message})
                  {:ok, "pdo-1", :updated_context}
@@ -208,7 +208,7 @@ defmodule BaileysEx.Message.RetryTest do
               :continue_placeholder_resend -> :ok
             end
           end,
-          timeout_ms: 20,
+          timeout_ms: 5_000,
           send_request_fun: fn _ -> flunk("resolved resend should not reach PDO transport") end
         )
       end)
@@ -234,7 +234,7 @@ defmodule BaileysEx.Message.RetryTest do
              Retry.request_placeholder_resend(ref, key, nil,
                context: :original_context,
                delay_ms: 0,
-               timeout_ms: 5,
+               timeout_ms: 150,
                send_request_fun: fn _request ->
                  assert {:ok, nil} =
                           Retry.fetch_placeholder_resend(ref, "placeholder-failed-send")
@@ -243,15 +243,16 @@ defmodule BaileysEx.Message.RetryTest do
                end
              )
 
-    Process.send_after(self(), :retry_after_cleanup, 20)
-    assert_receive :retry_after_cleanup, 100
-    assert :error = Retry.fetch_placeholder_resend(ref, "placeholder-failed-send")
+    assert_eventually(
+      fn -> Retry.fetch_placeholder_resend(ref, "placeholder-failed-send") == :error end,
+      2_000
+    )
 
     assert {:ok, "pdo-after-cleanup", :updated_context} =
              Retry.request_placeholder_resend(ref, key, nil,
                context: :original_context,
                delay_ms: 0,
-               timeout_ms: 50,
+               timeout_ms: 5_000,
                send_request_fun: fn _request ->
                  send(parent, :pdo_retried_after_cleanup)
                  {:ok, "pdo-after-cleanup", :updated_context}
@@ -326,6 +327,61 @@ defmodule BaileysEx.Message.RetryTest do
              Retry.handle_retry_receipt(ref, too_many, resend_fun: fn _, _ -> :ok end)
   end
 
+  test "handle_retry_receipt/3 enforces bounded local per-device outbound attempts and base-chat lookup" do
+    {:ok, store} = Store.start_link()
+    ref = Store.wrap(store)
+
+    # Cached under base chat JID, retried from companion device JID
+    assert :ok =
+             Retry.add_recent_message(
+               ref,
+               "15551234567@s.whatsapp.net",
+               "retry-local-1",
+               %Message{}
+             )
+
+    receipt = %BinaryNode{
+      tag: "receipt",
+      attrs: %{
+        "id" => "retry-local-1",
+        "from" => "15551234567:2@s.whatsapp.net",
+        "type" => "retry"
+      },
+      content: [%BinaryNode{tag: "retry", attrs: %{"count" => "1"}, content: nil}]
+    }
+
+    assert Retry.will_send_message_again?(
+             ref,
+             "retry-local-1",
+             "15551234567:2@s.whatsapp.net",
+             max_retry_count: 2
+           )
+
+    assert {:ok, [%{id: "retry-local-1"}]} =
+             Retry.handle_retry_receipt(ref, receipt, max_retry_count: 2)
+
+    assert {:ok, [%{id: "retry-local-1"}]} =
+             Retry.handle_retry_receipt(ref, receipt, max_retry_count: 2)
+
+    refute Retry.will_send_message_again?(
+             ref,
+             "retry-local-1",
+             "15551234567:2@s.whatsapp.net",
+             max_retry_count: 2
+           )
+
+    assert {:error, :max_retries_exceeded} =
+             Retry.handle_retry_receipt(ref, receipt, max_retry_count: 2)
+
+    # Different device for the same message has its own independent counter
+    assert Retry.will_send_message_again?(
+             ref,
+             "retry-local-1",
+             "15551234567:3@s.whatsapp.net",
+             max_retry_count: 2
+           )
+  end
+
   test "send_retry_request/3 emits a retry receipt, increments counters, and schedules placeholder resend" do
     {:ok, store} = Store.start_link()
     ref = Store.wrap(store)
@@ -370,7 +426,8 @@ defmodule BaileysEx.Message.RetryTest do
 
     assert_receive {:placeholder_resend,
                     %{id: "retry-out-1", remote_jid: "15551234567@s.whatsapp.net"},
-                    %{key: %{id: "retry-out-1"}}}
+                    %{key: %{id: "retry-out-1"}}},
+                   500
   end
 
   test "send_retry_request/3 keeps the scheduled phone fallback when retry receipt sending fails" do
@@ -402,7 +459,7 @@ defmodule BaileysEx.Message.RetryTest do
              )
 
     assert_receive :retry_receipt_attempted
-    assert_receive {:phone_fallback, "retry-send-failed"}, 100
+    assert_receive {:phone_fallback, "retry-send-failed"}, 500
   end
 
   test "send_retry_request/3 falls back to an injected now_ms timestamp when t is absent" do
@@ -424,5 +481,23 @@ defmodule BaileysEx.Message.RetryTest do
                send_node_fun: fn _receipt -> :ok end,
                request_placeholder_resend_fun: fn _message_key, _msg_data -> :ok end
              )
+  end
+
+  defp assert_eventually(fun, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_assert_eventually(fun, deadline)
+  end
+
+  defp do_assert_eventually(fun, deadline) do
+    if fun.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        flunk("condition not met before timeout")
+      else
+        Process.sleep(5)
+        do_assert_eventually(fun, deadline)
+      end
+    end
   end
 end

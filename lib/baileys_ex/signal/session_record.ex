@@ -4,6 +4,7 @@ defmodule BaileysEx.Signal.SessionRecord do
   @max_closed_sessions 40
 
   @type session :: %{
+          optional(:remote_registration_id?) => boolean(),
           current_ratchet: %{
             root_key: binary(),
             ephemeral_key_pair: %{public: binary(), private: binary()} | nil,

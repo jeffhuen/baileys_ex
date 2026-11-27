@@ -3,13 +3,16 @@ defmodule BaileysEx.Message.SenderTest do
 
   alias BaileysEx.BinaryNode
   alias BaileysEx.Connection.Store, as: RuntimeStore
+  alias BaileysEx.Crypto
   alias BaileysEx.JID
   alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Sender
   alias BaileysEx.Message.Wire
   alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Signal.Adapter.Signal, as: SignalAdapter
   alias BaileysEx.Signal.Address
+  alias BaileysEx.Signal.Curve
   alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
@@ -1520,6 +1523,264 @@ defmodule BaileysEx.Message.SenderTest do
                         }
                       ]
                     }}
+  end
+
+  test "send_proto/4 attaches existing sender-key distribution on targeted group and status retries and wraps DSM for own companion" do
+    parent = self()
+    group_jid = %JID{user: "120363001234567890", server: "g.us"}
+    status_jid = %JID{user: "status", server: "broadcast"}
+    me_id = "15550001111:1@s.whatsapp.net"
+    me_lid = "99999:1@lid"
+    peer_device = "15551234567:2@s.whatsapp.net"
+    own_companion = "15550001111:3@s.whatsapp.net"
+
+    {:ok, sender_store} = Store.new()
+    {:ok, peer_store} = Store.new()
+    {:ok, companion_store} = Store.new()
+
+    sender_id = Crypto.generate_key_pair(:x25519, private_key: <<711::256>>)
+    sender_spk = Crypto.generate_key_pair(:x25519, private_key: <<712::256>>)
+    peer_id = Crypto.generate_key_pair(:x25519, private_key: <<713::256>>)
+    peer_spk = Crypto.generate_key_pair(:x25519, private_key: <<714::256>>)
+    comp_id = Crypto.generate_key_pair(:x25519, private_key: <<715::256>>)
+    comp_spk = Crypto.generate_key_pair(:x25519, private_key: <<716::256>>)
+
+    {:ok, peer_spk_pub} = Curve.generate_signal_pub_key(peer_spk.public)
+    {:ok, peer_sig} = Curve.sign(peer_id.private, peer_spk_pub)
+    {:ok, comp_spk_pub} = Curve.generate_signal_pub_key(comp_spk.public)
+    {:ok, comp_sig} = Curve.sign(comp_id.private, comp_spk_pub)
+
+    sender_repo =
+      Repository.new(
+        adapter: SignalAdapter,
+        adapter_state:
+          SignalAdapter.new(
+            store: sender_store,
+            identity_key_pair: sender_id,
+            registration_id: 7101,
+            signed_pre_key: %{key_id: 1, key_pair: sender_spk}
+          ),
+        store: sender_store
+      )
+      |> inject_session!(peer_device, %{
+        registration_id: 7102,
+        identity_key: peer_id.public,
+        signed_pre_key: %{key_id: 2, public_key: peer_spk.public, signature: peer_sig},
+        pre_key: nil
+      })
+      |> inject_session!(own_companion, %{
+        registration_id: 7103,
+        identity_key: comp_id.public,
+        signed_pre_key: %{key_id: 3, public_key: comp_spk.public, signature: comp_sig},
+        pre_key: nil
+      })
+
+    peer_repo =
+      Repository.new(
+        adapter: SignalAdapter,
+        adapter_state:
+          SignalAdapter.new(
+            store: peer_store,
+            identity_key_pair: peer_id,
+            registration_id: 7102,
+            signed_pre_key: %{key_id: 2, key_pair: peer_spk}
+          ),
+        store: peer_store
+      )
+
+    companion_repo =
+      Repository.new(
+        adapter: SignalAdapter,
+        adapter_state:
+          SignalAdapter.new(
+            store: companion_store,
+            identity_key_pair: comp_id,
+            registration_id: 7103,
+            signed_pre_key: %{key_id: 3, key_pair: comp_spk}
+          ),
+        store: companion_store
+      )
+
+    # Establish sender keys for both group and status broadcast
+    {:ok, sender_repo, _} =
+      Repository.encrypt_group_message(sender_repo, %{
+        group: "120363001234567890@g.us",
+        me_id: me_id,
+        data: "seed group"
+      })
+
+    {:ok, sender_repo, _} =
+      Repository.encrypt_group_message(sender_repo, %{
+        group: "status@broadcast",
+        me_id: me_id,
+        data: "seed status"
+      })
+
+    context = %{
+      signal_repository: sender_repo,
+      signal_store: sender_store,
+      me_id: me_id,
+      me_lid: me_lid,
+      send_node_fun: fn node ->
+        send(parent, {:relay_node, node})
+        :ok
+      end
+    }
+
+    retry_msg = Builder.build(%{text: "retried group message"})
+
+    # 1. Peer group retry includes SKDM alongside the retried message
+    assert {:ok, _sent, context} =
+             Sender.send_proto(context, group_jid, retry_msg,
+               message_id_fun: fn _ -> "3EB0GRPRETRY1" end,
+               participant: %{jid: peer_device, count: 2}
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{
+                        "id" => "3EB0GRPRETRY1",
+                        "to" => "120363001234567890@g.us",
+                        "participant" => ^peer_device
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "enc",
+                          attrs: %{"type" => "pkmsg"},
+                          content: {:binary, peer_ct}
+                        }
+                      ]
+                    }}
+
+    assert {:ok, peer_repo, peer_plaintext} =
+             Repository.decrypt_message(peer_repo, %{
+               jid: me_id,
+               type: :pkmsg,
+               ciphertext: peer_ct
+             })
+
+    assert {:ok,
+            %Message{
+              extended_text_message: %Message.ExtendedTextMessage{text: "retried group message"},
+              sender_key_distribution_message: %Message.SenderKeyDistributionMessage{
+                group_id: "120363001234567890@g.us",
+                axolotl_sender_key_distribution_message: skdm_bytes
+              }
+            }} = Wire.decode(peer_plaintext)
+
+    # Peer can now decrypt a subsequent group skmsg using the distributed sender key
+    assert {:ok, peer_repo} =
+             Repository.process_sender_key_distribution_message(peer_repo, %{
+               author_jid: me_id,
+               item: %{
+                 group_id: "120363001234567890@g.us",
+                 axolotl_sender_key_distribution_message: skdm_bytes
+               }
+             })
+
+    assert {:ok, next_sender_repo, %{ciphertext: later_skmsg}} =
+             Repository.encrypt_group_message(context.signal_repository, %{
+               group: "120363001234567890@g.us",
+               me_id: me_id,
+               data: "later group ciphertext"
+             })
+
+    assert {:ok, _peer_repo, "later group ciphertext"} =
+             Repository.decrypt_group_message(peer_repo, %{
+               group: "120363001234567890@g.us",
+               author_jid: me_id,
+               msg: later_skmsg
+             })
+
+    context = %{context | signal_repository: next_sender_repo}
+
+    # 2. Own PN companion group retry wraps SKDM inside DeviceSentMessage even when me_lid is present
+    assert {:ok, _sent, context} =
+             Sender.send_proto(context, group_jid, retry_msg,
+               message_id_fun: fn _ -> "3EB0GRPRETRY2" end,
+               participant: %{jid: own_companion, count: 2}
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{
+                        "id" => "3EB0GRPRETRY2",
+                        "to" => "120363001234567890@g.us",
+                        "participant" => ^own_companion
+                      },
+                      content: [
+                        %BinaryNode{
+                          tag: "enc",
+                          attrs: %{"type" => "pkmsg"},
+                          content: {:binary, comp_ct}
+                        }
+                      ]
+                    }}
+
+    assert {:ok, _companion_repo, comp_plaintext} =
+             Repository.decrypt_message(companion_repo, %{
+               jid: me_id,
+               type: :pkmsg,
+               ciphertext: comp_ct
+             })
+
+    assert {:ok,
+            %Message{
+              device_sent_message: %Message.DeviceSentMessage{
+                destination_jid: "120363001234567890@g.us",
+                message: %Message{
+                  extended_text_message: %Message.ExtendedTextMessage{
+                    text: "retried group message"
+                  },
+                  sender_key_distribution_message: %Message.SenderKeyDistributionMessage{
+                    group_id: "120363001234567890@g.us",
+                    axolotl_sender_key_distribution_message: comp_skdm
+                  }
+                }
+              }
+            }} = Wire.decode(comp_plaintext)
+
+    assert is_binary(comp_skdm) and byte_size(comp_skdm) > 0
+
+    # 3. Status broadcast retry also attaches its SKDM
+    assert {:ok, _sent, _context} =
+             Sender.send_proto(context, status_jid, Builder.build(%{text: "retried status"}),
+               message_id_fun: fn _ -> "3EB0STATRETRY1" end,
+               participant: %{jid: peer_device, count: 2}
+             )
+
+    assert_receive {:relay_node,
+                    %BinaryNode{
+                      tag: "message",
+                      attrs: %{"id" => "3EB0STATRETRY1", "to" => ^peer_device},
+                      content: [
+                        %BinaryNode{
+                          tag: "enc",
+                          attrs: %{"type" => status_type},
+                          content: {:binary, status_ct}
+                        }
+                      ]
+                    }}
+
+    assert {:ok, _peer_repo, status_plaintext} =
+             Repository.decrypt_message(peer_repo, %{
+               jid: me_id,
+               type: String.to_existing_atom(status_type),
+               ciphertext: status_ct
+             })
+
+    assert {:ok,
+            %Message{
+              extended_text_message: %Message.ExtendedTextMessage{text: "retried status"},
+              sender_key_distribution_message: %Message.SenderKeyDistributionMessage{
+                group_id: "status@broadcast",
+                axolotl_sender_key_distribution_message: status_skdm
+              }
+            }} = Wire.decode(status_plaintext)
+
+    assert is_binary(status_skdm) and byte_size(status_skdm) > 0
   end
 
   defp inject_session!(repo, jid, session) do

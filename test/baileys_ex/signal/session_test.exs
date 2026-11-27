@@ -6,6 +6,7 @@ defmodule BaileysEx.Signal.SessionTest do
   alias BaileysEx.Signal.Adapter.Signal, as: SignalAdapter
   alias BaileysEx.Signal.Address
   alias BaileysEx.Signal.Curve
+  alias BaileysEx.Signal.LIDMappingStore
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Session
   alias BaileysEx.Signal.Store
@@ -179,5 +180,84 @@ defmodule BaileysEx.Signal.SessionTest do
     }
 
     assert :error = Session.extract_e2e_session_from_retry_receipt(invalid_type_receipt)
+  end
+
+  test "assert_sessions/3 with require_injected fails when forced encrypt IQ omits the requested device" do
+    alice = adapter(503, 3003)
+    bob = adapter(603, 4003)
+
+    repo = Repository.new(adapter: SignalAdapter, adapter_state: alice.state, store: alice.store)
+
+    initial_response = %BinaryNode{
+      tag: "iq",
+      attrs: %{"type" => "result"},
+      content: [
+        %BinaryNode{tag: "list", attrs: %{}, content: [user_node_without_one_time_pre_key(bob)]}
+      ]
+    }
+
+    assert {:ok, repo} = Session.parse_and_inject_e2e_sessions(initial_response, repo)
+    assert {:ok, %{exists: true}} = Repository.validate_session(repo, @bob_jid)
+
+    empty_context = %{
+      signal_repository: repo,
+      query_fun: fn _node ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "list", attrs: %{}, content: []}]
+         }}
+      end
+    }
+
+    assert {:error, {:missing_session_bundles, [@bob_jid]}} =
+             Session.assert_sessions(empty_context, [@bob_jid],
+               force: true,
+               require_injected: true
+             )
+
+    valid_context = %{
+      signal_repository: repo,
+      query_fun: fn _node -> {:ok, initial_response} end
+    }
+
+    assert {:ok, %{signal_repository: %Repository{}}, true} =
+             Session.assert_sessions(valid_context, [@bob_jid],
+               force: true,
+               require_injected: true
+             )
+
+    # Also verifies canonical resolution when PN is mapped to LID and response omits or supplies LID
+    :ok =
+      LIDMappingStore.store_lid_pn_mappings(alice.store, [
+        %{pn: @bob_jid, lid: "77777@lid"}
+      ])
+
+    assert {:error, {:missing_session_bundles, ["77777@lid"]}} =
+             Session.assert_sessions(empty_context, [@bob_jid],
+               force: true,
+               require_injected: true
+             )
+
+    lid_user = %{user_node_without_one_time_pre_key(bob) | attrs: %{"jid" => "77777@lid"}}
+
+    lid_context = %{
+      signal_repository: repo,
+      query_fun: fn _node ->
+        {:ok,
+         %BinaryNode{
+           tag: "iq",
+           attrs: %{"type" => "result"},
+           content: [%BinaryNode{tag: "list", attrs: %{}, content: [lid_user]}]
+         }}
+      end
+    }
+
+    assert {:ok, %{signal_repository: %Repository{}}, true} =
+             Session.assert_sessions(lid_context, [@bob_jid],
+               force: true,
+               require_injected: true
+             )
   end
 end

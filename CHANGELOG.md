@@ -2,58 +2,100 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
+Version `0.1.0` is the first stable release after the `0.1.0-alpha.*` series.
+It updates dependencies for Erlang/OTP 29, removes the unused dependency,
+and fixes companion-device protocol bugs.
+
+### Changed
+
+- `BaileysEx` now uses `rustler` `~> 0.38` for Erlang/OTP 29 support, along
+  with `req` `~> 0.7.0 or ~> 0.8.0` (locked on stable `0.7.5`, tested against
+  `0.8.0-rc.0`), `mint` `1.11`, `mint_web_socket` `1.0.6`, and `telemetry`
+  `1.4.3`.
+- `BaileysEx.Connection.Version` now fetches version metadata through `Req`
+  with `raw: true` instead of `:httpc`, and `mix.exs` no longer lists `:inets`
+  in `extra_applications`.
+- `BaileysEx.Media.Download` now sets `raw: true`, uses backpressured streaming
+  for both full (`200`) and ranged (`206`) downloads (using Req `0.8`'s
+  `stream` API when available, and `into: fun` on Req `0.7`), resets partial
+  output files before Req retries, and cancels async response streams when
+  custom `request_fun` adapters return `Req.Response.Async`.
+- `mix.exs` no longer depends on `protox`. Protobuf serialization uses the
+  pure-Elixir wire codecs in `BaileysEx`.
+- Windows desktop connections now send the `WIN_HYBRID` sub-platform instead of
+  the retired `WIN32` value.
+- GitHub Actions CI now tests both Elixir 1.19 on OTP 28 and Elixir 1.20 on
+  OTP 29. CI also runs `cargo fmt --check` and
+  `cargo clippy --all-targets -- -D warnings`.
+
 ### Fixed
 
-- Phone-number pairing now sends the `companion_hello` IQ with a message tag
-  `id`, matching Baileys `requestPairingCode`. Without it WhatsApp did not
-  register the code, and the phone rejected it as a wrong code. Outgoing
-  `get`/`set` IQs sent through `Connection.Socket` (including `account_sync`
-  dirty-bit cleanup) are now also guaranteed to carry a message `id` by
-  [@Rodericuss](https://github.com/Rodericuss)
-  [(#18)](https://github.com/jeffhuen/baileys_ex/pull/18).
-- Inbound `call` (#23), `presence`, and `chatstate` nodes are now surfaced as
-  `socket_node` events so the coordinator processes and acks them instead of
-  dropping them and stalling the offline queue, and `Connection.Socket` now
-  closes cleanly on inbound `xmlstreamend` frames by
-  [@Rodericuss](https://github.com/Rodericuss)
-  [(#23)](https://github.com/jeffhuen/baileys_ex/pull/23).
-- Initial app-state sync now starts when history sync moves the connection into
-  `:syncing` without waiting for `my_app_state_key_id`, parking undecryptable
-  collections and resyncing them when the key arrives; also fixed shadowed
-  `Coordinator` sync-completion clauses, bounded omitted-collection retries in
-  `AppState.resync_app_state/4`, preserved mid-sync blocked collections, reset
-  `sync_state` on disconnects with `last_disconnect`, and skipped the 20-second
-  history wait on reconnects with `account_sync_counter > 0` by
-  [@Rodericuss](https://github.com/Rodericuss)
-  [(#19)](https://github.com/jeffhuen/baileys_ex/pull/19).
-- `Connection.EventEmitter` now merges and consolidates buffered events across
-  event kinds (`messaging_history_set`, `chats_upsert`, `chats_update`,
+- `BaileysEx.Connection.Socket.request_pairing_code/3` now adds a message `id`
+  to the `companion_hello` IQ so WhatsApp accepts the pairing code.
+  `BaileysEx.Connection.Socket` also adds a message `id` to every outgoing
+  `get` or `set` IQ that omits one, including `urn:xmpp:whatsapp:dirty` cleanup
+  requests from `BaileysEx.Connection.Coordinator`.
+  [@Rodericuss](https://github.com/Rodericuss) contributed this fix in
+  [PR #18](https://github.com/jeffhuen/baileys_ex/pull/18).
+- `BaileysEx.Connection.Socket` now emits inbound `call`, `presence`, and
+  `chatstate` nodes as `socket_node` events so
+  `BaileysEx.Connection.Coordinator` can process and acknowledge them without
+  stalling the offline queue. `BaileysEx.Connection.Socket` also closes the
+  connection with `:connection_closed` when an `xmlstreamend` frame arrives.
+  [@Rodericuss](https://github.com/Rodericuss) contributed this fix in
+  [PR #23](https://github.com/jeffhuen/baileys_ex/pull/23).
+- `BaileysEx.Connection.Coordinator` now starts the initial app-state sync as
+  soon as history sync enters `:syncing`, even before `my_app_state_key_id`
+  arrives. `BaileysEx.Connection.Coordinator` tracks collections that fail
+  decryption before key arrival and resyncs them once the key arrives, even
+  during an active sync. This release also fixes shadowed sync-completion
+  handlers and limits retries in
+  `BaileysEx.Feature.AppState.resync_app_state/4` when the server omits a
+  collection. Disconnects that include `last_disconnect` now reset
+  `sync_state`, and reconnects skip the 20-second history wait when
+  `account_sync_counter` is greater than zero.
+  [@Rodericuss](https://github.com/Rodericuss) contributed the initial sync fix
+  in [PR #19](https://github.com/jeffhuen/baileys_ex/pull/19).
+- `BaileysEx.Connection.EventEmitter` now merges and consolidates buffered
+  events instead of keeping only the last emit of each event. The event buffer
+  folds updates across `messaging_history_set`, `chats_upsert`, `chats_update`,
   `chats_delete`, `contacts_upsert`, `contacts_update`, `messages_upsert`,
   `messages_update`, `messages_delete`, `messages_reaction`,
-  `message_receipt_update`, and `groups_update`) via `Connection.EventBuffer`,
-  matching Baileys `event-buffer.ts` by
-  [@Rodericuss](https://github.com/Rodericuss)
-  [(#20)](https://github.com/jeffhuen/baileys_ex/pull/20).
-- Direct, group, and retry-resend media sends now include the `mediatype`
-  attribute on `enc` nodes, normalize wrapped messages (`ephemeral`,
-  `viewOnce`) for stanza type classification, and set `decrypt-fail="hide"` on
-  reaction and pin-in-chat `enc` nodes, matching Baileys `messages-send.ts` by
-  [@Rodericuss](https://github.com/Rodericuss)
-  [(#21)](https://github.com/jeffhuen/baileys_ex/pull/21).
-- E2E session parsing, normalization, and retry-receipt `<keys>` bundle
-  extraction now accept pre-key bundles without a one-time pre-key (`key` node
-  omitted), matching Baileys `parseAndInjectE2ESessions` and
-  `extractE2ESessionFromRetryReceipt`; incoming retry receipts also now inject
-  retry key bundles, reset stale sessions on registration-ID or base-key
-  collisions, target 1:1 companion devices, and fall back to `get_message_fun`
-  by [@Rodericuss](https://github.com/Rodericuss)
-  [(#22)](https://github.com/jeffhuen/baileys_ex/pull/22).
-- `Signal.SessionCipher` now bounds skipped-key derivation to 2000 cumulative
-  keys on both closed previous chains during ratchet steps and open receiving
-  chains, preventing OOM crashes when a peer sends a large `previous_counter`
-  such as `0xFFFFFFFF` or repeated out-of-order jumps by
-  [@Rodericuss](https://github.com/Rodericuss)
-  [(#24)](https://github.com/jeffhuen/baileys_ex/pull/24).
+  `message_receipt_update`, and `groups_update`.
+  [@Rodericuss](https://github.com/Rodericuss) contributed this fix in
+  [PR #20](https://github.com/jeffhuen/baileys_ex/pull/20).
+- `BaileysEx.Message.Sender` now adds the `mediatype` attribute to `enc` nodes
+  on direct, group, and retry-resend media messages. It also unwraps
+  `ephemeral` and `viewOnce` containers before choosing the stanza type, and
+  sets `decrypt-fail="hide"` on `reaction_message` and `pin_in_chat_message`
+  `enc` nodes. [@Rodericuss](https://github.com/Rodericuss) contributed this
+  fix in [PR #21](https://github.com/jeffhuen/baileys_ex/pull/21).
+- `BaileysEx.Signal.Session` and `BaileysEx.Signal.Repository` now accept
+  pre-key bundles that omit a one-time pre-key (`key` node).
+  `BaileysEx.Signal.Session` applies the same rule when it reads `<keys>`
+  bundles from retry receipts. `BaileysEx.Connection.Coordinator` now injects
+  those bundles, resets stale sessions on `registration` mismatches or base-key
+  collisions, targets direct companion devices on retries, and falls back to
+  `get_message_fun`. [@Rodericuss](https://github.com/Rodericuss) contributed
+  the optional pre-key fix in
+  [PR #22](https://github.com/jeffhuen/baileys_ex/pull/22).
+- `Signal.SessionCipher` now caps skipped message keys at 2,000 cumulative keys
+  per chain on both open receiving chains and previous chains closed during a
+  ratchet step. This cap stops out-of-memory crashes when a peer sends a large
+  `previous_counter` such as `0xFFFFFFFF` or repeated out-of-order jumps.
+  [@Rodericuss](https://github.com/Rodericuss) contributed this fix in
+  [PR #24](https://github.com/jeffhuen/baileys_ex/pull/24).
+- `BaileysEx.Media.Download` now ignores the `a.whatsapp.net` placeholder host
+  on `url` and falls back to `mmg.whatsapp.net` when it builds direct-path
+  download URLs.
+- `BaileysEx.Connection.Coordinator`, `BaileysEx.Message.Sender`,
+  `BaileysEx.Message.Receiver`, and `BaileysEx.Signal.Device` now log routine
+  send, receive, protocol-message, and device-query diagnostics with lazy
+  `Logger.debug` instead of `Logger.warning`.
+- `Message.RetryTest` and `Connection.SupervisorTest` now use wider timeout
+  windows so parallel test runs do not time out.
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

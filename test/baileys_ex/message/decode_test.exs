@@ -6,7 +6,7 @@ defmodule BaileysEx.Message.DecodeTest do
   alias BaileysEx.Message.Builder
   alias BaileysEx.Message.Decode
   alias BaileysEx.Message.Receiver
-  alias BaileysEx.Protocol.Proto.Message
+  alias BaileysEx.Message.Wire
   alias BaileysEx.Signal.Repository
   alias BaileysEx.Signal.Store
   alias BaileysEx.TestHelpers.MessageSignalHelpers
@@ -25,7 +25,7 @@ defmodule BaileysEx.Message.DecodeTest do
                session: session
              })
 
-    plaintext = Builder.build(%{text: "migrated sender"}) |> Message.encode()
+    plaintext = Builder.build(%{text: "migrated sender"}) |> Wire.encode(random_byte: 0)
 
     assert {:ok, repo, %{ciphertext: ciphertext}} =
              Repository.encrypt_message(repo, %{

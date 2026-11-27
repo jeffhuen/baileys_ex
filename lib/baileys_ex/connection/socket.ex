@@ -530,6 +530,7 @@ defmodule BaileysEx.Connection.Socket do
          auth_state <- AuthState.merge_updates(data.auth_state, creds_update),
          data = %{data | auth_state: auth_state},
          :ok <- emit_event(data, :creds_update, creds_update),
+         node = %{node | attrs: Map.put(node.attrs, "id", generate_message_tag(data))},
          {:ok, data} <- send_node_internal(data, node) do
       {:keep_state, data, [{:reply, from, {:ok, pairing_code}}]}
     else
@@ -796,7 +797,7 @@ defmodule BaileysEx.Connection.Socket do
     do: apply_notification_node(:connected, node, data)
 
   defp apply_binary_node(current_state, %BinaryNode{tag: tag} = node, data)
-       when tag in ["message", "receipt", "ack"] do
+       when tag in ["message", "receipt", "ack", "call", "presence", "chatstate"] do
     emit_event(data, :socket_node, %{node: node, state: current_state})
     {:ok, current_state, data}
   end
@@ -807,6 +808,9 @@ defmodule BaileysEx.Connection.Socket do
 
   defp apply_binary_node(_current_state, %BinaryNode{tag: "stream:error"} = node, data),
     do: {:error, stream_error_reason(node), data}
+
+  defp apply_binary_node(_current_state, %BinaryNode{tag: "xmlstreamend"}, data),
+    do: {:error, :connection_closed, data}
 
   defp apply_binary_node(_current_state, %BinaryNode{tag: "failure"} = node, data),
     do: {:error, failure_reason(node), data}
@@ -1331,6 +1335,8 @@ defmodule BaileysEx.Connection.Socket do
   defp send_node_internal(data, %BinaryNode{} = node) do
     require Logger
 
+    node = ensure_outgoing_iq_id(data, node)
+
     Logger.debug(
       "[Wire] SEND tag=#{node.tag} id=#{node.attrs["id"]} xmlns=#{node.attrs["xmlns"]} " <>
         "type=#{node.attrs["type"]} to=#{node.attrs["to"]}"
@@ -1340,6 +1346,22 @@ defmodule BaileysEx.Connection.Socket do
     |> BinaryNodeUtil.encode()
     |> then(&send_transport_binary(data, &1))
   end
+
+  defp ensure_outgoing_iq_id(
+         data,
+         %BinaryNode{tag: "iq", attrs: %{"type" => type} = attrs} = node
+       )
+       when type in ["get", "set"] do
+    case Map.get(attrs, "id") do
+      id when is_binary(id) and id != "" ->
+        node
+
+      _ ->
+        %{node | attrs: Map.put(attrs, "id", generate_message_tag(data))}
+    end
+  end
+
+  defp ensure_outgoing_iq_id(_data, node), do: node
 
   defp register_pending_query(%__MODULE__{} = data, query_id, {reply_pid, reply_ref}, timeout)
        when is_binary(query_id) and is_pid(reply_pid) and is_reference(reply_ref) do

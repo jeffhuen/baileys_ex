@@ -12,6 +12,7 @@ defmodule BaileysEx.Signal.Repository do
   alias BaileysEx.Signal.Group.SenderKeyName
   alias BaileysEx.Signal.Identity
   alias BaileysEx.Signal.LIDMappingStore
+  alias BaileysEx.Signal.SessionRecord
   alias BaileysEx.Signal.Store
   alias BaileysEx.Telemetry
 
@@ -24,10 +25,12 @@ defmodule BaileysEx.Signal.Repository do
             public_key: binary(),
             signature: binary()
           },
-          pre_key: %{
-            key_id: non_neg_integer(),
-            public_key: binary()
-          }
+          pre_key:
+            %{
+              key_id: non_neg_integer(),
+              public_key: binary()
+            }
+            | nil
         }
 
   @typedoc "Repository result for `validate_session/2`."
@@ -156,6 +159,33 @@ defmodule BaileysEx.Signal.Repository do
       {:ok, normalize_validation(validation)}
     end
   end
+
+  @doc "Returns registration and base-key metadata for the open Signal session of `jid`, or `nil`."
+  @spec session_info(t(), String.t()) ::
+          {:ok, %{registration_id: non_neg_integer(), base_key: binary()} | nil}
+          | {:error, adapter_error()}
+  def session_info(%__MODULE__{} = repository, jid) when is_binary(jid) do
+    with {:ok, address} <- resolve_identity_address(repository, jid) do
+      session_key = Address.to_string(address)
+      {:ok, open_session_info(Store.get(repository.store, :session, [session_key]), session_key)}
+    end
+  end
+
+  defp open_session_info(sessions, session_key) do
+    case Map.get(sessions, session_key) do
+      %SessionRecord{} = record ->
+        extract_open_session_info(SessionRecord.get_open_session(record))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp extract_open_session_info({base_key, %{registration_id: registration_id}}) do
+    %{registration_id: registration_id, base_key: base_key}
+  end
+
+  defp extract_open_session_info(_other), do: nil
 
   @doc "Applies standard E2E Signal encryption payload converting binary messages to opaque node cipher blobs."
   @spec encrypt_message(t(), %{jid: String.t(), data: binary()}) ::
@@ -439,32 +469,43 @@ defmodule BaileysEx.Signal.Repository do
   end
 
   @spec normalize_session(map()) :: {:ok, e2e_session()} | {:error, :invalid_session}
-  defp normalize_session(%{
-         registration_id: registration_id,
-         identity_key: identity_key,
-         signed_pre_key: %{key_id: signed_key_id, public_key: signed_key, signature: signature},
-         pre_key: %{key_id: pre_key_id, public_key: pre_key}
-       })
+  defp normalize_session(
+         %{
+           registration_id: registration_id,
+           identity_key: identity_key,
+           signed_pre_key: %{key_id: signed_key_id, public_key: signed_key, signature: signature}
+         } = session
+       )
        when is_integer(registration_id) and registration_id >= 0 and
               is_integer(signed_key_id) and signed_key_id >= 0 and
-              is_integer(pre_key_id) and pre_key_id >= 0 and
               is_binary(signature) and byte_size(signature) == 64 do
     with {:ok, identity_key} <- Curve.generate_signal_pub_key(identity_key),
          {:ok, signed_key} <- Curve.generate_signal_pub_key(signed_key),
-         {:ok, pre_key} <- Curve.generate_signal_pub_key(pre_key) do
+         {:ok, pre_key} <- normalize_pre_key(Map.get(session, :pre_key)) do
       {:ok,
        %{
          registration_id: registration_id,
          identity_key: identity_key,
          signed_pre_key: %{key_id: signed_key_id, public_key: signed_key, signature: signature},
-         pre_key: %{key_id: pre_key_id, public_key: pre_key}
+         pre_key: pre_key
        }}
     else
       {:error, :invalid_public_key} -> {:error, :invalid_session}
+      {:error, :invalid_pre_key} -> {:error, :invalid_session}
     end
   end
 
   defp normalize_session(_session), do: {:error, :invalid_session}
+
+  defp normalize_pre_key(nil), do: {:ok, nil}
+
+  defp normalize_pre_key(%{key_id: key_id, public_key: public_key})
+       when is_integer(key_id) and key_id >= 0 do
+    with {:ok, public_key} <- Curve.generate_signal_pub_key(public_key),
+         do: {:ok, %{key_id: key_id, public_key: public_key}}
+  end
+
+  defp normalize_pre_key(_pre_key), do: {:error, :invalid_pre_key}
 
   defp normalize_migration(from_jid, to_jid) do
     case {parse_pn_source(from_jid), parse_lid_target(to_jid)} do

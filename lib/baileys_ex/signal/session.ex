@@ -10,6 +10,7 @@ defmodule BaileysEx.Signal.Session do
   alias BaileysEx.Signal.Repository
 
   @s_whatsapp_net "s.whatsapp.net"
+  @key_bundle_type <<5>>
 
   @type context :: %{
           required(:signal_repository) => Repository.t(),
@@ -69,6 +70,38 @@ defmodule BaileysEx.Signal.Session do
         {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  @doc """
+  Extracts an E2E session pre-key bundle from an incoming retry receipt's `<keys>` node.
+
+  Matches Baileys `extractE2ESessionFromRetryReceipt`: returns `{:ok, session}` when
+  the receipt carries a valid key bundle (with an optional one-time pre-key), or `:error`
+  when no valid bundle is present.
+  """
+  @spec extract_e2e_session_from_retry_receipt(BinaryNode.t()) ::
+          {:ok, Repository.e2e_session()} | :error
+  def extract_e2e_session_from_retry_receipt(%BinaryNode{} = receipt) do
+    with %BinaryNode{} = keys_node <- BinaryNodeUtil.child(receipt, "keys"),
+         {:ok, @key_bundle_type} <- child_required_bytes(keys_node, "type"),
+         {:ok, identity_bytes} when byte_size(identity_bytes) == 32 <-
+           child_required_bytes(keys_node, "identity"),
+         {:ok, identity_key} <- Curve.generate_signal_pub_key(identity_bytes),
+         {:ok, registration_bytes} when byte_size(registration_bytes) == 4 <-
+           child_required_bytes(receipt, "registration"),
+         {:ok, signed_pre_key} <-
+           decode_retry_signed_pre_key(BinaryNodeUtil.child(keys_node, "skey")),
+         {:ok, pre_key} <- decode_retry_pre_key(BinaryNodeUtil.child(keys_node, "key")) do
+      {:ok,
+       %{
+         registration_id: :binary.decode_unsigned(registration_bytes),
+         identity_key: identity_key,
+         signed_pre_key: signed_pre_key,
+         pre_key: pre_key
+       }}
+    else
+      _ -> :error
+    end
   end
 
   defp jids_requiring_fetch(repo, jids, force?) do
@@ -161,7 +194,42 @@ defmodule BaileysEx.Signal.Session do
     end
   end
 
-  defp decode_pre_key(_node), do: {:error, :missing_pre_key}
+  # The one-time pre-key is optional: when the device has run out of them the server
+  # sends only the signed pre-key, and Baileys (`extractKey`) passes `undefined`.
+  defp decode_pre_key(nil), do: {:ok, nil}
+
+  defp decode_retry_signed_pre_key(%BinaryNode{} = node) do
+    with {:ok, id_bytes} when byte_size(id_bytes) == 3 <- child_required_bytes(node, "id"),
+         {:ok, value_bytes} when byte_size(value_bytes) == 32 <-
+           child_required_bytes(node, "value"),
+         {:ok, public_key} <- Curve.generate_signal_pub_key(value_bytes),
+         {:ok, signature} when byte_size(signature) == 64 <-
+           child_required_bytes(node, "signature") do
+      {:ok,
+       %{
+         key_id: :binary.decode_unsigned(id_bytes),
+         public_key: public_key,
+         signature: signature
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp decode_retry_signed_pre_key(_node), do: :error
+
+  defp decode_retry_pre_key(nil), do: {:ok, nil}
+
+  defp decode_retry_pre_key(%BinaryNode{} = node) do
+    with {:ok, id_bytes} when byte_size(id_bytes) == 3 <- child_required_bytes(node, "id"),
+         {:ok, value_bytes} when byte_size(value_bytes) == 32 <-
+           child_required_bytes(node, "value"),
+         {:ok, public_key} <- Curve.generate_signal_pub_key(value_bytes) do
+      {:ok, %{key_id: :binary.decode_unsigned(id_bytes), public_key: public_key}}
+    else
+      _ -> :error
+    end
+  end
 
   defp child_signal_public_key(node, tag) do
     with {:ok, bytes} <- child_required_bytes(node, tag) do

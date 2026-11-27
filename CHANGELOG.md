@@ -4,13 +4,56 @@
 
 ### Fixed
 
-- Closing the previous receiving chain on a ratchet step no longer derives
-  keys without bound. A `previous_counter` more than 2000 messages past the
-  chain (the same `@max_skipped_keys` limit `decrypt_from_chain/4` already
-  enforces, and libsignal's `fillMessageKeys` limit) now closes the chain
-  without caching skipped keys. Before, a `pkmsg` announcing `previous_counter`
-  `0xFFFFFFFF` made the decrypt loop over four billion HMAC derivations until
-  the VM ran out of memory.
+- Phone-number pairing now sends the `companion_hello` IQ with a message tag
+  `id`, matching Baileys `requestPairingCode`. Without it WhatsApp did not
+  register the code, and the phone rejected it as a wrong code. Outgoing
+  `get`/`set` IQs sent through `Connection.Socket` (including `account_sync`
+  dirty-bit cleanup) are now also guaranteed to carry a message `id` by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#18)](https://github.com/jeffhuen/baileys_ex/pull/18).
+- Inbound `call` (#23), `presence`, and `chatstate` nodes are now surfaced as
+  `socket_node` events so the coordinator processes and acks them instead of
+  dropping them and stalling the offline queue, and `Connection.Socket` now
+  closes cleanly on inbound `xmlstreamend` frames by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#23)](https://github.com/jeffhuen/baileys_ex/pull/23).
+- Initial app-state sync now starts when history sync moves the connection into
+  `:syncing` without waiting for `my_app_state_key_id`, parking undecryptable
+  collections and resyncing them when the key arrives; also fixed shadowed
+  `Coordinator` sync-completion clauses, bounded omitted-collection retries in
+  `AppState.resync_app_state/4`, preserved mid-sync blocked collections, reset
+  `sync_state` on disconnects with `last_disconnect`, and skipped the 20-second
+  history wait on reconnects with `account_sync_counter > 0` by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#19)](https://github.com/jeffhuen/baileys_ex/pull/19).
+- `Connection.EventEmitter` now merges and consolidates buffered events across
+  event kinds (`messaging_history_set`, `chats_upsert`, `chats_update`,
+  `chats_delete`, `contacts_upsert`, `contacts_update`, `messages_upsert`,
+  `messages_update`, `messages_delete`, `messages_reaction`,
+  `message_receipt_update`, and `groups_update`) via `Connection.EventBuffer`,
+  matching Baileys `event-buffer.ts` by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#20)](https://github.com/jeffhuen/baileys_ex/pull/20).
+- Direct, group, and retry-resend media sends now include the `mediatype`
+  attribute on `enc` nodes, normalize wrapped messages (`ephemeral`,
+  `viewOnce`) for stanza type classification, and set `decrypt-fail="hide"` on
+  reaction and pin-in-chat `enc` nodes, matching Baileys `messages-send.ts` by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#21)](https://github.com/jeffhuen/baileys_ex/pull/21).
+- E2E session parsing, normalization, and retry-receipt `<keys>` bundle
+  extraction now accept pre-key bundles without a one-time pre-key (`key` node
+  omitted), matching Baileys `parseAndInjectE2ESessions` and
+  `extractE2ESessionFromRetryReceipt`; incoming retry receipts also now inject
+  retry key bundles, reset stale sessions on registration-ID or base-key
+  collisions, target 1:1 companion devices, and fall back to `get_message_fun`
+  by [@Rodericuss](https://github.com/Rodericuss)
+  [(#22)](https://github.com/jeffhuen/baileys_ex/pull/22).
+- `Signal.SessionCipher` now bounds skipped-key derivation to 2000 cumulative
+  keys on both closed previous chains during ratchet steps and open receiving
+  chains, preventing OOM crashes when a peer sends a large `previous_counter`
+  such as `0xFFFFFFFF` or repeated out-of-order jumps by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#24)](https://github.com/jeffhuen/baileys_ex/pull/24).
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

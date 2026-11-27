@@ -222,7 +222,7 @@ defmodule BaileysEx.Signal.SessionCipher do
       chain_key.counter > counter ->
         {:error, :message_key_already_consumed}
 
-      counter - chain_key.counter > @max_skipped_keys ->
+      map_size(chain.message_keys) + (counter - chain_key.counter) > @max_skipped_keys ->
         {:error, :too_many_skipped_keys}
 
       true ->
@@ -389,7 +389,8 @@ defmodule BaileysEx.Signal.SessionCipher do
       chain_key.counter > previous_counter ->
         chain
 
-      previous_counter - chain_key.counter > @max_skipped_keys ->
+      map_size(chain.message_keys) + (previous_counter - chain_key.counter + 1) >
+          @max_skipped_keys ->
         chain
 
       true ->

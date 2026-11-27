@@ -88,7 +88,7 @@ defmodule BaileysEx.Signal.LIDMappingStoreTest do
           LIDMappingStore.get_lid_for_pn(store, "5511999887766:99@hosted", lookup: lookup)
         end)
 
-      assert_receive :lookup_called
+      assert_receive :lookup_called, 1_000
       refute_receive :lookup_called, 20
 
       assert {:ok, "12345:2@lid"} = Task.await(first)

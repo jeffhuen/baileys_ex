@@ -420,5 +420,23 @@ defmodule BaileysEx.Media.UploadTest do
                       "content-type" => "application/octet-stream",
                       "origin" => "https://web.whatsapp.com"
                     }, ^payload}
+
+    # Atom map headers normalize underscores to hyphens so :content_type overrides the default
+    assert {:ok, %{direct_path: "/mms/image/uploaded-real"}} =
+             Upload.upload(host_query, enc_path, :image,
+               file_enc_sha256: <<2::256>>,
+               req_options: [
+                 headers: %{"X_Raw_Key" => "kept", content_type: "application/x-custom"},
+                 retry: false
+               ],
+               request_fun: fn req_opts ->
+                 Req.post(Keyword.put(req_opts, :url, "#{server.url}/mms/image/override"))
+               end
+             )
+
+    assert_receive {:upload_http_request, "POST", override_headers, ^payload}
+    assert override_headers["content-type"] == "application/x-custom"
+    assert override_headers["x_raw_key"] == "kept"
+    refute Map.has_key?(override_headers, "content_type")
   end
 end

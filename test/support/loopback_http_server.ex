@@ -210,5 +210,6 @@ defmodule BaileysEx.TestHelpers.LoopbackHTTPServer do
   defp status_text(404), do: "Not Found"
   defp status_text(410), do: "Gone"
   defp status_text(500), do: "Internal Server Error"
+  defp status_text(503), do: "Service Unavailable"
   defp status_text(_), do: "Status"
 end

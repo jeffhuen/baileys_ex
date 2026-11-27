@@ -70,28 +70,58 @@ defmodule BaileysEx.Connection.Version do
   defp default_fetch(url, opts) do
     req_options = Keyword.get(opts, :req_options, [])
 
-    headers =
-      opts
-      |> Keyword.get(:headers, [])
-      |> Enum.map(fn {key, value} -> {String.downcase(to_string(key)), to_string(value)} end)
-      |> then(&HTTP.merge_headers(req_options[:headers], &1))
+    with :ok <- validate_request_url(url, req_options) do
+      default_headers =
+        opts
+        |> Keyword.get(:headers, [])
+        |> Enum.map(fn {key, value} -> {key, to_string(value)} end)
 
-    request_opts =
-      req_options
-      |> Keyword.drop([:headers, :url, :into, :decode_body, :compressed, :method])
-      |> Keyword.merge(url: url, headers: headers, raw: true)
+      headers = HTTP.merge_headers(req_options[:headers], default_headers)
 
-    case Req.get(request_opts) do
-      {:ok, %Req.Response{status: status, body: body}} when is_binary(body) ->
-        {:ok, %{status: status, body: body}}
+      request_opts =
+        req_options
+        |> Keyword.drop([:headers, :url, :into, :decode_body, :compressed, :method])
+        |> Keyword.merge(
+          method: :get,
+          url: url,
+          headers: headers,
+          raw: true,
+          compressed: false,
+          decode_body: false,
+          into: nil
+        )
 
-      {:ok, %Req.Response{status: status, body: body}} ->
-        {:ok, %{status: status, body: IO.iodata_to_binary(body)}}
+      case Req.get(request_opts) do
+        {:ok, %Req.Response{status: status, body: body}} when is_binary(body) ->
+          {:ok, %{status: status, body: body}}
 
-      {:error, reason} ->
-        {:error, reason}
+        {:ok, %Req.Response{status: status, body: body}} ->
+          {:ok, %{status: status, body: IO.iodata_to_binary(body)}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
+
+  defp validate_request_url(url, req_options) when is_binary(url) do
+    uri =
+      case req_options[:base_url] do
+        base_url when is_binary(base_url) -> URI.merge(URI.parse(base_url), URI.parse(url))
+        _ -> URI.parse(url)
+      end
+
+    case uri do
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and is_binary(host) and byte_size(host) > 0 ->
+        :ok
+
+      _ ->
+        {:error, :invalid_url}
+    end
+  end
+
+  defp validate_request_url(_url, _req_options), do: {:error, :invalid_url}
 
   defp parse_baileys_defaults(body) when is_binary(body) do
     case Regex.run(~r/const version = \[(\d+),\s*(\d+),\s*(\d+)\]/, body, capture: :all_but_first) do

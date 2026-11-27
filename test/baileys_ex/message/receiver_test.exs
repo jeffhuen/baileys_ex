@@ -11,6 +11,7 @@ defmodule BaileysEx.Message.ReceiverTest do
   alias BaileysEx.Message.Receiver
   alias BaileysEx.Message.Retry
   alias BaileysEx.Message.Sender
+  alias BaileysEx.Message.Wire, as: MessageWire
   alias BaileysEx.Protocol.Proto.Conversation
   alias BaileysEx.Protocol.Proto.HistorySync, as: HistorySyncProto
   alias BaileysEx.Protocol.Proto.HistorySyncMsg
@@ -86,7 +87,7 @@ defmodule BaileysEx.Message.ReceiverTest do
                session: session
              })
 
-    plaintext = Builder.build(%{text: "hello from peer"}) |> Message.encode()
+    plaintext = Builder.build(%{text: "hello from peer"}) |> MessageWire.encode(random_byte: 0)
 
     assert {:ok, repo, %{ciphertext: ciphertext}} =
              Repository.encrypt_message(repo, %{
@@ -380,7 +381,7 @@ defmodule BaileysEx.Message.ReceiverTest do
     {sender_repo, _store} = MessageSignalHelpers.new_repo()
     {recipient_repo, _recipient_store} = MessageSignalHelpers.new_repo()
 
-    plaintext = Builder.build(%{text: "hello group"}) |> Message.encode()
+    plaintext = Builder.build(%{text: "hello group"}) |> MessageWire.encode(random_byte: 0)
 
     assert {:ok, _sender_repo,
             %{ciphertext: ciphertext, sender_key_distribution_message: distribution}} =
@@ -467,7 +468,8 @@ defmodule BaileysEx.Message.ReceiverTest do
                session: session
              })
 
-    plaintext = Builder.build(%{text: "hello after distribution"}) |> Message.encode()
+    plaintext =
+      Builder.build(%{text: "hello after distribution"}) |> MessageWire.encode(random_byte: 0)
 
     assert {:ok, _sender_repo,
             %{ciphertext: group_ciphertext, sender_key_distribution_message: distribution}} =
@@ -484,7 +486,7 @@ defmodule BaileysEx.Message.ReceiverTest do
           axolotl_sender_key_distribution_message: distribution
         }
       }
-      |> Message.encode()
+      |> MessageWire.encode(random_byte: 0)
 
     assert {:ok, recipient_repo, %{ciphertext: distribution_ciphertext}} =
              Repository.encrypt_message(recipient_repo, %{
@@ -564,7 +566,7 @@ defmodule BaileysEx.Message.ReceiverTest do
                session: session
              })
 
-    plaintext = Builder.build(%{text: "cache received"}) |> Message.encode()
+    plaintext = Builder.build(%{text: "cache received"}) |> MessageWire.encode(random_byte: 0)
 
     assert {:ok, repo, %{ciphertext: ciphertext}} =
              Repository.encrypt_message(repo, %{
@@ -809,7 +811,7 @@ defmodule BaileysEx.Message.ReceiverTest do
                session: session
              })
 
-    plaintext = Builder.build(%{text: "telemetry receive"}) |> Message.encode()
+    plaintext = Builder.build(%{text: "telemetry receive"}) |> MessageWire.encode(random_byte: 0)
 
     assert {:ok, repo, %{ciphertext: ciphertext}} =
              Repository.encrypt_message(repo, %{

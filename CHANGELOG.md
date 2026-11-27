@@ -11,7 +11,7 @@ and fixes companion-device protocol bugs.
 ### Changed
 
 - `BaileysEx` now uses `rustler` `~> 0.38` for Erlang/OTP 29 support, along
-  with `req` `~> 0.7 or ~> 0.8` (locked on stable `0.7.5`, tested against
+  with `req` `~> 0.7.0 or ~> 0.8.0` (locked on stable `0.7.5`, tested against
   `0.8.0-rc.0`), `mint` `1.11`, `mint_web_socket` `1.0.6`, and `telemetry`
   `1.4.3`.
 - `BaileysEx.Connection.Version` now fetches version metadata through `Req`

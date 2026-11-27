@@ -490,18 +490,26 @@ defmodule BaileysEx.Media.DownloadTest do
   test "download_to_file/3 truncates partial file before Req retry after mid-stream TCP close",
        %{tmp_dir: tmp_dir} do
     media_key = :binary.copy(<<12>>, 32)
-    plaintext = String.duplicate("retry-reset-file-payload-", 40)
+    long_plaintext = String.duplicate("attempt-one-much-longer-payload-", 40)
+    short_plaintext = "attempt-two-short-clean-payload!"
 
-    assert {:ok, %{encrypted_path: encrypted_path}} =
-             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+    assert {:ok, %{encrypted_path: long_encrypted_path}} =
+             Crypto.encrypt(long_plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
 
-    encrypted = File.read!(encrypted_path)
-    first_partial = binary_part(encrypted, 0, 128)
-    full_chunks = chunk_binary(encrypted, 41)
-    ranged_partial = binary_part(encrypted, 0, 32)
-    ranged_chunks = chunk_binary(binary_part(encrypted, 0, 49), 13)
+    assert {:ok, %{encrypted_path: short_encrypted_path}} =
+             Crypto.encrypt(short_plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    long_encrypted = File.read!(long_encrypted_path)
+    short_encrypted = File.read!(short_encrypted_path)
+    first_partial = binary_part(long_encrypted, 0, 256)
+    short_chunks = chunk_binary(short_encrypted, 17)
+    ranged_partial = binary_part(long_encrypted, 0, 80)
+    ranged_chunks = chunk_binary(binary_part(long_encrypted, 0, 49), 13)
+    retry_path = Path.join(tmp_dir, "retried-output.bin")
+    ranged_retry_path = Path.join(tmp_dir, "retried-ranged-output.bin")
     {:ok, attempts} = Agent.start_link(fn -> 0 end)
     {:ok, ranged_attempts} = Agent.start_link(fn -> 0 end)
+    {:ok, sizes_before_retry} = Agent.start_link(fn -> %{} end)
 
     {:ok, server} =
       LoopbackHTTPServer.start(fn req ->
@@ -513,7 +521,9 @@ defmodule BaileysEx.Media.DownloadTest do
                  {:truncate_after, first_partial}}
 
               _ ->
-                {200, [{"content-type", "application/octet-stream"}], full_chunks}
+                size = File.stat!(retry_path).size
+                Agent.update(sizes_before_retry, &Map.put(&1, :full, size))
+                {200, [{"content-type", "application/octet-stream"}], short_chunks}
             end
 
           "/flaky-ranged" ->
@@ -523,6 +533,8 @@ defmodule BaileysEx.Media.DownloadTest do
                  {:truncate_after, ranged_partial}}
 
               _ ->
+                size = File.stat!(ranged_retry_path).size
+                Agent.update(sizes_before_retry, &Map.put(&1, :ranged, size))
                 {206, [{"content-type", "application/octet-stream"}], ranged_chunks}
             end
 
@@ -536,15 +548,14 @@ defmodule BaileysEx.Media.DownloadTest do
             {410, [{"content-type", "text/plain"}], ""}
 
           "/final" ->
-            {200, [{"content-type", "application/octet-stream"}], full_chunks}
+            {200, [{"content-type", "application/octet-stream"}], short_chunks}
         end
       end)
 
     on_exit(server.stop)
 
-    # 1. Mid-stream TCP close on attempt 1 followed by Req retry must not corrupt output file
-    retry_path = Path.join(tmp_dir, "retried-output.bin")
-
+    # 1. Attempt 1 writes > byte_size(short_plaintext) before closing; attempt 2 writes the
+    # shorter payload, proving truncate (not just rewind) cleared the leftover bytes.
     assert {:ok, ^retry_path} =
              Download.download_to_file(
                %Message.ImageMessage{media_key: media_key, url: "#{server.url}/flaky"},
@@ -558,11 +569,10 @@ defmodule BaileysEx.Media.DownloadTest do
              )
 
     assert Agent.get(attempts, & &1) == 2
-    assert File.read!(retry_path) == plaintext
+    assert Agent.get(sizes_before_retry, & &1[:full]) > byte_size(short_plaintext)
+    assert File.read!(retry_path) == short_plaintext
 
-    # 2. Mid-stream TCP close on ranged 206 retry also resets partial file cleanly
-    ranged_retry_path = Path.join(tmp_dir, "retried-ranged-output.bin")
-
+    # 2. Mid-stream TCP close on ranged 206 retry also truncates partial file cleanly
     assert {:ok, ^ranged_retry_path} =
              Download.download_to_file(
                %Message.ImageMessage{media_key: media_key, url: "#{server.url}/flaky-ranged"},
@@ -577,7 +587,8 @@ defmodule BaileysEx.Media.DownloadTest do
              )
 
     assert Agent.get(ranged_attempts, & &1) == 2
-    assert File.read!(ranged_retry_path) == binary_part(plaintext, 20, 12)
+    assert Agent.get(sizes_before_retry, & &1[:ranged]) > 0
+    assert File.read!(ranged_retry_path) == binary_part(long_plaintext, 20, 12)
 
     # 3. 302 redirect -> 200 streams cleanly without corrupting decrypt state
     redirect_path = Path.join(tmp_dir, "redirect-output.bin")
@@ -589,7 +600,7 @@ defmodule BaileysEx.Media.DownloadTest do
                req_options: [retry: false]
              )
 
-    assert File.read!(redirect_path) == plaintext
+    assert File.read!(redirect_path) == short_plaintext
 
     # 4. 302 redirect with body -> 410 empty body does not leak the 302 body
     assert {:error, {:http_error, 410, ""}} =
@@ -600,6 +611,125 @@ defmodule BaileysEx.Media.DownloadTest do
                },
                req_options: [retry: false]
              )
+  end
+
+  defmodule BufferedAdapter do
+    @moduledoc false
+
+    def run(req) do
+      fun = Process.get(:baileys_ex_buffered_adapter_fun)
+      fun.(req)
+    end
+
+    def stream(req, acc, _fun, state) do
+      {req, resp} = run(req)
+      {:ok, Map.put(resp, :request, req), acc, state}
+    end
+  end
+
+  @tag :tmp_dir
+  test "buffered Req adapter decrypts 200 ciphertext and caps 410 error body to 64 KiB",
+       %{tmp_dir: tmp_dir} do
+    media_key = :binary.copy(<<13>>, 32)
+    plaintext = "buffered-adapter-decryption-payload-across-blocks"
+
+    assert {:ok, %{encrypted_path: encrypted_path}} =
+             Crypto.encrypt(plaintext, :image, media_key: media_key, tmp_dir: tmp_dir)
+
+    encrypted = File.read!(encrypted_path)
+
+    Process.put(:baileys_ex_buffered_adapter_fun, fn req ->
+      {req, Req.Response.new(status: 200, body: encrypted)}
+    end)
+
+    assert {:ok, ^plaintext} =
+             Download.download(
+               %Message.ImageMessage{
+                 media_key: media_key,
+                 url: "https://mmg.whatsapp.net/buffered"
+               },
+               req_options: [adapter: BufferedAdapter, retry: false]
+             )
+
+    oversized_error = String.duplicate("e", 70_000)
+
+    Process.put(:baileys_ex_buffered_adapter_fun, fn req ->
+      {req, Req.Response.new(status: 410, body: oversized_error)}
+    end)
+
+    assert {:error, {:http_error, 410, capped_body}} =
+             Download.download(
+               %Message.ImageMessage{
+                 media_key: media_key,
+                 url: "https://mmg.whatsapp.net/buffered-gone"
+               },
+               req_options: [adapter: BufferedAdapter, retry: false]
+             )
+
+    assert byte_size(capped_body) == 65_536
+  end
+
+  test "custom request_fun returns error tuple on mid-stream 410 close and cancels bounded async once" do
+    media_key = :binary.copy(<<14>>, 32)
+
+    {:ok, server} =
+      LoopbackHTTPServer.start(fn _req ->
+        {410, [{"content-type", "text/plain"}], {:truncate_after, "partial-410"}}
+      end)
+
+    on_exit(server.stop)
+
+    assert {:error, _transport_reason} =
+             Download.download(
+               %Message.ImageMessage{media_key: media_key, url: "#{server.url}/broken-410"},
+               req_options: [retry: false],
+               request_fun: &Req.get/1
+             )
+
+    # Bounded async error response must call cancel_fun exactly once when hitting 64 KiB cap
+    {:ok, cancel_counter} = Agent.start_link(fn -> 0 end)
+    ref = make_ref()
+
+    stream_fun = fn
+      ^ref, {^ref, {:data, chunk}} -> {:ok, [data: chunk]}
+      ^ref, {^ref, :done} -> {:ok, [:done]}
+    end
+
+    cancel_fun = fn ^ref ->
+      count = Agent.get_and_update(cancel_counter, fn n -> {n + 1, n + 1} end)
+      if count > 1, do: raise("cancel_fun called #{count} times")
+      :ok
+    end
+
+    request_fun = fn _opts ->
+      send(self(), {ref, {:data, String.duplicate("a", 40_000)}})
+      send(self(), {ref, {:data, String.duplicate("b", 40_000)}})
+      send(self(), {ref, {:data, String.duplicate("c", 10_000)}})
+      send(self(), {ref, :done})
+
+      {:ok,
+       %Req.Response{
+         status: 410,
+         body: %Req.Response.Async{
+           pid: self(),
+           ref: ref,
+           stream_fun: stream_fun,
+           cancel_fun: cancel_fun
+         }
+       }}
+    end
+
+    assert {:error, {:http_error, 410, capped_body}} =
+             Download.download(
+               %Message.ImageMessage{
+                 media_key: media_key,
+                 url: "https://mmg.whatsapp.net/async-capped"
+               },
+               request_fun: request_fun
+             )
+
+    assert byte_size(capped_body) == 65_536
+    assert Agent.get(cancel_counter, & &1) == 1
   end
 
   defp chunk_binary(binary, chunk_size) do

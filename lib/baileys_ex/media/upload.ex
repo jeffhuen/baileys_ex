@@ -142,11 +142,12 @@ defmodule BaileysEx.Media.Upload do
       ])
 
     req_options
-    |> Keyword.drop([:headers])
+    |> Keyword.drop([:headers, :into, :method])
     |> Keyword.merge(
       url: url,
       body: File.stream!(encrypted_path, 64 * 1024),
-      headers: headers
+      headers: headers,
+      into: nil
     )
   end
 

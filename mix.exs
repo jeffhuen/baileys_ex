@@ -33,7 +33,7 @@ defmodule BaileysEx.MixProject do
       {:mint, "~> 1.6"},
 
       # HTTP client (for media upload/download and version discovery; 0.7 stable and 0.8 ready)
-      {:req, "~> 0.7 or ~> 0.8"},
+      {:req, "~> 0.7.0 or ~> 0.8.0"},
 
       # Telemetry
       {:telemetry, "~> 1.3"},

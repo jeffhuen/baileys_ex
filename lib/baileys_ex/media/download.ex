@@ -215,7 +215,10 @@ defmodule BaileysEx.Media.Download do
     |> Keyword.merge(
       url: url,
       headers: headers,
-      raw: true
+      raw: true,
+      compressed: false,
+      decode_body: false,
+      into: nil
     )
   end
 
@@ -226,8 +229,8 @@ defmodule BaileysEx.Media.Download do
       {:ok, %Req.Response{status: status} = resp} when status in 200..299 ->
         decrypt_response_with_cleanup(resp, decrypt_state, acc, sink_fun)
 
-      {:ok, %Req.Response{status: status} = resp} ->
-        {:error, {:http_error, status, consume_or_cancel_error_body(resp)}}
+      {:ok, %Req.Response{} = resp} ->
+        consume_or_cancel_error_body(resp)
 
       {:error, reason} ->
         {:error, reason}
@@ -249,7 +252,7 @@ defmodule BaileysEx.Media.Download do
     case Req.get(Keyword.put(base_opts, :into, into_fun)) do
       {:ok, %Req.Response{status: status} = resp} ->
         final_acc = Req.Response.get_private(resp, :baileys_ex_download, initial_acc)
-        finalize_stream_response(status, resp.body, final_acc, sink_fun)
+        finalize_stream_response(status, resp.body, final_acc, sink_fun, reset_fun)
 
       {:error, reason} ->
         {:error, reason}
@@ -272,7 +275,7 @@ defmodule BaileysEx.Media.Download do
 
     case call_req_stream(Req, req, initial_acc, stream_fun) do
       {:ok, %Req.Response{status: status} = resp, final_acc} ->
-        finalize_stream_response(status, resp.body, final_acc, sink_fun)
+        finalize_stream_response(status, resp.body, final_acc, sink_fun, reset_fun)
 
       {:error, reason, _resp, _final_acc} ->
         {:error, reason}
@@ -309,19 +312,41 @@ defmodule BaileysEx.Media.Download do
     append_bounded_error_chunk(stream_acc, status, data)
   end
 
-  defp finalize_stream_response(status, _resp_body, final_acc, sink_fun)
+  defp finalize_stream_response(
+         status,
+         _resp_body,
+         %{started?: true} = final_acc,
+         sink_fun,
+         _reset_fun
+       )
        when status in 200..299 do
     finalize_decrypt(final_acc.decrypt_state, final_acc.sink_acc, sink_fun)
   end
 
-  defp finalize_stream_response(status, resp_body, final_acc, _sink_fun) do
+  defp finalize_stream_response(status, resp_body, final_acc, sink_fun, reset_fun)
+       when status in 200..299 do
+    if empty_response_body?(resp_body) do
+      finalize_decrypt(final_acc.decrypt_state, final_acc.sink_acc, sink_fun)
+    else
+      :ok = reset_fun.()
+
+      decrypt_stream(
+        to_chunk_stream(resp_body),
+        final_acc.decrypt_state,
+        final_acc.sink_acc,
+        sink_fun
+      )
+    end
+  end
+
+  defp finalize_stream_response(status, resp_body, final_acc, _sink_fun, _reset_fun) do
     error_body =
       cond do
         final_acc.error_status == status ->
           final_acc.error_chunks |> Enum.reverse() |> IO.iodata_to_binary()
 
         is_binary(resp_body) ->
-          resp_body
+          truncate_error_body(resp_body)
 
         true ->
           ""
@@ -329,6 +354,16 @@ defmodule BaileysEx.Media.Download do
 
     {:error, {:http_error, status, error_body}}
   end
+
+  defp empty_response_body?(nil), do: true
+  defp empty_response_body?(<<>>), do: true
+  defp empty_response_body?([]), do: true
+  defp empty_response_body?(_body), do: false
+
+  defp truncate_error_body(body) when is_binary(body) and byte_size(body) > @max_error_body_bytes,
+    do: binary_part(body, 0, @max_error_body_bytes)
+
+  defp truncate_error_body(body), do: body
 
   defp call_req_stream(req_module, req, initial_acc, stream_fun) do
     req_module.stream(req, initial_acc, stream_fun, [])
@@ -375,28 +410,102 @@ defmodule BaileysEx.Media.Download do
          acc,
          sink_fun
        ) do
-    decrypt_stream(to_chunk_stream(resp.body), decrypt_state, acc, sink_fun)
-  after
-    maybe_cancel_async_response(resp)
+    case reduce_async_response(resp, {acc, decrypt_state}, fn chunk, {cur_acc, cur_state} ->
+           {:ok, next_acc, next_state} = decrypt_chunk(chunk, cur_state, cur_acc, sink_fun)
+           {:cont, {next_acc, next_state}}
+         end) do
+      {:ok, {final_acc, final_state}} ->
+        finalize_decrypt(final_state, final_acc, sink_fun)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp decrypt_response_with_cleanup(%Req.Response{body: body}, decrypt_state, acc, sink_fun) do
     decrypt_stream(to_chunk_stream(body), decrypt_state, acc, sink_fun)
   end
 
-  defp consume_or_cancel_error_body(%Req.Response{body: %Req.Response.Async{}} = resp) do
-    resp.body
-    |> Enum.reduce_while({[], 0}, fn chunk, {chunks, size} ->
-      collect_bounded_chunk(chunk, chunks, size)
-    end)
-    |> elem(0)
-    |> Enum.reverse()
-    |> IO.iodata_to_binary()
-  after
-    maybe_cancel_async_response(resp)
+  defp consume_or_cancel_error_body(
+         %Req.Response{status: status, body: %Req.Response.Async{}} = resp
+       ) do
+    case reduce_async_response(resp, {[], 0}, fn chunk, {chunks, size} ->
+           collect_bounded_chunk(chunk, chunks, size)
+         end) do
+      {:ok, {chunks, _size}} ->
+        body = chunks |> Enum.reverse() |> IO.iodata_to_binary()
+        {:error, {:http_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
-  defp consume_or_cancel_error_body(%Req.Response{body: body}), do: body
+  defp consume_or_cancel_error_body(%Req.Response{status: status, body: body}) do
+    {:error, {:http_error, status, truncate_error_body(body)}}
+  end
+
+  defp reduce_async_response(
+         %Req.Response{body: %Req.Response.Async{pid: pid, ref: ref}} = resp,
+         acc,
+         fun
+       ) do
+    if pid != self() do
+      raise ArgumentError,
+            "expected to read async response body in #{inspect(pid)}, got #{inspect(self())}"
+    end
+
+    case run_async_loop(resp, ref, acc, fun) do
+      {:ok, final_acc} ->
+        {:ok, final_acc}
+
+      {:halted, halted_acc} ->
+        cancel_async_response_once(resp)
+        {:ok, halted_acc}
+
+      {:unexpected, other} ->
+        cancel_async_response_once(resp)
+        {:error, {:unexpected_async_message, other}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp run_async_loop(resp, ref, acc, fun) do
+    do_reduce_async_response(resp, ref, acc, fun)
+  rescue
+    error ->
+      cancel_async_response_once(resp)
+      reraise(error, __STACKTRACE__)
+  catch
+    kind, reason ->
+      cancel_async_response_once(resp)
+      :erlang.raise(kind, reason, __STACKTRACE__)
+  end
+
+  defp do_reduce_async_response(resp, ref, acc, fun) do
+    receive do
+      {^ref, _} = message ->
+        handle_async_message(Req.parse_message(resp, message), resp, ref, acc, fun)
+    end
+  end
+
+  defp handle_async_message({:ok, [data: data]}, resp, ref, acc, fun) do
+    case fun.(data, acc) do
+      {:cont, next_acc} -> do_reduce_async_response(resp, ref, next_acc, fun)
+      {:halt, halted_acc} -> {:halted, halted_acc}
+    end
+  end
+
+  defp handle_async_message({:ok, [:done]}, _resp, _ref, acc, _fun), do: {:ok, acc}
+
+  defp handle_async_message({:ok, [trailers: _trailers]}, resp, ref, acc, fun) do
+    do_reduce_async_response(resp, ref, acc, fun)
+  end
+
+  defp handle_async_message({:error, reason}, _resp, _ref, _acc, _fun), do: {:error, reason}
+  defp handle_async_message(other, _resp, _ref, _acc, _fun), do: {:unexpected, other}
 
   defp collect_bounded_chunk(chunk, chunks, size) do
     remaining = @max_error_body_bytes - size
@@ -405,15 +514,18 @@ defmodule BaileysEx.Media.Download do
       remaining <= 0 ->
         {:halt, {chunks, @max_error_body_bytes}}
 
-      byte_size(chunk) <= remaining ->
+      byte_size(chunk) < remaining ->
         {:cont, {[chunk | chunks], size + byte_size(chunk)}}
+
+      byte_size(chunk) == remaining ->
+        {:halt, {[chunk | chunks], @max_error_body_bytes}}
 
       true ->
         {:halt, {[binary_part(chunk, 0, remaining) | chunks], @max_error_body_bytes}}
     end
   end
 
-  defp maybe_cancel_async_response(%Req.Response{body: %Req.Response.Async{}} = resp) do
+  defp cancel_async_response_once(%Req.Response{body: %Req.Response.Async{}} = resp) do
     _ = Req.cancel_async_response(resp)
     :ok
   catch

@@ -1046,7 +1046,7 @@ defmodule BaileysEx.Connection.SupervisorTest do
                session: MessageSignalHelpers.session_fixture()
              })
 
-    plaintext = Message.encode(Builder.build(%{text: "blocked inbound"}))
+    plaintext = Wire.encode(Builder.build(%{text: "blocked inbound"}), random_byte: 0)
 
     assert {:ok, base_repo, %{ciphertext: ciphertext}} =
              Repository.encrypt_message(base_repo, %{

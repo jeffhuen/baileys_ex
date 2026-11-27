@@ -848,7 +848,7 @@ defmodule BaileysEx.Connection.SocketTest do
         ]
       }
 
-    {_, call_frame} = server_transport_frame(server_transport, call_node)
+    {server_transport, call_frame} = server_transport_frame(server_transport, call_node)
     Kernel.send(pid, {:scripted_transport, {:binary, call_frame}})
 
     assert_receive {:processed_events,
@@ -856,6 +856,48 @@ defmodule BaileysEx.Connection.SocketTest do
                       socket_node: %{
                         state: :connected,
                         node: %BinaryNode{tag: "call", attrs: %{"id" => "raw-call-1"}}
+                      }
+                    }}
+
+    presence_node =
+      %BinaryNode{
+        tag: "presence",
+        attrs: %{"from" => "15551234567@s.whatsapp.net", "type" => "available"},
+        content: nil
+      }
+
+    {server_transport, presence_frame} = server_transport_frame(server_transport, presence_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, presence_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{
+                          tag: "presence",
+                          attrs: %{"from" => "15551234567@s.whatsapp.net", "type" => "available"}
+                        }
+                      }
+                    }}
+
+    chatstate_node =
+      %BinaryNode{
+        tag: "chatstate",
+        attrs: %{"from" => "15551234567@s.whatsapp.net"},
+        content: [%BinaryNode{tag: "composing", attrs: %{}, content: nil}]
+      }
+
+    {_, chatstate_frame} = server_transport_frame(server_transport, chatstate_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, chatstate_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{
+                          tag: "chatstate",
+                          attrs: %{"from" => "15551234567@s.whatsapp.net"}
+                        }
                       }
                     }}
   end
@@ -1442,8 +1484,10 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert %BinaryNode{
              tag: "iq",
-             attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "md"}
+             attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "md", "id" => id}
            } = pairing_node
+
+    assert is_binary(id) and id != ""
 
     assert %BinaryNode{tag: "link_code_companion_reg", attrs: %{"stage" => "companion_hello"}} =
              BinaryNodeUtil.child(pairing_node, "link_code_companion_reg")
@@ -1974,6 +2018,66 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert_eventually(fn -> Socket.snapshot(pid).last_error == :multidevice_mismatch end)
     assert server_transport.read_counter >= 0
+  end
+
+  test "xmlstreamend closes the connection with :connection_closed" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} = start_connected_socket(event_emitter: event_emitter)
+
+    {server_transport, stream_end_frame} =
+      server_transport_frame(server_transport, %BinaryNode{
+        tag: "xmlstreamend",
+        attrs: %{},
+        content: nil
+      })
+
+    Kernel.send(pid, {:scripted_transport, {:binary, stream_end_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        connection: :close,
+                        last_disconnect: %{error: %{reason: :connection_closed}}
+                      }
+                    }}
+
+    assert_eventually(fn -> Socket.state(pid) == :disconnected end)
+    assert server_transport.write_counter >= 0
+  end
+
+  test "send_node/2 automatically tags outgoing get/set iq stanzas that omit an id" do
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    {:ok, pid, server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        message_tag_fun: fn -> "auto-iq-tag" end
+      )
+
+    untagged_iq = %BinaryNode{
+      tag: "iq",
+      attrs: %{"to" => "s.whatsapp.net", "type" => "set", "xmlns" => "urn:xmpp:whatsapp:dirty"},
+      content: [%BinaryNode{tag: "clean", attrs: %{"type" => "account_sync"}, content: nil}]
+    }
+
+    assert :ok = Socket.send_node(pid, untagged_iq)
+    assert_receive {:transport_sent, iq_frame}
+    {_server_transport, decoded_iq} = decode_client_transport_frame(server_transport, iq_frame)
+
+    assert %BinaryNode{
+             tag: "iq",
+             attrs: %{
+               "id" => "auto-iq-tag",
+               "to" => "s.whatsapp.net",
+               "type" => "set",
+               "xmlns" => "urn:xmpp:whatsapp:dirty"
+             }
+           } = decoded_iq
   end
 
   defp start_socket(opts) do

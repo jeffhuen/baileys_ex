@@ -797,7 +797,7 @@ defmodule BaileysEx.Connection.Socket do
     do: apply_notification_node(:connected, node, data)
 
   defp apply_binary_node(current_state, %BinaryNode{tag: tag} = node, data)
-       when tag in ["message", "receipt", "ack"] do
+       when tag in ["message", "receipt", "ack", "call", "presence", "chatstate"] do
     emit_event(data, :socket_node, %{node: node, state: current_state})
     {:ok, current_state, data}
   end
@@ -808,6 +808,9 @@ defmodule BaileysEx.Connection.Socket do
 
   defp apply_binary_node(_current_state, %BinaryNode{tag: "stream:error"} = node, data),
     do: {:error, stream_error_reason(node), data}
+
+  defp apply_binary_node(_current_state, %BinaryNode{tag: "xmlstreamend"}, data),
+    do: {:error, :connection_closed, data}
 
   defp apply_binary_node(_current_state, %BinaryNode{tag: "failure"} = node, data),
     do: {:error, failure_reason(node), data}

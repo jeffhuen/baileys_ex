@@ -11,6 +11,12 @@
   dirty-bit cleanup) are now also guaranteed to carry a message `id` by
   [@Rodericuss](https://github.com/Rodericuss)
   [(#18)](https://github.com/jeffhuen/baileys_ex/pull/18).
+- Inbound `call` (#23), `presence`, and `chatstate` nodes are now surfaced as
+  `socket_node` events so the coordinator processes and acks them instead of
+  dropping them and stalling the offline queue, and `Connection.Socket` now
+  closes cleanly on inbound `xmlstreamend` frames by
+  [@Rodericuss](https://github.com/Rodericuss)
+  [(#23)](https://github.com/jeffhuen/baileys_ex/pull/23).
 
 ## [0.1.0-alpha.12] - 2026-08-26
 

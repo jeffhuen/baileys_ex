@@ -817,6 +817,91 @@ defmodule BaileysEx.Connection.SocketTest do
                     }}
   end
 
+  test "inbound call nodes are surfaced as socket_node events so the coordinator can ack them" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} =
+      start_connected_socket(
+        event_emitter: event_emitter,
+        config: Config.new(keep_alive_interval_ms: 5_000)
+      )
+
+    call_node =
+      %BinaryNode{
+        tag: "call",
+        attrs: %{
+          "id" => "raw-call-1",
+          "from" => "15551234567@s.whatsapp.net",
+          "t" => "1710000900",
+          "offline" => "0"
+        },
+        content: [
+          %BinaryNode{
+            tag: "offer",
+            attrs: %{"call-id" => "call-1", "call-creator" => "15551234567@s.whatsapp.net"},
+            content: nil
+          }
+        ]
+      }
+
+    {server_transport, call_frame} = server_transport_frame(server_transport, call_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, call_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{tag: "call", attrs: %{"id" => "raw-call-1"}}
+                      }
+                    }}
+
+    presence_node =
+      %BinaryNode{
+        tag: "presence",
+        attrs: %{"from" => "15551234567@s.whatsapp.net", "type" => "available"},
+        content: nil
+      }
+
+    {server_transport, presence_frame} = server_transport_frame(server_transport, presence_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, presence_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{
+                          tag: "presence",
+                          attrs: %{"from" => "15551234567@s.whatsapp.net", "type" => "available"}
+                        }
+                      }
+                    }}
+
+    chatstate_node =
+      %BinaryNode{
+        tag: "chatstate",
+        attrs: %{"from" => "15551234567@s.whatsapp.net"},
+        content: [%BinaryNode{tag: "composing", attrs: %{}, content: nil}]
+      }
+
+    {_, chatstate_frame} = server_transport_frame(server_transport, chatstate_node)
+    Kernel.send(pid, {:scripted_transport, {:binary, chatstate_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      socket_node: %{
+                        state: :connected,
+                        node: %BinaryNode{
+                          tag: "chatstate",
+                          attrs: %{"from" => "15551234567@s.whatsapp.net"}
+                        }
+                      }
+                    }}
+  end
+
   test "logout/1 sends remove-companion-device and transitions the socket to disconnected" do
     test_pid = self()
     {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
@@ -1933,6 +2018,36 @@ defmodule BaileysEx.Connection.SocketTest do
 
     assert_eventually(fn -> Socket.snapshot(pid).last_error == :multidevice_mismatch end)
     assert server_transport.read_counter >= 0
+  end
+
+  test "xmlstreamend closes the connection with :connection_closed" do
+    test_pid = self()
+    {:ok, event_emitter} = EventEmitter.start_link(buffer_timeout_ms: 50)
+
+    _unsubscribe =
+      EventEmitter.process(event_emitter, &Kernel.send(test_pid, {:processed_events, &1}))
+
+    {:ok, pid, server_transport} = start_connected_socket(event_emitter: event_emitter)
+
+    {server_transport, stream_end_frame} =
+      server_transport_frame(server_transport, %BinaryNode{
+        tag: "xmlstreamend",
+        attrs: %{},
+        content: nil
+      })
+
+    Kernel.send(pid, {:scripted_transport, {:binary, stream_end_frame}})
+
+    assert_receive {:processed_events,
+                    %{
+                      connection_update: %{
+                        connection: :close,
+                        last_disconnect: %{error: %{reason: :connection_closed}}
+                      }
+                    }}
+
+    assert_eventually(fn -> Socket.state(pid) == :disconnected end)
+    assert server_transport.write_counter >= 0
   end
 
   test "send_node/2 automatically tags outgoing get/set iq stanzas that omit an id" do

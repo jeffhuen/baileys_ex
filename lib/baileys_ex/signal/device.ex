@@ -87,10 +87,10 @@ defmodule BaileysEx.Signal.Device do
     with {:ok, node} <- USync.to_node(query, "message-device-query"),
          {:ok, response} <- query_node(context, node),
          {:ok, %{list: results}} <- USync.parse_result(query, response) do
-      Logger.warning(
+      Logger.debug(fn ->
         "[Device] usync devices query: requested=#{inspect(jids)} " <>
           "results=#{inspect(summarize_results(results))}"
-      )
+      end)
 
       fetched =
         Enum.reduce(results, %{}, fn %{id: jid, devices: %{device_list: device_list}} = result,

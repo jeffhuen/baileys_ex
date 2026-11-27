@@ -722,7 +722,7 @@ defmodule BaileysEx.Message.Receiver do
        ) do
     case Map.get(message, :protocol_message) do
       %Message.ProtocolMessage{type: proto_type} = protocol_message ->
-        Logger.warning("[Receiver] protocol_message type=#{inspect(proto_type)}")
+        Logger.debug(fn -> "[Receiver] protocol_message type=#{inspect(proto_type)}" end)
 
         if self_only_protocol_message?(proto_type) and not key.from_me do
           Logger.warning(
